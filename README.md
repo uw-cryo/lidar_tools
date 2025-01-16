@@ -1,6 +1,7 @@
 # grid_pc
 
 [![Actions Status][actions-badge]][actions-link]
+
 [actions-badge]:            https://github.com/uw-cryo/grid_pc/workflows/Tests/badge.svg
 [actions-link]:             https://github.com/uw-cryo/grid_pc/actions
 
