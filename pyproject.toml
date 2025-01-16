@@ -1,0 +1,72 @@
+[project]
+name = "grid_pc"
+version="0.1.0"
+authors = [
+  { name = "Scott Henderson", email = "scottyh@uw.edu" },
+  { name = "David Shean", email = "dshean@uw.edu" },
+  { name = "Shashank Bhushan", email = "shashank.bhushan@nasa.gov" },
+  { name = "Karthik Venkataramani", email = "vkarthik@uw.edu" },
+]
+description = "Centralized airborne lidar processing workflows to generate standard products"
+readme = "README.md"
+license.file = "LICENSE"
+requires-python = ">=3.9"
+classifiers = [
+  "Intended Audience :: Science/Research",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+]
+
+dependencies = [
+  #Not recommended, install via conda-forge instead
+  #"PDAL>=3.4.5,<4",
+  "rasterio>=1.4.3,<2",
+  "scipy>=1.15.1,<2",
+  "geopandas>=1.0.1,<2",
+  "typer>=0.15.1,<0.16",
+  "requests>=2.32.3,<3"
+]
+
+[build-system]
+build-backend = "hatchling.build"
+requires = ["hatchling"]
+
+[project.optional-dependencies]
+dev = [
+  "ipykernel>=6.29.5,<7",
+  "pytest >=6",
+]
+
+[project.scripts]
+pdal_pipeline = "grid_pc.cli:app"
+
+[tool.pixi.project]
+channels = ["conda-forge"]
+platforms = ["osx-arm64", "linux-64"]
+
+[tool.pixi.environments]
+dev = { features = ["dev"], solve-group = "default" }
+
+[tool.pixi.feature.dev.tasks]
+test = "pytest"
+
+[tool.pixi.dependencies]
+rasterio = "*"
+python-pdal = ">=3.4.5,<4"
+scipy = "*"
+geopandas = "*"
+typer = "*"
+requests = "*"
+
+[tool.pixi.pypi-dependencies]
+grid_pc = { path = ".", editable = false }
+
+[tool.pixi.feature.dev.dependencies]
+gdal = ">=3.10.1,<4"
+pytest = "*"
+
+[tool.pixi.feature.dev.pypi-dependencies]
+grid_pc = { path = ".", editable = true }
