@@ -11,8 +11,8 @@ from pathlib import Path
 # NOTE: Hardcoding global settings for now, can expose as script arguments later
 # -------------------------------------------------------
 # Set pointcloud processing parameters
-FILTER_LOW_NOISE = True
-FILTER_HIGH_NOISE = True
+FILTER_LOW_NOISE = False
+FILTER_HIGH_NOISE = False
 FILTER_ROAD = False
 RETURN_ONLY_GROUND = False # Set true for DTM
 RESET_CLASSES = False
@@ -30,6 +30,7 @@ POINTCLOUD_RESOLUTION = 1
 OUTPUT_TYPE='laz'
 GRID_METHOD='idw'
 DIMENSION='Z' # can be set to options accepted by writers.gdal. Set to 'intensity' to return intensity rasters
+
 # -------------------------------------------------------
 
 
@@ -118,8 +119,8 @@ def create_dsm(extent_geojson: str, # processing_extent.geojson
                                         pointcloud_resolution=POINTCLOUD_RESOLUTION,
                                         gridmethod=GRID_METHOD, dimension=DIMENSION)
 
-        # apply interpolation to fill gaps when generating DSM/DTM
-        dem_stage[0]['window_size'] = 4
+        # this is only required for the DTM, since this function is for a DSM, I am commenting this out
+        #dem_stage[0]['window_size'] = 4
 
         pipeline['pipeline'] += pdal_pipeline
         pipeline['pipeline'] += dem_stage
