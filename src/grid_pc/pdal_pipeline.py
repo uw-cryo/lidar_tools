@@ -1,6 +1,7 @@
 """
 Generate a DSM from input polygon
 """
+import os
 from grid_pc import dsm_functions
 import pdal
 from shapely.geometry import Polygon
@@ -126,7 +127,9 @@ def create_dsm(extent_geojson: str, # processing_extent.geojson
         pipeline['pipeline'] += dem_stage
 
         # Save a copy of each pipeline
-        with open(f'/tmp/dem/pipeline_{str(i).zfill(4)}.json', 'w') as f:
+        pipeline_config_fn = os.path.join(output_path,f"pipeline_{i}.json")
+        
+        with open(pipeline_config_fn, 'w') as f:
             f.write(json.dumps(pipeline))
 
         # Skip execution for testing
