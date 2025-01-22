@@ -100,7 +100,7 @@ def create_dsm(extent_geojson: str, # processing_extent.geojson
         dem_file = output_path / f'dem_tile_aoi_{str(i).zfill(4)}.tif'
         pipeline = {'pipeline':[reader]}
 
-        pdal_pipeline = dsm_functions.create_pdal_pipeline(
+        pdal_pipeline_dsm = dsm_functions.create_pdal_pipeline(
             filter_low_noise=FILTER_LOW_NOISE,
             filter_high_noise=FILTER_HIGH_NOISE,
             filter_road=FILTER_ROAD,
@@ -116,6 +116,36 @@ def create_dsm(extent_geojson: str, # processing_extent.geojson
             output_type=OUTPUT_TYPE
         )
 
+        pdal_pipeline_dtm = dsm_functions.create_pdal_pipeline(
+            filter_low_noise=FILTER_LOW_NOISE,
+            filter_high_noise=FILTER_HIGH_NOISE,
+            filter_road=FILTER_ROAD,
+            reset_classes=RESET_CLASSES, reclassify_ground=RECLASSIFY_GROUND,
+            return_only_ground=RETURN_ONLY_GROUND,
+            percentile_filter=PERCENTILE_FILTER, percentile_threshold=PERCENTILE_THRESHOLD,
+            group_filter=last,only,
+            reproject=REPROJECT,
+            save_pointcloud=SAVE_POINTCLOUD,
+            pointcloud_file='pointcloud',
+            input_crs = POINTCLOUD_CRS[i],
+            output_crs=OUTPUT_CRS,
+            output_type=OUTPUT_TYPE
+        )
+        pdal_pipeline_surface_intesity = dsm_functions.create_pdal_pipeline(
+            filter_low_noise=FILTER_LOW_NOISE,
+            filter_high_noise=FILTER_HIGH_NOISE,
+            filter_road=FILTER_ROAD,
+            reset_classes=RESET_CLASSES, reclassify_ground=RECLASSIFY_GROUND,
+            return_only_ground=RETURN_ONLY_GROUND,
+            percentile_filter=PERCENTILE_FILTER, percentile_threshold=PERCENTILE_THRESHOLD,
+            group_filter=last,only,
+            reproject=REPROJECT,
+            save_pointcloud=SAVE_POINTCLOUD,
+            pointcloud_file='pointcloud',
+            input_crs = POINTCLOUD_CRS[i],
+            output_crs=OUTPUT_CRS,
+            output_type=OUTPUT_TYPE
+        )
         dem_stage = dsm_functions.create_dem_stage(dem_filename=str(dem_file),
                                         pointcloud_resolution=POINTCLOUD_RESOLUTION,
                                         gridmethod=GRID_METHOD, dimension=DIMENSION)
