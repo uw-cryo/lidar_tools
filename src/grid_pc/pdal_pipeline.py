@@ -1,6 +1,7 @@
 """
 Generate a DSM from input polygon
 """
+import os
 from grid_pc import dsm_functions
 import pdal
 from shapely.geometry import Polygon
@@ -11,8 +12,8 @@ from pathlib import Path
 # NOTE: Hardcoding global settings for now, can expose as script arguments later
 # -------------------------------------------------------
 # Set pointcloud processing parameters
-FILTER_LOW_NOISE = True
-FILTER_HIGH_NOISE = True
+FILTER_LOW_NOISE = False
+FILTER_HIGH_NOISE = False
 FILTER_ROAD = False
 RETURN_ONLY_GROUND = False # Set true for DTM
 RESET_CLASSES = False
@@ -20,9 +21,7 @@ RECLASSIFY_GROUND = False
 PERCENTILE_FILTER = False # Set to True to apply percentile based filtering of Z values
 PERCENTILE_THRESHOLD = 0.95 # Percentile value to filter out noisy Z returns
 
-# "first,only" will return top of canopy, "last,only" will return lowest return
-# set to None to use default values
-GROUP_FILTER="first,only"
+
 
 REPROJECT = False
 SAVE_POINTCLOUD=False
@@ -30,6 +29,7 @@ POINTCLOUD_RESOLUTION = 1
 OUTPUT_TYPE='laz'
 GRID_METHOD='idw'
 DIMENSION='Z' # can be set to options accepted by writers.gdal. Set to 'intensity' to return intensity rasters
+
 # -------------------------------------------------------
 
 
@@ -95,17 +95,87 @@ def create_dsm(extent_geojson: str, # processing_extent.geojson
     print(f"Number of readers: {len(readers)}")
     for i, reader in enumerate(readers):
         print(f"Processing reader #{i}")
-        dem_file = output_path / f'dem_tile_aoi_{str(i).zfill(4)}.tif'
-        pipeline = {'pipeline':[reader]}
+        dsm_file = output_path / f'dsm_tile_aoi_{str(i).zfill(4)}.tif'
+        dtm_file = output_path / f'dtm_tile_aoi_{str(i).zfill(4)}.tif'
+        intensity_file = output_path / f'intensity_tile_aoi_{str(i).zfill(4)}.tif'
+        
+        ## DSM creation block
+        pipeline_dsm = {'pipeline':[reader]}
 
-        pdal_pipeline = dsm_functions.create_pdal_pipeline(
+        pdal_pipeline_dsm = dsm_functions.create_pdal_pipeline(
             filter_low_noise=FILTER_LOW_NOISE,
             filter_high_noise=FILTER_HIGH_NOISE,
             filter_road=FILTER_ROAD,
             reset_classes=RESET_CLASSES, reclassify_ground=RECLASSIFY_GROUND,
             return_only_ground=RETURN_ONLY_GROUND,
             percentile_filter=PERCENTILE_FILTER, percentile_threshold=PERCENTILE_THRESHOLD,
-            group_filter=GROUP_FILTER,
+            group_filter="first,only",
+            reproject=REPROJECT,
+            save_pointcloud=SAVE_POINTCLOUD,
+            pointcloud_file='pointcloud',
+            input_crs = POINTCLOUD_CRS[i],
+            output_crs=OUTPUT_CRS,
+            output_type=OUTPUT_TYPE
+        )
+        dsm_stage = dsm_functions.create_dem_stage(dem_filename=str(dsm_file),
+                                        pointcloud_resolution=POINTCLOUD_RESOLUTION,
+                                        gridmethod=GRID_METHOD, dimension='Z')
+        pipeline_dsm['pipeline'] += pdal_pipeline_dsm
+        pipeline_dsm['pipeline'] += dsm_stage
+
+        # Save a copy of each pipeline
+        dsm_pipeline_config_fn = os.path.join(output_path,f"pipeline_dsm_{str(i).zfill(4)}.json")
+        with open(dsm_pipeline_config_fn, 'w') as f:
+            f.write(json.dumps(pipeline_dsm))
+        pipeline_dsm = pdal.Pipeline(json.dumps(pipeline_dsm))
+        pipeline_dsm.execute()
+
+
+        ## DTM creation block
+        pipeline_dtm = {'pipeline':[reader]}
+        pdal_pipeline_dtm = dsm_functions.create_pdal_pipeline(
+            filter_low_noise=FILTER_LOW_NOISE,
+            filter_high_noise=FILTER_HIGH_NOISE,
+            filter_road=FILTER_ROAD,
+            reset_classes=RESET_CLASSES, reclassify_ground=RECLASSIFY_GROUND,
+            return_only_ground=True,
+            percentile_filter=PERCENTILE_FILTER, percentile_threshold=PERCENTILE_THRESHOLD,
+            group_filter=None,
+            reproject=REPROJECT,
+            save_pointcloud=SAVE_POINTCLOUD,
+            pointcloud_file='pointcloud',
+            input_crs = POINTCLOUD_CRS[i],
+            output_crs=OUTPUT_CRS,
+            output_type=OUTPUT_TYPE
+        )
+        
+        dtm_stage = dsm_functions.create_dem_stage(dem_filename=str(dtm_file),
+                                        pointcloud_resolution=POINTCLOUD_RESOLUTION,
+                                        gridmethod=GRID_METHOD, dimension='Z')
+        # this is only required for the DTM
+        dtm_stage[0]['window_size'] = 4
+        
+        pipeline_dtm['pipeline'] += pdal_pipeline_dtm
+        pipeline_dtm['pipeline'] += dtm_stage
+
+        # Save a copy of each pipeline
+        dtm_pipeline_config_fn = os.path.join(output_path,f"pipeline_dtm_{str(i).zfill(4)}.json")
+        with open(dtm_pipeline_config_fn, 'w') as f:
+            f.write(json.dumps(pipeline_dtm))
+        pipeline_dtm = pdal.Pipeline(json.dumps(pipeline_dtm))
+        pipeline_dtm.execute()
+
+
+        ## Intensity pipeline
+        pipeline_intensity = {'pipeline':[reader]}
+        pdal_pipeline_surface_intensity = dsm_functions.create_pdal_pipeline(
+            filter_low_noise=FILTER_LOW_NOISE,
+            filter_high_noise=FILTER_HIGH_NOISE,
+            filter_road=FILTER_ROAD,
+            reset_classes=RESET_CLASSES, reclassify_ground=RECLASSIFY_GROUND,
+            return_only_ground=False,
+            percentile_filter=PERCENTILE_FILTER, percentile_threshold=PERCENTILE_THRESHOLD,
+            group_filter="first,only",
             reproject=REPROJECT,
             save_pointcloud=SAVE_POINTCLOUD,
             pointcloud_file='pointcloud',
@@ -114,20 +184,19 @@ def create_dsm(extent_geojson: str, # processing_extent.geojson
             output_type=OUTPUT_TYPE
         )
 
-        dem_stage = dsm_functions.create_dem_stage(dem_filename=str(dem_file),
+        intensity_stage = dsm_functions.create_dem_stage(dem_filename=str(intensity_file),
                                         pointcloud_resolution=POINTCLOUD_RESOLUTION,
-                                        gridmethod=GRID_METHOD, dimension=DIMENSION)
+                                        gridmethod=GRID_METHOD, dimension='Intensity')
 
-        # apply interpolation to fill gaps when generating DSM/DTM
-        dem_stage[0]['window_size'] = 4
 
-        pipeline['pipeline'] += pdal_pipeline
-        pipeline['pipeline'] += dem_stage
+        
+        pipeline_intensity['pipeline'] += pdal_pipeline_surface_intensity
+        pipeline_intensity['pipeline'] += intensity_stage
 
+        
         # Save a copy of each pipeline
-        with open(f'/tmp/dem/pipeline_{str(i).zfill(4)}.json', 'w') as f:
-            f.write(json.dumps(pipeline))
-
-        # Skip execution for testing
-        pipeline = pdal.Pipeline(json.dumps(pipeline))
-        pipeline.execute()
+        intensity_pipeline_config_fn = os.path.join(output_path,f"pipeline_intensity_{str(i).zfill(4)}.json")
+        with open(intensity_pipeline_config_fn, 'w') as f:
+            f.write(json.dumps(pipeline_intensity))
+        pipeline_intensity = pdal.Pipeline(json.dumps(pipeline_intensity))
+        pipeline_intensity.execute()

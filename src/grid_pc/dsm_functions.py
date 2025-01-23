@@ -69,10 +69,10 @@ def return_readers(input_aoi,
     return readers, pointcloud_input_crs
 
 
-def create_pdal_pipeline(filter_low_noise=True, filter_high_noise=True,
-                         filter_road=True, reset_classes=False, reclassify_ground=False,
-                         return_only_ground=False, percentile_filter=True, percentile_threshold=0.95,
-                         group_filter=None, reproject=True, save_pointcloud=False,
+def create_pdal_pipeline(filter_low_noise=False, filter_high_noise=False,
+                         filter_road=False, reset_classes=False, reclassify_ground=False,
+                         return_only_ground=False, percentile_filter=False, percentile_threshold=0.95,
+                         group_filter="first,only", reproject=True, save_pointcloud=False,
                          pointcloud_file = 'pointcloud', input_crs=None,
                          output_crs=None, output_type='laz'):
 
@@ -192,13 +192,7 @@ def create_dem_stage(dem_filename='dem_output.tif', pointcloud_resolution=1.,
             "gdalopts":"COMPRESS=LZW,TILED=YES,blockxsize=256,blockysize=256,COPY_SRC_OVERVIEWS=YES"
     }
 
-    if dimension == 'Z':
-        dem_stage.update({
-            'dimension': 'Z',
-            'where': 'Z>0'
-        })
-    else:
-        dem_stage.update({
+    dem_stage.update({
             'dimension':dimension
         })
 
