@@ -195,15 +195,6 @@ def create_dem_stage(dem_filename='dem_output.tif', pointcloud_resolution=1.,
     dem_stage.update({
             'dimension':dimension
         })
-    #if dimension == 'Z':
-     #   dem_stage.update({
-      #      'dimension': 'Z',
-       #     'where': 'Z>0'
-       # })
-    #else:
-     #   dem_stage.update({
-      #      'dimension':dimension
-      #  })
 
     return [dem_stage]
 
