@@ -168,7 +168,7 @@ def create_dsm(extent_geojson: str, # processing_extent.geojson
 
         ## Intensity pipeline
         pipeline_intensity = {'pipeline':[reader]}
-        pdal_pipeline_surface_intesity = dsm_functions.create_pdal_pipeline(
+        pdal_pipeline_surface_intensity = dsm_functions.create_pdal_pipeline(
             filter_low_noise=FILTER_LOW_NOISE,
             filter_high_noise=FILTER_HIGH_NOISE,
             filter_road=FILTER_ROAD,
