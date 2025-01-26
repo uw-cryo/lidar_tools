@@ -1,3 +1,3 @@
 if __name__ == "__main__":
-    from grid_pc.cli import app
+    from lidar_tools.cli import app
     app()
