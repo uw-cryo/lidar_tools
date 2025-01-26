@@ -1,5 +1,5 @@
 [project]
-name = "grid_pc"
+name = "lidar_tools"
 version="0.1.0"
 authors = [
   { name = "Scott Henderson", email = "scottyh@uw.edu" },
@@ -41,7 +41,7 @@ dev = [
 ]
 
 [project.scripts]
-pdal_pipeline = "grid_pc.cli:app"
+pdal_pipeline = "lidar_tools.cli:app"
 
 [tool.pixi.project]
 channels = ["conda-forge"]
@@ -62,11 +62,11 @@ typer = "*"
 requests = "*"
 
 [tool.pixi.pypi-dependencies]
-grid_pc = { path = ".", editable = false }
+lidar_tools = { path = ".", editable = false }
 
 [tool.pixi.feature.dev.dependencies]
 gdal = ">=3.10.1,<4"
 pytest = "*"
 
 [tool.pixi.feature.dev.pypi-dependencies]
-grid_pc = { path = ".", editable = true }
+lidar_tools = { path = ".", editable = true }
