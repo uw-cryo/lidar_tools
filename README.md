@@ -1,9 +1,9 @@
-# lidar-tools
+# lidar_tools
 
 [![Actions Status][actions-badge]][actions-link]
 
-[actions-badge]:            https://github.com/uw-cryo/lidar-tools/workflows/Tests/badge.svg
-[actions-link]:             https://github.com/uw-cryo/lidar-tools/actions
+[actions-badge]:            https://github.com/uw-cryo/lidar_tools/workflows/Tests/badge.svg
+[actions-link]:             https://github.com/uw-cryo/lidar_tools/actions
 
 Tools to process airborne and satellite LiDAR point clouds
 
@@ -14,8 +14,8 @@ Tools to process airborne and satellite LiDAR point clouds
 We recommend using [pixi](https://pixi.sh/latest/) to install a locked software environment for executing code in this repository. Once installed, you can run scripts from a terminal:
 
 ```bash
-git clone https://github.com/uw-cryo/grid_pc.git
-cd grid_pc
+git clone https://github.com/uw-cryo/lidar_tools.git
+cd lidar_tools
 pixi shell
 pdal_pipeline notebooks/processing_extent.geojson notebooks/SRS_CRS.wkt notebooks/UTM_13N_WGS84_G2139_3D.wkt /tmp/dem
 ```
@@ -40,5 +40,5 @@ pixi add stereo-pipeline
 If you already have an environment you can install just the code in this library with pip:
 
 ```
-pip install git+https://github.com/uw-cryo/grid_pc.git@main --no-deps
+pip install git+https://github.com/uw-cryo/lidar_tools.git@main --no-deps
 ```
