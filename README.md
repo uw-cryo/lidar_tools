@@ -1,13 +1,13 @@
-# grid_pc
+# lidar-tools
 
 [![Actions Status][actions-badge]][actions-link]
 
-[actions-badge]:            https://github.com/uw-cryo/grid_pc/workflows/Tests/badge.svg
-[actions-link]:             https://github.com/uw-cryo/grid_pc/actions
+[actions-badge]:            https://github.com/uw-cryo/lidar-tools/workflows/Tests/badge.svg
+[actions-link]:             https://github.com/uw-cryo/lidar-tools/actions
 
-Tools to generate gridded products from LiDAR (airborne and satellite) point clouds
+Tools to process airborne and satellite LiDAR point clouds
 
-**Warning!** This package brand new, so don't expect it to work yet!
+**Warning!** This package is under active development!
 
 ## Quickstart
 
