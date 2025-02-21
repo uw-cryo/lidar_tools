@@ -2,7 +2,7 @@
 Generate a DSM from input polygon
 """
 import os
-from grid_pc import dsm_functions
+from lidar_tools import dsm_functions
 import pdal
 from shapely.geometry import Polygon
 import geopandas as gpd
@@ -34,11 +34,11 @@ DIMENSION='Z' # can be set to options accepted by writers.gdal. Set to 'intensit
 
 
 def create_dsm(extent_geojson: str, # processing_extent.geojson
-               source_wkt: str | None, # SRS_CRS.wkt
                target_wkt: str, # UTM_13N_WGS84_G2139_3D.wkt
                output_prefix: str, # CO_ALS_proc/CO_3DEP_ALS
-               mosaic: bool | True,
-               cleanup: bool | True) -> None:
+               source_wkt: str =  None, # SRS_CRS.wkt
+               mosaic: bool = True,
+               cleanup: bool = True) -> None:
     """
     Create a Digital Surface Model (DSM) from a given extent and point cloud data.
     This function divides a region of interest into tiles and generates a DSM geotiff from EPT point clouds for each tile using PDAL
@@ -91,7 +91,7 @@ def create_dsm(extent_geojson: str, # processing_extent.geojson
             src_wkt = f.read()
         POINTCLOUD_CRS = [src_wkt for _ in range(len(readers))]
 
-    output_path = os.dirname(output_prefix)
+    output_path = os.path.dirname(output_prefix)
     prefix = os.path.basename(output_prefix)
     output_path = Path(output_path)
     output_path.mkdir(exist_ok=True)
