@@ -42,7 +42,7 @@ def return_readers(input_aoi,
             print(aoi.bounds, src_bounds_transformed_3857)
             if buffer_value:
                 aoi_3857 = aoi_3857.buffer(buffer_value)
-                print(f"The tile polygon is buffered by {buffer_value:.2f} m")
+                print(f"The tile polygon will be buffered by {buffer_value:.2f} m")
 
 
             gdf = gpd.read_file('https://raw.githubusercontent.com/hobuinc/usgs-lidar/master/boundaries/resources.geojson').set_crs(4326)
