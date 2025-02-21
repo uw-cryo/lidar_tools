@@ -7,7 +7,6 @@ from shapely.geometry import Polygon
 import geopandas as gpd
 import requests
 import subprocess
-import ast
 from shutil import which
 
 def return_readers(input_aoi,
@@ -230,7 +229,7 @@ def dem_mosaic(img_list,outfn,tr=None,tsrs=None,stats=None,tile_size=None,extent
   
     if stats:
         dem_mosaic_opt.extend(['--{}'.format(stats)])
-    if (tr is not None) & (ast.literal_eval(tr) is not None):
+    if tr:
         dem_mosaic_opt.extend(['--tr', str(tr)])
     if tsrs:
         dem_mosaic_opt.extend(['--t_srs', tsrs])
