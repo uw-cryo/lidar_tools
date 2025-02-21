@@ -83,7 +83,7 @@ def create_dsm(extent_geojson: str, # processing_extent.geojson
     # Specfying a buffer_value > 0 will generate overlapping DEM tiles, resulting in a seamless
     # final mosaicked DEM
     readers, POINTCLOUD_CRS = dsm_functions.return_readers(input_aoi, input_crs,
-    pointcloud_resolution = 1, n_rows=5, n_cols=5, buffer_value=0)
+    pointcloud_resolution = 1, n_rows=5, n_cols=5, buffer_value=5)
 
     # NOTE: if source_wkt is passed, override POINTCLOUD_CRSs
     if source_wkt:

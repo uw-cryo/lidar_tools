@@ -14,11 +14,12 @@ def return_readers(input_aoi,
                    pointcloud_resolution = 1,
                    n_rows = 5,
                    n_cols=5,
-                   buffer_value=0):
+                   buffer_value=5):
     """
     This method takes a raster file and finds overlapping 3DEP data. It then returns a series of readers
     corresponding to non overlapping areas that can be used as part of further PDAL processing pipelines
     The method also returns the CRS specified i
+    The default buffer value is 5, and in units of m
     """
     xmin, ymin, xmax, ymax = input_aoi.bounds
     x_step = (xmax - xmin) / n_cols
