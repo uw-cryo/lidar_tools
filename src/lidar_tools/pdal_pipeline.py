@@ -213,13 +213,13 @@ def create_dsm(extent_geojson: str, # processing_extent.geojson
 
     if mosaic:
         print("*** Now creating raster composites ***")
-        dsm_mos_fn = f"{out_prefix}-DSM_mos.tif"
+        dsm_mos_fn = f"{output_prefix}-DSM_mos.tif"
         print(f"Creating DSM mosaic at {dsm_mos_fn}")
         _ = dsm_functions.dem_mosaic(dsm_fn_list,dsm_mos_fn)
-        dtm_mos_fn = f"{out_prefix}-DTM_mos.tif"
+        dtm_mos_fn = f"{output_prefix}-DTM_mos.tif"
         print(f"Creating DTM mosaic at {dtm_mos_fn}")
         _ = dsm_functions.dem_mosaic(dtm_fn_list,dtm_mos_fn)
-        intensity_mos_fn = f"{out_prefix}-Intensity_mos.tif"
+        intensity_mos_fn = f"{output_prefix}-intensity_mos.tif"
         print(f"Creating intensity raster mosaic at {intensity_mos_fn}")
         _ = dsm_functions.dem_mosaic(intensity_fn_list,intensity_mos_fn)
         if cleanup:
