@@ -102,9 +102,9 @@ def create_dsm(extent_geojson: str, # processing_extent.geojson
     intensity_fn_list = []
     for i, reader in enumerate(readers):
         print(f"Processing reader #{i}")
-        dsm_file = output_path / f'{prefix}_dsm_tile_aoi_{str(i).zfill(4)}.tif'
-        dtm_file = output_path / f'{prefix}_dtm_tile_aoi_{str(i).zfill(4)}.tif'
-        intensity_file = output_path / f'{prefix}_intensity_tile_aoi_{str(i).zfill(4)}.tif'
+        dsm_file = f'{output_path}/{prefix}_dsm_tile_aoi_{str(i).zfill(4)}.tif'
+        dtm_file = f'{output_path}/{prefix}_dtm_tile_aoi_{str(i).zfill(4)}.tif'
+        intensity_file = f'{output_path}/{prefix}_intensity_tile_aoi_{str(i).zfill(4)}.tif'
         dsm_fn_list.append(dsm_file.as_posix())
         dtm_fn_list.append(dtm_file.as_posix())
         intensity_fn_list.append(intensity_file.as_posix())
