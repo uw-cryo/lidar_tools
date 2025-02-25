@@ -2,12 +2,12 @@
 A CLI following https://packaging.python.org/en/latest/guides/creating-command-line-tools/
 """
 
-import typer
+import cyclopts
 
 from .pdal_pipeline import create_dsm
 
 
-app = typer.Typer()
+app = cyclopts.App()
 app.command()(create_dsm)
 
 

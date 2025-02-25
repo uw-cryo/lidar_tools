@@ -10,7 +10,7 @@ authors = [
 description = "Centralized airborne lidar processing workflows to generate standard products"
 readme = "README.md"
 license.file = "LICENSE"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 classifiers = [
   "Intended Audience :: Science/Research",
   "License :: OSI Approved :: MIT License",
@@ -23,10 +23,10 @@ classifiers = [
 dependencies = [
   #Not recommended, install via conda-forge instead
   #"PDAL>=3.4.5,<4",
+  "cyclopts>=3.9.0,<4",
   "rasterio>=1.4.3,<2",
   "scipy>=1.15.1,<2",
   "geopandas>=1.0.1,<2",
-  "typer>=0.15.1,<0.16",
   "requests>=2.32.3,<3"
 ]
 
@@ -52,14 +52,16 @@ dev = { features = ["dev"], solve-group = "default" }
 
 [tool.pixi.feature.dev.tasks]
 test = "pytest"
+# pdal_pipeline create-dsm --extent-geojson notebooks/CO_LiDAR_test_area_final.geojson --source-wkt notebooks/SRS_CRS.wkt --target-wkt notebooks/UTM_13N_WGS84_G2139_3D.wkt --output-prefix /tmp/dem
+test-create-dsm = "pdal_pipeline create-dsm --source-wkt notebooks/SRS_CRS.wkt notebooks/CO_LiDAR_test_area_final.geojson notebooks/UTM_13N_WGS84_G2139_3D.wkt /tmp/dem"
 
 [tool.pixi.dependencies]
-rasterio = "*"
-python-pdal = ">=3.4.5,<4"
-scipy = "*"
+cyclopts = "*"
 geopandas = "*"
-typer = "*"
+python-pdal = ">=3.4.5,<4"
+rasterio = "*"
 requests = "*"
+scipy = "*"
 
 [tool.pixi.pypi-dependencies]
 lidar_tools = { path = ".", editable = false }
