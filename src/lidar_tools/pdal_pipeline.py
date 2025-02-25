@@ -1,7 +1,6 @@
 """
 Generate a DSM from input polygon
 """
-import os
 from lidar_tools import dsm_functions
 import pdal
 from shapely.geometry import Polygon
@@ -21,22 +20,19 @@ RECLASSIFY_GROUND = False
 PERCENTILE_FILTER = False # Set to True to apply percentile based filtering of Z values
 PERCENTILE_THRESHOLD = 0.95 # Percentile value to filter out noisy Z returns
 
-
-
 REPROJECT = False
 SAVE_POINTCLOUD=False
 POINTCLOUD_RESOLUTION = 1
 OUTPUT_TYPE='laz'
 GRID_METHOD='idw'
 DIMENSION='Z' # can be set to options accepted by writers.gdal. Set to 'intensity' to return intensity rasters
-
 # -------------------------------------------------------
 
 
-def create_dsm(extent_geojson: str, # processing_extent.geojson
-               target_wkt: str, # UTM_13N_WGS84_G2139_3D.wkt
-               output_prefix: str, # CO_ALS_proc/CO_3DEP_ALS
-               source_wkt: str =  None, # SRS_CRS.wkt
+def create_dsm(extent_geojson: str,
+               target_wkt: str,
+               output_prefix: str,
+               source_wkt: str =  None,
                mosaic: bool = True,
                cleanup: bool = True) -> None:
     """
@@ -91,8 +87,8 @@ def create_dsm(extent_geojson: str, # processing_extent.geojson
             src_wkt = f.read()
         POINTCLOUD_CRS = [src_wkt for _ in range(len(readers))]
 
-    output_path = os.path.dirname(output_prefix)
-    prefix = os.path.basename(output_prefix)
+    output_path = Path(output_prefix).parent
+    prefix = Path(output_prefix).name
     output_path = Path(output_path)
     output_path.mkdir(exist_ok=True)
 
@@ -102,13 +98,13 @@ def create_dsm(extent_geojson: str, # processing_extent.geojson
     intensity_fn_list = []
     for i, reader in enumerate(readers):
         print(f"Processing reader #{i}")
-        dsm_file = f'{output_path}/{prefix}_dsm_tile_aoi_{str(i).zfill(4)}.tif'
-        dtm_file = f'{output_path}/{prefix}_dtm_tile_aoi_{str(i).zfill(4)}.tif'
-        intensity_file = f'{output_path}/{prefix}_intensity_tile_aoi_{str(i).zfill(4)}.tif'
+        dsm_file = output_path / f'{prefix}_dsm_tile_aoi_{str(i).zfill(4)}.tif'
+        dtm_file = output_path / f'{prefix}_dtm_tile_aoi_{str(i).zfill(4)}.tif'
+        intensity_file = output_path / f'{prefix}_intensity_tile_aoi_{str(i).zfill(4)}.tif'
         dsm_fn_list.append(dsm_file.as_posix())
         dtm_fn_list.append(dtm_file.as_posix())
         intensity_fn_list.append(intensity_file.as_posix())
-        
+
         ## DSM creation block
         pipeline_dsm = {'pipeline':[reader]}
 
@@ -132,9 +128,9 @@ def create_dsm(extent_geojson: str, # processing_extent.geojson
                                         gridmethod=GRID_METHOD, dimension='Z')
         pipeline_dsm['pipeline'] += pdal_pipeline_dsm
         pipeline_dsm['pipeline'] += dsm_stage
-        
+
         # Save a copy of each pipeline
-        dsm_pipeline_config_fn = os.path.join(output_path,f"pipeline_dsm_{str(i).zfill(4)}.json")
+        dsm_pipeline_config_fn = output_path / f"pipeline_dsm_{str(i).zfill(4)}.json"
         with open(dsm_pipeline_config_fn, 'w') as f:
             f.write(json.dumps(pipeline_dsm))
         pipeline_dsm = pdal.Pipeline(json.dumps(pipeline_dsm))
@@ -158,18 +154,18 @@ def create_dsm(extent_geojson: str, # processing_extent.geojson
             output_crs=OUTPUT_CRS,
             output_type=OUTPUT_TYPE
         )
-        
+
         dtm_stage = dsm_functions.create_dem_stage(dem_filename=str(dtm_file),
                                         pointcloud_resolution=POINTCLOUD_RESOLUTION,
                                         gridmethod=GRID_METHOD, dimension='Z')
         # this is only required for the DTM
         dtm_stage[0]['window_size'] = 4
-        
+
         pipeline_dtm['pipeline'] += pdal_pipeline_dtm
         pipeline_dtm['pipeline'] += dtm_stage
 
         # Save a copy of each pipeline
-        dtm_pipeline_config_fn = os.path.join(output_path,f"pipeline_dtm_{str(i).zfill(4)}.json")
+        dtm_pipeline_config_fn = output_path / f"pipeline_dtm_{str(i).zfill(4)}.json"
         with open(dtm_pipeline_config_fn, 'w') as f:
             f.write(json.dumps(pipeline_dtm))
         pipeline_dtm = pdal.Pipeline(json.dumps(pipeline_dtm))
@@ -199,13 +195,13 @@ def create_dsm(extent_geojson: str, # processing_extent.geojson
                                         gridmethod=GRID_METHOD, dimension='Intensity')
 
 
-        
+
         pipeline_intensity['pipeline'] += pdal_pipeline_surface_intensity
         pipeline_intensity['pipeline'] += intensity_stage
 
-        
+
         # Save a copy of each pipeline
-        intensity_pipeline_config_fn = os.path.join(output_path,f"pipeline_intensity_{str(i).zfill(4)}.json")
+        intensity_pipeline_config_fn = output_path / f"pipeline_intensity_{str(i).zfill(4)}.json"
         with open(intensity_pipeline_config_fn, 'w') as f:
             f.write(json.dumps(pipeline_intensity))
         pipeline_intensity = pdal.Pipeline(json.dumps(pipeline_intensity))
@@ -225,7 +221,7 @@ def create_dsm(extent_geojson: str, # processing_extent.geojson
         if cleanup:
             print("User selected to remove intermediate tile outputs")
             for fn in dsm_fn_list + dtm_fn_list + intensity_fn_list:
-                os.remove(fn)
-        
-                
+                Path(fn).unlink()
+
+
 

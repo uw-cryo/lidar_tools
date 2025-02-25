@@ -9,17 +9,38 @@ import requests
 import subprocess
 from shutil import which
 
+
 def return_readers(input_aoi,
                    src_crs,
-                   pointcloud_resolution = 1,
+                   pointcloud_resolution=1,
                    n_rows = 5,
                    n_cols=5,
                    buffer_value=5):
     """
-    This method takes a raster file and finds overlapping 3DEP data. It then returns a series of readers
-    corresponding to non overlapping areas that can be used as part of further PDAL processing pipelines
-    The method also returns the CRS specified i
-    The default buffer value is 5, and in units of m
+    This method takes an input aoi and finds overlapping 3DEP EPT data from https://s3-us-west-2.amazonaws.com/usgs-lidar-public/{usgs_dataset_name}/ept.json
+    It then returns a series of readers corresponding to non-overlapping areas for PDAL processing pipelines
+
+    Parameters
+    ----------
+    input_aoi : shapely.geometry.Polygon
+        The area of interest as a polygon.
+    src_crs : pyproj.CRS
+        The coordinate reference system of the input AOI.
+    pointcloud_resolution : int, optional
+        The resolution of the point cloud data, by default 1.
+    n_rows : int, optional
+        The number of rows to divide the AOI into, by default 5.
+    n_cols : int, optional
+        The number of columns to divide the AOI into, by default 5.
+    buffer_value : int, optional
+        The buffer value in meters to apply to each tile, by default 5.
+
+    Returns
+    -------
+    list of dict
+        A list of PDAL readers for each non-overlapping area.
+    list of pyproj.CRS
+        A list of coordinate reference systems from EPT metadata.
     """
     xmin, ymin, xmax, ymax = input_aoi.bounds
     x_step = (xmax - xmin) / n_cols
@@ -184,7 +205,6 @@ def create_pdal_pipeline(filter_low_noise=False, filter_high_noise=False,
     return pipeline
 
 
-
 def create_dem_stage(dem_filename='dem_output.tif', pointcloud_resolution=1.,
                         gridmethod='idw', dimension='Z'):
     dem_stage = {
@@ -202,6 +222,7 @@ def create_dem_stage(dem_filename='dem_output.tif', pointcloud_resolution=1.,
         })
 
     return [dem_stage]
+
 
 def dem_mosaic(img_list,outfn,tr=None,tsrs=None,stats=None,tile_size=None,extent=None):
     """
@@ -229,7 +250,7 @@ def dem_mosaic(img_list,outfn,tr=None,tsrs=None,stats=None,tile_size=None,extent
     """
 
     dem_mosaic_opt = []
-  
+
     if stats:
         dem_mosaic_opt.extend(['--{}'.format(stats)])
     if tr:
@@ -281,9 +302,9 @@ def run_cmd(bin, args, **kw):
     out: str
         log (stdout) as str if the command executed, error message if the command failed
     """
-    
+
     #from dshean/vmap.py
-    
+
     binpath = which(bin)
     #if binpath is None:
         #msg = ("Unable to find executable %s\n"
@@ -292,7 +313,7 @@ def run_cmd(bin, args, **kw):
         #sys.exit(msg)
     #binpath = os.path.join('/opt/StereoPipeline/bin/',bin)
     call = [binpath,]
-    if args is not None: 
+    if args is not None:
         call.extend(args)
     #print(call)
     try:
@@ -302,6 +323,6 @@ def run_cmd(bin, args, **kw):
     return out
 
 
-    
-    
+
+
 
