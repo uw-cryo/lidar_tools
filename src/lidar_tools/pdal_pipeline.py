@@ -102,7 +102,6 @@ def create_dsm(extent_geojson: str,
         dtm_file = output_path / f'{prefix}_dtm_tile_aoi_{str(i).zfill(4)}.tif'
         intensity_file = output_path / f'{prefix}_intensity_tile_aoi_{str(i).zfill(4)}.tif'
         dsm_fn_list.append(dsm_file.as_posix())
-        dtm_fn_list.append(dtm_file.as_posix())
         intensity_fn_list.append(intensity_file.as_posix())
 
         ## DSM creation block
@@ -168,9 +167,14 @@ def create_dsm(extent_geojson: str,
         dtm_pipeline_config_fn = output_path / f"pipeline_dtm_{str(i).zfill(4)}.json"
         with open(dtm_pipeline_config_fn, 'w') as f:
             f.write(json.dumps(pipeline_dtm))
+        
         pipeline_dtm = pdal.Pipeline(json.dumps(pipeline_dtm))
-        pipeline_dtm.execute()
-
+        try:
+            pipeline_dtm.execute()
+            dtm_fn_list.append(dtm_file.as_posix())
+        except RuntimeError as e:
+            print(f"A RuntimeError occured for dtm tile {i}: {e}")
+            pass
 
         ## Intensity pipeline
         pipeline_intensity = {'pipeline':[reader]}
@@ -221,7 +225,10 @@ def create_dsm(extent_geojson: str,
         if cleanup:
             print("User selected to remove intermediate tile outputs")
             for fn in dsm_fn_list + dtm_fn_list + intensity_fn_list:
-                Path(fn).unlink()
-
+                try:
+                    Path(fn).unlink()
+                except FileNotFoundError as e:
+                    print(f"Error {e} encountered for file {fn}")
+                    pass
 
 
