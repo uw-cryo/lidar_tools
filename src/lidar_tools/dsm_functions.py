@@ -1,6 +1,8 @@
 """
 Generate DSMs from 3DEP EPT data
 """
+import os
+import numpy as np
 from rasterio.warp import transform_bounds
 from pyproj import CRS
 from shapely.geometry import Polygon
@@ -8,6 +10,12 @@ import geopandas as gpd
 import requests
 import subprocess
 from shutil import which
+import rasterio
+import shapely
+import rioxarray
+import easysnowdata
+
+from osgeo import gdal, gdalconst
 
 
 def return_readers(input_aoi,
@@ -321,6 +329,78 @@ def run_cmd(bin, args, **kw):
     except:
         out = "the command {} failed to run, see corresponding asp log".format(call)
     return out
+
+def fetch_worldcover(raster_fn,match_grid_da=None):
+    with rasterio.open(raster_fn) as dataset:
+        bounds = dataset.bounds
+        bounds = rasterio.warp.transform_bounds(dataset.crs, 'EPSG:4326', *bounds)
+        bbox_gdf = gpd.GeoDataFrame(geometry=[shapely.box(*bounds)],crs='EPSG:4326',index=[0])
+    
+    da_wc = easysnowdata.remote_sensing.get_esa_worldcover(bbox_gdf,mask_nodata=True)
+    print(da_wc)
+    print(match_grid_da)
+    if match_grid_da is not None:
+        da_wc = da_wc.rio.reproject_match(match_grid_da,resampling=rasterio.enums.Resampling.nearest)
+    return da_wc
+
+
+def common_mask(da_list,apply=False):
+    """
+    From a list of xarray dataarray objects sharing the same projection/extent/res, compute common mask where all input datasets have non-nan pixels
+    """
+    # load nan layers as numpy array
+    nan_arrays = np.array([np.isnan(da.values) for da in da_list])
+    common_mask = 1 - np.any(nan_arrays,axis=0)
+    
+    if apply:
+        common_mask_da_list = [da.where(common_mask,np.nan) for da in da_list]
+        return common_mask_da_list
+    else:
+        return common_mask
+
+def fetch_cop30(raster_fn,match_grid_da=None):
+    with rasterio.open(raster_fn) as dataset:
+        bounds = dataset.bounds
+        bounds = rasterio.warp.transform_bounds(dataset.crs, 'EPSG:4326', *bounds)
+        bbox_gdf = gpd.GeoDataFrame(geometry=[shapely.box(*bounds)],crs='EPSG:4326',index=[0])
+    cop_da = easysnowdata.topography.get_copernicus_dem(bbox_gdf,
+                                                        resolution=30)
+    if match_grid_da is not None:
+        cop_da = cop_da.rio.reproject_match(match_grid_da,resampling=rasterio.enums.Resampling.cubic)
+    return cop_da
+
+
+def confirm_3dep_vertical(raster_fn,bare_diff_tolerance=3):
+    lidar_da = rioxarray.open_rasterio(raster_fn,masked=True).squeeze()
+    worldcover_da = fetch_worldcover(raster_fn,lidar_da)
+    cop30_da = fetch_cop30(raster_fn,lidar_da)
+    lidar_da_masked,worldcover_da_masked,cop30_da_masked = common_mask([lidar_da,worldcover_da,cop30_da],apply=True)
+    dem_diff = lidar_da_masked - cop30_da_masked
+    ## Mask out bare and sparse vegetation class
+    bare_sparse_mask = worldcover_da_masked == 60
+    dem_diff_bare = dem_diff.where(bare_sparse_mask,np.nan)
+    median_diff = np.nanmedian(dem_diff_bare.values)
+    print(f"Observed difference between COP30 EGM2008 and 3DEP LiDAR DSM over bareground and sparse vegetation surfaces is {median_diff:.2f} m")
+    if np.abs(median_diff) <= bare_diff_tolerance:
+        #this means that both COP30 and 3DEP LiDAR DSM are with respect to geoid
+        print("Looks like the 3DEP height estimates are with respect to geiod, will apply vertical datum shift to return heights with respect to ellipsoid")
+        out = True
+    else:
+        #this means that 3DEP LiDAR DSM is with respect to ellipsoid
+        print("Looks like the 3DEP height estimates are already with respect to ellipsoid, geoid to ellipsoid transformation will not be attempted")
+        out = False
+    return out
+
+def gdal_warp(src_fn, dst_fn, src_srs, dst_srs, res=1,resampling_alogrithm='cubic'):
+    tolerance = 0
+    resampling_mapping = {"nearest":  gdalconst.GRA_NearestNeighbour, "bilinear": gdalconst.GRA_Bilinear,
+                  "cubic": gdalconst.GRA_Cubic, "cubic_spline": gdalconst.GRA_CubicSpline}
+    resampling_alg = resampling_mapping[resampling_alogrithm]
+    ds = gdal.Warp(dst_fn, src_fn,
+                   resampleAlg=resampling_alg,
+                   srcSRS=src_srs, xRes=res, yRes=res,
+                   dstSRS=dst_srs, errorThreshold=tolerance)
+    ds = None
 
 
 
