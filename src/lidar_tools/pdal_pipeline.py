@@ -101,8 +101,6 @@ def create_dsm(extent_geojson: str,
         dsm_file = output_path / f'{prefix}_dsm_tile_aoi_{str(i).zfill(4)}.tif'
         dtm_file = output_path / f'{prefix}_dtm_tile_aoi_{str(i).zfill(4)}.tif'
         intensity_file = output_path / f'{prefix}_intensity_tile_aoi_{str(i).zfill(4)}.tif'
-        dsm_fn_list.append(dsm_file.as_posix())
-        intensity_fn_list.append(intensity_file.as_posix())
 
         ## DSM creation block
         pipeline_dsm = {'pipeline':[reader]}
@@ -133,7 +131,12 @@ def create_dsm(extent_geojson: str,
         with open(dsm_pipeline_config_fn, 'w') as f:
             f.write(json.dumps(pipeline_dsm))
         pipeline_dsm = pdal.Pipeline(json.dumps(pipeline_dsm))
-        pipeline_dsm.execute()
+        try:
+            pipeline_dsm.execute()
+            dsm_fn_list.append(dsm_file.as_posix())
+        except RuntimeError as e:
+            print(f"A RuntimeError occured for dsm tile {i}: {e}")
+            pass
 
 
         ## DTM creation block
@@ -209,7 +212,13 @@ def create_dsm(extent_geojson: str,
         with open(intensity_pipeline_config_fn, 'w') as f:
             f.write(json.dumps(pipeline_intensity))
         pipeline_intensity = pdal.Pipeline(json.dumps(pipeline_intensity))
-        pipeline_intensity.execute()
+        try:
+            pipeline_intensity.execute()
+            intensity_fn_list.append(intensity_file.as_posix())
+        except RuntimeError as e:
+            print(f"A RuntimeError occured for dsm tile {i}: {e}")
+            pass
+        
 
     if mosaic:
         print("*** Now creating raster composites ***")
