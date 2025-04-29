@@ -174,7 +174,7 @@ def create_dsm(extent_geojson: str,
         
         pipeline_dtm = pdal.Pipeline(json.dumps(pipeline_dtm))
         try:
-            #pipeline_dtm.execute()
+            pipeline_dtm.execute()
             dtm_fn_list.append(dtm_file.as_posix())
         except RuntimeError as e:
             print(f"A RuntimeError occured for dtm tile {i}: {e}")
@@ -219,13 +219,13 @@ def create_dsm(extent_geojson: str,
         print("*** Now creating raster composites ***")
         dsm_mos_fn = f"{output_prefix}-DSM_mos.tif"
         print(f"Creating DSM mosaic at {dsm_mos_fn}")
-        _ = dsm_functions.dem_mosaic(dsm_fn_list,dsm_mos_fn)
+        #_ = dsm_functions.dem_mosaic(dsm_fn_list,dsm_mos_fn)
         dtm_mos_fn = f"{output_prefix}-DTM_mos.tif"
         print(f"Creating DTM mosaic at {dtm_mos_fn}")
-        _ = dsm_functions.dem_mosaic(dtm_fn_list,dtm_mos_fn)
+        #_ = dsm_functions.dem_mosaic(dtm_fn_list,dtm_mos_fn)
         intensity_mos_fn = f"{output_prefix}-intensity_mos.tif"
         print(f"Creating intensity raster mosaic at {intensity_mos_fn}")
-        _ = dsm_functions.dem_mosaic(intensity_fn_list,intensity_mos_fn)
+        #_ = dsm_functions.dem_mosaic(intensity_fn_list,intensity_mos_fn)
         if cleanup:
             print("User selected to remove intermediate tile outputs")
             for fn in dsm_fn_list + dtm_fn_list + intensity_fn_list:
@@ -245,6 +245,7 @@ def create_dsm(extent_geojson: str,
             src_srs = epsg_3857_navd88_fn
         else:
             src_srs = 'EPSG:3857'
+        print (src_srs)
         print("Reprojecting DSM raster")
         dsm_functions.gdal_warp(dsm_mos_fn,dsm_reproj,src_srs,target_wkt)
         print("Reprojectiong DTM raster")
