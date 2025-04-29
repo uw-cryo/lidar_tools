@@ -250,5 +250,5 @@ def create_dsm(extent_geojson: str,
         print("Reprojectiong DTM raster")
         dsm_functions.gdal_warp(dtm_mos_fn,dtm_reproj,src_srs,target_wkt)
         print("Reprojecting intensity raster")
-        dsm_functions.gdal_warp(intensity_mos_fn,intensity_reproj,src_src,target_wkt)
+        dsm_functions.gdal_warp(intensity_mos_fn,intensity_reproj,src_srs,target_wkt)
 
