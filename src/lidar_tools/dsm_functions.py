@@ -3,11 +3,20 @@ Generate DSMs from 3DEP EPT data
 """
 from rasterio.warp import transform_bounds
 from pyproj import CRS
-from shapely.geometry import Polygon
+import shapely
 import geopandas as gpd
 import requests
 import subprocess
 from shutil import which
+import rasterio
+import xarray as xr 
+import rioxarray
+import pystac_client
+import planetary_computer
+from osgeo import gdal, gdalconst 
+import odc.stac
+import os 
+odc.stac.configure_rio(cloud_defaults=True)
 
 
 def return_readers(input_aoi,
@@ -53,13 +62,13 @@ def return_readers(input_aoi,
 
     for i in range(int(n_cols)):
         for j in range(int(n_rows)):
-            aoi = Polygon.from_bounds(xmin+i*x_step, ymin+j*y_step, xmin+(i+1)*x_step, ymin+(j+1)*y_step)
+            aoi = shapely.geometry.Polygon.from_bounds(xmin+i*x_step, ymin+j*y_step, xmin+(i+1)*x_step, ymin+(j+1)*y_step)
 
             src_bounds_transformed = transform_bounds(src_crs, dst_crs, *aoi.bounds)
-            aoi_4326 = Polygon.from_bounds(*src_bounds_transformed)
+            aoi_4326 = shapely.geometry.Polygon.from_bounds(*src_bounds_transformed)
 
             src_bounds_transformed_3857 = transform_bounds(src_crs, CRS.from_epsg(3857), *aoi.bounds)
-            aoi_3857 = Polygon.from_bounds(*src_bounds_transformed_3857)
+            aoi_3857 = shapely.geometry.Polygon.from_bounds(*src_bounds_transformed_3857)
             print(aoi.bounds, src_bounds_transformed_3857)
             if buffer_value:
                 aoi_3857 = aoi_3857.buffer(buffer_value)
@@ -322,7 +331,232 @@ def run_cmd(bin, args, **kw):
         out = "the command {} failed to run, see corresponding asp log".format(call)
     return out
 
+### Functions for datum checks
+
+def get_esa_worldcover(
+    bbox_input: gpd.GeoDataFrame | tuple | shapely.geometry.base.BaseGeometry | None = None,
+    version: str = "v200", mask_nodata: bool = False,
+) -> xr.DataArray:
+    """
+    Adapted from easysnowdata.remote_sensing.get_esa_worldcover (MIT license)
+    Author: Eric Gagliano et al. https://github.com/egagli/easysnowdata/blob/main/easysnowdata/remote_sensing.py
+    Fetches 10m ESA WorldCover global land cover data (2020 v100 or 2021 v200) for a given bounding box.
+
+    Description:
+    The discrete classification maps provide 11 classes defined using the Land Cover Classification System (LCCS)
+    developed by the United Nations (UN) Food and Agriculture Organization (FAO).
+
+    Parameters
+    ----------
+    bbox_input : geopandas.GeoDataFrame or tuple or Shapely Geometry
+        GeoDataFrame containing the bounding box, or a tuple of (xmin, ymin, xmax, ymax), or a Shapely geometry.
+    version : str, optional
+        Version of the WorldCover data. The two versions are v100 (2020) and v200 (2021). Default is 'v200'.
+    mask_nodata : bool, optional
+        Whether to mask no data values. Default is False.
+        If False: (dtype=uint8, rio.nodata=0, rio.encoded_nodata=None)
+        If True: (dtype=float32, rio.nodata=nan, rio.encoded_nodata=0)
+
+    Returns
+    -------
+    xarray.DataArray
+        WorldCover DataArray with class information in attributes.
+
+    Examples
+    --------
+    >>> import geopandas as gpd
+    >>> import easysnowdata
+    >>> 
+    >>> # Define a bounding box for Mount Rainier
+    >>> bbox = (-121.94, 46.72, -121.54, 46.99)
+    >>> 
+    >>> # Fetch WorldCover data for the area
+    >>> worldcover_da = easysnowdata.remote_sensing.get_esa_worldcover(bbox)
+    >>> 
+    >>> # Plot the data using the example plot function
+    >>> f, ax = worldcover_da.attrs['example_plot'](worldcover_da)
+
+    Notes
+    -----
+    Data citation:
+    Zanaga, D., Van De Kerchove, R., De Keersmaecker, W., Souverijns, N., Brockmann, C., Quast, R., Wevers, J., Grosu, A.,
+    Paccini, A., Vergnaud, S., Cartus, O., Santoro, M., Fritz, S., Georgieva, I., Lesiv, M., Carter, S., Herold, M., Li, Linlin,
+    Tsendbazar, N.E., Ramoino, F., Arino, O. (2021). ESA WorldCover 10 m 2020 v100. doi:10.5281/zenodo.5571936.
+    """
+
+    def get_class_info():
+        classes = {
+            10: {"name": "Tree cover", "color": "#006400"},
+            20: {"name": "Shrubland", "color": "#FFBB22"},
+            30: {"name": "Grassland", "color": "#FFFF4C"},
+            40: {"name": "Cropland", "color": "#F096FF"},
+            50: {"name": "Built-up", "color": "#FA0000"},
+            60: {"name": "Bare / sparse vegetation", "color": "#B4B4B4"},
+            70: {"name": "Snow and ice", "color": "#F0F0F0"},
+            80: {"name": "Permanent water bodies", "color": "#0064C8"},
+            90: {"name": "Herbaceous wetland", "color": "#0096A0"},
+            95: {"name": "Mangroves", "color": "#00CF75"},
+            100: {"name": "Moss and lichen", "color": "#FAE6A0"},
+        }
+        return classes
+
+    
+
+    # Convert the input to a GeoDataFrame if it's not already one
+    bbox_gdf = convert_bbox_to_geodataframe(bbox_input)
+
+    if version == "v100":
+        version_year = "2020"
+    elif version == "v200":
+        version_year = "2021"
+    else:
+        raise ValueError("Incorrect version number. Please provide 'v100' or 'v200'.")
+
+    catalog = pystac_client.Client.open(
+        "https://planetarycomputer.microsoft.com/api/stac/v1",
+        modifier=planetary_computer.sign_inplace,
+    )
+    search = catalog.search(collections=["esa-worldcover"], bbox=bbox_gdf.total_bounds)
+    worldcover_da = (
+        odc.stac.load(
+            search.items(), bbox=bbox_gdf.total_bounds, bands="map", chunks={}
+        )["map"]
+        .sel(time=version_year)
+        .squeeze()
+    )
+
+    if mask_nodata:
+        worldcover_da = worldcover_da.where(worldcover_da>0)
+        worldcover_da.rio.write_nodata(0, encoded=True, inplace=True)
+
+    worldcover_da.attrs["class_info"] = get_class_info()
+    #worldcover_da.attrs["cmap"] = get_class_cmap(worldcover_da.attrs["class_info"])
+    worldcover_da.attrs['data_citation'] = "Zanaga, D., Van De Kerchove, R., De Keersmaecker, W., Souverijns, N., Brockmann, C., Quast, R., Wevers, J., Grosu, A., Paccini, A., Vergnaud, S., Cartus, O., Santoro, M., Fritz, S., Georgieva, I., Lesiv, M., Carter, S., Herold, M., Li, Linlin, Tsendbazar, N.E., Ramoino, F., Arino, O. (2021). ESA WorldCover 10 m 2020 v100. doi:10.5281/zenodo.5571936."
+    
+    #worldcover_da.attrs['example_plot'] = plot_classes
+
+    return worldcover_da
 
 
+def fetch_worldcover(raster_fn,match_grid_da=None):
+    with rasterio.open(raster_fn) as dataset:
+        bounds = dataset.bounds
+        bounds = rasterio.warp.transform_bounds(dataset.crs, 'EPSG:4326', *bounds)
+        bbox_gdf = gpd.GeoDataFrame(geometry=[shapely.box(*bounds)],crs='EPSG:4326',index=[0])
+    
+    da_wc = get_esa_worldcover(bbox_gdf,mask_nodata=True)
+    print(da_wc)
+    print(match_grid_da)
+    if match_grid_da is not None:
+        da_wc = da_wc.rio.reproject_match(match_grid_da,resampling=rasterio.enums.Resampling.nearest)
+    return da_wc
 
+def common_mask(da_list,apply=False):
+    """
+    From a list of xarray dataarray objects sharing the same projection/extent/res, compute common mask where all input datasets have non-nan pixels
+    """
+    # load nan layers as numpy array
+    nan_arrays = np.array([np.isnan(da.values) for da in da_list])
+    common_mask = 1 - np.any(nan_arrays,axis=0)
+    
+    if apply:
+        common_mask_da_list = [da.where(common_mask,np.nan) for da in da_list]
+        return common_mask_da_list
+    else:
+        return common_mask
+
+def get_copernicus_dem(bbox_input: gpd.GeoDataFrame | tuple | shapely.geometry.base.BaseGeometry | None = None,
+                       resolution: int = 30
+) -> xr.DataArray:
+    """
+    Adapted from easysnowdata.remote_sensing.get_esa_worldcover (MIT license)
+    Author: Eric Gagliano et al. https://github.com/egagli/easysnowdata/blob/main/easysnowdata/topography.py
+
+    Fetches 30m or 90m Copernicus DEM from Microsoft Planetary Computer.
+
+    This function retrieves the Copernicus Digital Elevation Model (DEM) data for a specified
+    bounding box and resolution. The DEM represents the surface of the Earth including buildings,
+    infrastructure, and vegetation.
+
+    Parameters
+    ----------
+    bbox_input : geopandas.GeoDataFrame or tuple or Shapely Geometry
+        GeoDataFrame containing the bounding box, or a tuple of (xmin, ymin, xmax, ymax), or a Shapely geometry.
+    resolution : int, optional
+        The resolution of the DEM, either 30 or 90 meters. Default is 30.
+
+    Returns
+    -------
+    xarray.DataArray
+        A DataArray containing the Copernicus DEM data for the specified area.
+
+    Raises
+    ------
+    ValueError
+        If the resolution is not 30 or 90 meters.
+
+    Notes
+    -----
+    The Copernicus DEM is a Digital Surface Model (DSM) derived from the WorldDEM, with additional
+    editing applied to water bodies, coastlines, and other special features.
+
+    Data citation:
+    European Space Agency, Sinergise (2021). Copernicus Global Digital Elevation Model.
+    Distributed by OpenTopography. https://doi.org/10.5069/G9028PQB. Accessed: 2024-03-18
+    """
+    if resolution != 30 and resolution != 90:
+        raise ValueError("Copernicus DEM resolution is available in 30m and 90m. Please select either 30 or 90.")
+
+    # Convert the input to a GeoDataFrame if it's not already one
+    bbox_gdf =  convert_bbox_to_geodataframe(bbox_input)
+
+    catalog = pystac_client.Client.open("https://planetarycomputer.microsoft.com/api/stac/v1",modifier=planetary_computer.sign_inplace)
+    search = catalog.search(collections=[f"cop-dem-glo-{resolution}"],bbox=bbox_gdf.total_bounds)
+    cop_dem_da = odc.stac.load(search.items(),bbox=bbox_gdf.total_bounds,chunks={})['data'].squeeze()
+    cop_dem_da = cop_dem_da.rio.write_nodata(-32767,encoded=True)
+
+    return cop_dem_da
+
+def fetch_cop30(raster_fn,match_grid_da=None):
+    with rasterio.open(raster_fn) as dataset:
+        bounds = dataset.bounds
+        bounds = rasterio.warp.transform_bounds(dataset.crs, 'EPSG:4326', *bounds)
+        bbox_gdf = gpd.GeoDataFrame(geometry=[shapely.box(*bounds)],crs='EPSG:4326',index=[0])
+    cop_da = get_copernicus_dem(bbox_gdf,
+                                        resolution=30)
+    if match_grid_da is not None:
+        cop_da = cop_da.rio.reproject_match(match_grid_da,resampling=rasterio.enums.Resampling.cubic)
+    return cop_da
+
+def confirm_3dep_vertical(raster_fn,bare_diff_tolerance=3):
+    lidar_da = rioxarray.open_rasterio(raster_fn,masked=True).squeeze()
+    worldcover_da = fetch_worldcover(raster_fn,lidar_da)
+    cop30_da = fetch_cop30(raster_fn,lidar_da)
+    lidar_da_masked,worldcover_da_masked,cop30_da_masked = common_mask([lidar_da,worldcover_da,cop30_da],apply=True)
+    dem_diff = lidar_da_masked - cop30_da_masked
+    ## Mask out bare and sparse vegetation class
+    bare_sparse_mask = worldcover_da_masked == 60
+    dem_diff_bare = dem_diff.where(bare_sparse_mask,np.nan)
+    median_diff = np.nanmedian(dem_diff_bare.values)
+    print(f"Observed difference between COP30 EGM2008 and 3DEP LiDAR DSM over bareground and sparse vegetation surfaces is {median_diff:.2f} m")
+    if np.abs(median_diff) <= bare_diff_tolerance:
+        #this means that both COP30 and 3DEP LiDAR DSM are with respect to geoid
+        print("Looks like the 3DEP height estimates are with respect to geiod, will apply vertical datum shift to return heights with respect to ellipsoid")
+        out = True
+    else:
+        #this means that 3DEP LiDAR DSM is with respect to ellipsoid
+        print("Looks like the 3DEP height estimates are already with respect to ellipsoid, geoid to ellipsoid transformation will not be attempted")
+        out = False
+    return out
+
+def gdal_warp(src_fn, dst_fn, src_srs, dst_srs, res=1,resampling_alogrithm='cubic'):
+    tolerance = 0
+    resampling_mapping = {"nearest":  gdalconst.GRA_NearestNeighbour, "bilinear": gdalconst.GRA_Bilinear,
+                  "cubic": gdalconst.GRA_Cubic, "cubic_spline": gdalconst.GRA_CubicSpline}
+    resampling_alg = resampling_mapping[resampling_alogrithm]
+    ds = gdal.Warp(dst_fn, src_fn,
+                   resampleAlg=resampling_alg,
+                   srcSRS=src_srs, xRes=res, yRes=res,
+                   dstSRS=dst_srs, errorThreshold=tolerance)
+    ds = None
 
