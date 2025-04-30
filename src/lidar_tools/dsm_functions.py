@@ -339,7 +339,7 @@ def get_esa_worldcover(
 ) -> xr.DataArray:
     """
     Adapted from easysnowdata.remote_sensing.get_esa_worldcover (MIT license)
-    Author: Eric Gagliano et al. https://github.com/egagli/easysnowdata/blob/main/easysnowdata/remote_sensing.py
+    Author: Eric Gagliano https://github.com/egagli/easysnowdata/blob/main/easysnowdata/remote_sensing.py
     Fetches 10m ESA WorldCover global land cover data (2020 v100 or 2021 v200) for a given bounding box.
 
     Description:
@@ -438,7 +438,8 @@ def get_esa_worldcover(
     return worldcover_da
 
 
-def fetch_worldcover(raster_fn,match_grid_da=None):
+def fetch_worldcover(raster_fn: str,
+                    match_grid_da: xr.DataArray =None):
     with rasterio.open(raster_fn) as dataset:
         bounds = dataset.bounds
         bounds = rasterio.warp.transform_bounds(dataset.crs, 'EPSG:4326', *bounds)
@@ -451,7 +452,8 @@ def fetch_worldcover(raster_fn,match_grid_da=None):
         da_wc = da_wc.rio.reproject_match(match_grid_da,resampling=rasterio.enums.Resampling.nearest)
     return da_wc
 
-def common_mask(da_list,apply=False):
+def common_mask(da_list: list,
+                apply: bool =False):
     """
     From a list of xarray dataarray objects sharing the same projection/extent/res, compute common mask where all input datasets have non-nan pixels
     """
@@ -464,13 +466,55 @@ def common_mask(da_list,apply=False):
         return common_mask_da_list
     else:
         return common_mask
+def convert_bbox_to_geodataframe(bbox_input):
+    """
+    Adapted from easysnowdata.remote_sensing.get_esa_worldcover (MIT license)
+    Author: Eric Gagliano https://github.com/egagli/easysnowdata/blob/main/easysnowdata/utils.py
+    Converts the input to a GeoDataFrame.
 
+    This function takes various input formats representing a bounding box and converts them
+    to a standardized GeoDataFrame format.
+
+    Parameters
+    ----------
+    bbox_input : GeoDataFrame or tuple or Shapely geometry or None
+        The input bounding box in various formats.
+
+    Returns
+    -------
+    GeoDataFrame
+        The converted bounding box as a GeoDataFrame.
+
+    Notes
+    -----
+    If no bounding box is provided (None), it returns a GeoDataFrame representing the entire world.
+    """
+    if bbox_input is None:
+        # If no bounding box is provided, use the entire world
+        print("No spatial subsetting because bbox_input was not provided.")
+        bbox_input = gpd.GeoDataFrame(
+            geometry=[shapely.geometry.box(-180, -90, 180, 90)], crs="EPSG:4326"
+        )
+    if isinstance(bbox_input, gpd.GeoDataFrame):
+        # If it's already a GeoDataFrame, return it
+        return bbox_input
+    if isinstance(bbox_input, tuple) and len(bbox_input) == 4:
+        # If it's a tuple of four elements, treat it as (xmin, ymin, xmax, ymax)
+        bbox_input = gpd.GeoDataFrame(
+            geometry=[shapely.geometry.box(*bbox_input)], crs="EPSG:4326"
+        )
+    elif isinstance(bbox_input, shapely.geometry.base.BaseGeometry):
+        # If it's a Shapely geometry, convert it to a GeoDataFrame
+        bbox_input = gpd.GeoDataFrame(geometry=[bbox_input], crs="EPSG:4326")
+
+    return bbox_input
+               
 def get_copernicus_dem(bbox_input: gpd.GeoDataFrame | tuple | shapely.geometry.base.BaseGeometry | None = None,
                        resolution: int = 30
 ) -> xr.DataArray:
     """
     Adapted from easysnowdata.remote_sensing.get_esa_worldcover (MIT license)
-    Author: Eric Gagliano et al. https://github.com/egagli/easysnowdata/blob/main/easysnowdata/topography.py
+    Author: Eric Gagliano https://github.com/egagli/easysnowdata/blob/main/easysnowdata/topography.py
 
     Fetches 30m or 90m Copernicus DEM from Microsoft Planetary Computer.
 
@@ -517,7 +561,9 @@ def get_copernicus_dem(bbox_input: gpd.GeoDataFrame | tuple | shapely.geometry.b
 
     return cop_dem_da
 
-def fetch_cop30(raster_fn,match_grid_da=None):
+
+def fetch_cop30(raster_fn: str,
+                match_grid_da: xr.DataArray = None) -> xr.DataArray:
     with rasterio.open(raster_fn) as dataset:
         bounds = dataset.bounds
         bounds = rasterio.warp.transform_bounds(dataset.crs, 'EPSG:4326', *bounds)
@@ -528,7 +574,10 @@ def fetch_cop30(raster_fn,match_grid_da=None):
         cop_da = cop_da.rio.reproject_match(match_grid_da,resampling=rasterio.enums.Resampling.cubic)
     return cop_da
 
-def confirm_3dep_vertical(raster_fn,bare_diff_tolerance=3):
+
+
+def confirm_3dep_vertical(raster_fn: str,
+                bare_diff_tolerance: float = 3.0) -> bool:
     lidar_da = rioxarray.open_rasterio(raster_fn,masked=True).squeeze()
     worldcover_da = fetch_worldcover(raster_fn,lidar_da)
     cop30_da = fetch_cop30(raster_fn,lidar_da)
@@ -549,7 +598,13 @@ def confirm_3dep_vertical(raster_fn,bare_diff_tolerance=3):
         out = False
     return out
 
-def gdal_warp(src_fn, dst_fn, src_srs, dst_srs, res=1,resampling_alogrithm='cubic'):
+
+def gdal_warp(src_fn: str,
+                dst_fn: str, 
+                src_srs: str, 
+                dst_srs: str, 
+                res: float = 1.0,
+                resampling_alogrithm: str ='cubic') -> None:
     tolerance = 0
     resampling_mapping = {"nearest":  gdalconst.GRA_NearestNeighbour, "bilinear": gdalconst.GRA_Bilinear,
                   "cubic": gdalconst.GRA_Cubic, "cubic_spline": gdalconst.GRA_CubicSpline}
