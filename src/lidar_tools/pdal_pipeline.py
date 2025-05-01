@@ -1,6 +1,9 @@
 """
 Generate a DSM from input polygon
 """
+import os
+os.environ['PROJ_NETWORK'] = 'ON' # Ensure this is 'ON' to get shift grids over the internet
+print(f"PROJ_NETWORK is {os.environ['PROJ_NETWORK']}")
 from lidar_tools import dsm_functions
 import pdal
 from shapely.geometry import Polygon
@@ -34,7 +37,8 @@ def create_dsm(extent_geojson: str,
                output_prefix: str,
                source_wkt: str =  None,
                mosaic: bool = True,
-               cleanup: bool = True) -> None:
+               cleanup: bool = True,
+               reproject: bool = True) -> None:
     """
     Create a Digital Surface Model (DSM) from a given extent and point cloud data.
     This function divides a region of interest into tiles and generates a DSM geotiff from EPT point clouds for each tile using PDAL
@@ -53,6 +57,8 @@ def create_dsm(extent_geojson: str,
         Mosaic the output tiles using a weighted average algorithm
     cleanup: bool
         If true, remove the intermediate tif files for the output tiles
+    reproject: bool
+        If true, perform final reprojection from EPSG:3857 to user sepecified CRS
     Returns
     -------
     None
@@ -240,4 +246,21 @@ def create_dsm(extent_geojson: str,
                     print(f"Error {e} encountered for file {fn}")
                     pass
 
-
+    if reproject:
+        dsm_reproj = os.path.splitext(dsm_mos_fn)[0]+"_reproj.tif"
+        dtm_reproj = os.path.splitext(dtm_mos_fn)[0]+"_reproj.tif"
+        intensity_reproj = os.path.splitext(intensity_mos_fn)[0]+"_reproj.tif"
+        reproject_truth_val = dsm_functions.confirm_3dep_vertical(dsm_mos_fn)
+        if reproject_truth_val:
+            # use input CRS which is EPSG:3857 with heights with respect to the NAVD88 
+            epsg_3857_navd88_fn = os.path.join(os.path.dirname(__file__).split('src/')[0],"notebooks/SRS_CRS.wkt")
+            src_srs = epsg_3857_navd88_fn
+        else:
+            src_srs = 'EPSG:3857'
+        print (src_srs)
+        print("Reprojecting DSM raster")
+        dsm_functions.gdal_warp(dsm_mos_fn,dsm_reproj,src_srs,target_wkt)
+        print("Reprojectiong DTM raster")
+        dsm_functions.gdal_warp(dtm_mos_fn,dtm_reproj,src_srs,target_wkt)
+        print("Reprojecting intensity raster")
+        dsm_functions.gdal_warp(intensity_mos_fn,intensity_reproj,src_srs,target_wkt)

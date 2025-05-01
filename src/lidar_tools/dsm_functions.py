@@ -12,7 +12,8 @@ import rasterio
 import xarray as xr 
 import rioxarray
 import pystac_client
-import planetary_computer
+import numpy as np
+#import planetary_computer
 from osgeo import gdal, gdalconst 
 import odc.stac
 import os 
@@ -411,7 +412,7 @@ def get_esa_worldcover(
         version_year = "2021"
     else:
         raise ValueError("Incorrect version number. Please provide 'v100' or 'v200'.")
-
+    import planetary_computer
     catalog = pystac_client.Client.open(
         "https://planetarycomputer.microsoft.com/api/stac/v1",
         modifier=planetary_computer.sign_inplace,
@@ -446,8 +447,6 @@ def fetch_worldcover(raster_fn: str,
         bbox_gdf = gpd.GeoDataFrame(geometry=[shapely.box(*bounds)],crs='EPSG:4326',index=[0])
     
     da_wc = get_esa_worldcover(bbox_gdf,mask_nodata=True)
-    print(da_wc)
-    print(match_grid_da)
     if match_grid_da is not None:
         da_wc = da_wc.rio.reproject_match(match_grid_da,resampling=rasterio.enums.Resampling.nearest)
     return da_wc
@@ -548,6 +547,7 @@ def get_copernicus_dem(bbox_input: gpd.GeoDataFrame | tuple | shapely.geometry.b
     European Space Agency, Sinergise (2021). Copernicus Global Digital Elevation Model.
     Distributed by OpenTopography. https://doi.org/10.5069/G9028PQB. Accessed: 2024-03-18
     """
+    import planetary_computer
     if resolution != 30 and resolution != 90:
         raise ValueError("Copernicus DEM resolution is available in 30m and 90m. Please select either 30 or 90.")
 
