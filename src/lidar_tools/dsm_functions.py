@@ -612,6 +612,7 @@ def gdal_warp(src_fn: str,
     ds = gdal.Warp(dst_fn, src_fn,
                    resampleAlg=resampling_alg,
                    srcSRS=src_srs, xRes=res, yRes=res,
-                   dstSRS=dst_srs, errorThreshold=tolerance)
+                   dstSRS=dst_srs, errorThreshold=tolerance,
+                   callback=gdal.TermProgress_nocb)
     ds = None
 
