@@ -19,6 +19,26 @@ import odc.stac
 import os 
 odc.stac.configure_rio(cloud_defaults=True)
 
+def nearest_floor(x, a):
+    """
+    Round down to the nearest smaller multiple of a.
+    From https://github.com/uw-cryo/EarthLab_AirQuality_UAV/blob/main/notebooks/EarthLab_AQ_lidar_download_processing_function.ipynb
+    """
+    return np.floor(x / a) * a
+def nearest_ceil(x, a):
+    """
+    Round down to the nearest larger multiple of a.
+    From https://github.com/uw-cryo/EarthLab_AirQuality_UAV/blob/main/notebooks/EarthLab_AQ_lidar_download_processing_function.ipynb
+    """
+    return np.ceil(x / a) * a
+def tap_bounds(site_bounds, res):
+    """
+    Return target aligned pixel bounds for a given site bounds and resolution.
+    From https://github.com/uw-cryo/EarthLab_AirQuality_UAV/blob/main/notebooks/EarthLab_AQ_lidar_download_processing_function.ipynb
+    """
+    return ([nearest_floor(site_bounds[0], res), nearest_floor(site_bounds[1], res), \
+            nearest_ceil(site_bounds[2], res), nearest_ceil(site_bounds[3], res)])
+
 
 def return_readers(input_aoi,
                    src_crs,
@@ -60,6 +80,8 @@ def return_readers(input_aoi,
 
     readers = []
     pointcloud_input_crs = []
+    original_extents = []
+    extents = []
 
     for i in range(int(n_cols)):
         for j in range(int(n_rows)):
@@ -69,11 +91,20 @@ def return_readers(input_aoi,
             aoi_4326 = shapely.geometry.Polygon.from_bounds(*src_bounds_transformed)
 
             src_bounds_transformed_3857 = transform_bounds(src_crs, CRS.from_epsg(3857), *aoi.bounds)
+            #create tap bounds for the tile
+            src_bounds_transformed_3857 = tap_bounds(src_bounds_transformed_3857, pointcloud_resolution)
             aoi_3857 = shapely.geometry.Polygon.from_bounds(*src_bounds_transformed_3857)
             print(aoi.bounds, src_bounds_transformed_3857)
             if buffer_value:
-                aoi_3857 = aoi_3857.buffer(buffer_value)
                 print(f"The tile polygon will be buffered by {buffer_value:.2f} m")
+                #buffer the tile polygon by the buffer value
+                aoi_3857 = aoi_3857.buffer(buffer_value)
+                # now create tap bounds for the buffered tile
+                aoi_3857_bounds = tap_bounds(aoi_3857.bounds, pointcloud_resolution)
+                # now convert the buffered tile to a polygon
+                aoi_3857 = shapely.geometry.Polygon.from_bounds(*aoi_3857_bounds)
+                print(f"The buffered tile bound is: ", aoi_3857.bounds)
+                
 
 
             gdf = gpd.read_file('https://raw.githubusercontent.com/hobuinc/usgs-lidar/master/boundaries/resources.geojson').set_crs(4326)
@@ -101,8 +132,57 @@ def return_readers(input_aoi,
 
             pointcloud_input_crs.append(CRS.from_wkt(srs_wkt))
             readers.append(reader)
+            extents.append(aoi_3857.bounds)
+            original_extents.append(src_bounds_transformed_3857)
 
+    return readers, pointcloud_input_crs, extents, original_extents
+
+
+def return_reader_inclusive(input_aoi,
+                   src_crs,
+                   pointcloud_resolution=1):
+    """
+     This method takes an input aoi and finds overlapping 3DEP EPT data from https://s3-us-west-2.amazonaws.com/usgs-lidar-public/{usgs_dataset_name}/ept.json
+    It then returns a series of readers corresponding to non-overlapping areas for PDAL processing pipelines
+
+    Parameters
+    ----------
+    input_aoi : shapely.geometry.Polygon
+        The area of interest as a polygon.
+    src_crs : pyproj.CRS
+        The coordinate reference system of the input AOI.
+    pointcloud_resolution : int, optional
+        The resolution of the point cloud data, by default 1.
+    """
+    xmin, ymin, xmax, ymax = input_aoi.bounds
+    readers = []
+    pointcloud_input_crs = []
+    src_bounds_transformed = transform_bounds(src_crs, CRS.from_epsg(4326), *input_aoi.bounds)
+    aoi_4326 = shapely.geometry.Polygon.from_bounds(*src_bounds_transformed)
+    src_bounds_transformed_3857 = transform_bounds(src_crs, CRS.from_epsg(3857), *input_aoi.bounds)
+    aoi_3857 = shapely.geometry.Polygon.from_bounds(*src_bounds_transformed_3857)
+    gdf = gpd.read_file('https://raw.githubusercontent.com/hobuinc/usgs-lidar/master/boundaries/resources.geojson').set_crs(4326)
+    for _, row in gdf.iterrows():
+            if row.geometry.intersects(aoi_4326):
+                usgs_dataset_name = row['name']
+                print("Dataset being used: ", usgs_dataset_name)
+                url = f"https://s3-us-west-2.amazonaws.com/usgs-lidar-public/{usgs_dataset_name}/ept.json"
+                reader = {
+                "type": "readers.ept",
+                "filename": url,
+                "resolution": pointcloud_resolution,
+                "polygon": str(aoi_3857.wkt),
+                }
+
+                # SRS associated with the 3DEP dataset
+                response = requests.get(url)
+                data = response.json()
+                srs_wkt = data['srs']['wkt']
+
+                pointcloud_input_crs.append(CRS.from_wkt(srs_wkt))
+                readers.append(reader)
     return readers, pointcloud_input_crs
+
 
 
 def create_pdal_pipeline(filter_low_noise=False, filter_high_noise=False,
@@ -167,6 +247,7 @@ def create_pdal_pipeline(filter_low_noise=False, filter_high_noise=False,
         "type": "writers.las",
         "filename": f"{pointcloud_file}.las"
     }
+    
     stage_save_pointcloud_laz = {
         "type": "writers.las",
         "compression": "true",
@@ -215,8 +296,13 @@ def create_pdal_pipeline(filter_low_noise=False, filter_high_noise=False,
     return pipeline
 
 
-def create_dem_stage(dem_filename='dem_output.tif', pointcloud_resolution=1.,
+def create_dem_stage(dem_filename, extent, pointcloud_resolution=1.,
                         gridmethod='idw', dimension='Z'):
+    #compute raster width and height
+    width = (extent[2] - extent[0]) / pointcloud_resolution 
+    height = (extent[3] - extent[1]) / pointcloud_resolution
+    origin_x = extent[0]
+    origin_y = extent[1]
     dem_stage = {
             "type":"writers.gdal",
             "filename":dem_filename,
@@ -224,6 +310,10 @@ def create_dem_stage(dem_filename='dem_output.tif', pointcloud_resolution=1.,
             "nodata":-9999,
             "output_type":gridmethod,
             "resolution":float(pointcloud_resolution),
+            "origin_x":origin_x,
+            "origin_y":origin_y,
+            "width":width,
+            "height":height,
             "gdalopts":"COMPRESS=LZW,TILED=YES,blockxsize=256,blockysize=256,COPY_SRC_OVERVIEWS=YES"
     }
 
@@ -233,104 +323,24 @@ def create_dem_stage(dem_filename='dem_output.tif', pointcloud_resolution=1.,
 
     return [dem_stage]
 
-
-def dem_mosaic(img_list,outfn,tr=None,tsrs=None,stats=None,tile_size=None,extent=None):
+def raster_mosaic(img_list,outfn):
     """
-    From https://github.com/uw-cryo/skysat_stereo/blob/master/skysat_stereo/asp_utils.py
-    mosaic  input image list using ASP's dem_mosaic program.
-    See dem_mosaic documentation here: https://stereopipeline.readthedocs.io/en/latest/tools/dem_mosaic.html
-    Parameters
-    ----------
-    img_list: list
+    Given a list of input images, mosaic them into a COG raster by using vrt and gdal_translate
+    im_list: list
         List of input images to be mosaiced
     outfn: str
         Path to output mosaicked image
-    tr: float/int
-        target resolution of output mosaic
-    t_srs: str
-        target projection of output mosaic (default: EPSG:4326)
-    stats: str
-        metric to use for mosaicing
-    tile_size: int
-        tile size for distributed mosaicing (if less on memory)
-    Returns
-    ----------
-    out: str
-        dem_mosaic log
     """
+    # create vrt
+    vrt_fn = os.path.splitext(outfn)[0]+'.vrt'
+    gdal.BuildVRT(vrt_fn,img_list,
+                  callback=gdal.TermProgress_nocb)
+    # translate to COG
+    gdal.Translate(outfn,vrt_fn,options=gdal.TranslateOptions(creationOptions=['COMPRESS=LZW','TILED=YES','COPY_SRC_OVERVIEWS=YES']),
+                   callback=gdal.TermProgress_nocb)
+    # delete vrt
+    os.remove(vrt_fn)
 
-    dem_mosaic_opt = []
-
-    if stats:
-        dem_mosaic_opt.extend(['--{}'.format(stats)])
-    if tr:
-        dem_mosaic_opt.extend(['--tr', str(tr)])
-    if tsrs:
-        dem_mosaic_opt.extend(['--t_srs', tsrs])
-    if extent:
-        xmin,ymin,xmax,ymax = extent.split(' ')
-        dem_mosaic_opt.extend(['--t_projwin', xmin,ymin,xmax,ymax])
-    dem_mosaic_args = img_list
-    if tile_size:
-        # will first perform tile-wise vertical mosaicing
-        # then blend the result
-        dem_mosaic_opt.extend(['--tile-size',str(tile_size)])
-        temp_fol = os.path.splitext(outfn)[0]+'_temp'
-        dem_mosaic_opt.extend(['-o',os.path.join(temp_fol,'run')])
-        out_tile_op = run_cmd('dem_mosaic',dem_mosaic_args+dem_mosaic_opt)
-        # query all tiles and then do simple mosaic
-        #print(os.path.join(temp_fol,'run-*.tif'))
-        mos_tile_list = sorted(glob.glob(os.path.join(temp_fol,'run-*.tif')))
-        print(f"Found {len(mos_tile_list)}")
-        # now perform simple mosaic
-        dem_mos2_opt = []
-        dem_mos2_opt.extend(['-o',outfn])
-        dem_mos2_args = mos_tile_list
-        out_fn_mos = run_cmd('dem_mosaic',dem_mos2_args+dem_mos2_opt)
-        out = out_tile_op+out_fn_mos
-        print("Deleting tile directory")
-        shutil.rmtree(temp_fol)
-
-    else:
-        # process all at once, no tiling
-        dem_mosaic_opt.extend(['-o',outfn])
-        out = run_cmd('dem_mosaic',dem_mosaic_args+dem_mosaic_opt)
-    return out
-
-def run_cmd(bin, args, **kw):
-    """
-    From https://github.com/uw-cryo/skysat_stereo/blob/master/skysat_stereo/asp_utils.py
-    wrapper around subprocess function to excute bash commands
-    Parameters
-    ----------
-    bin: str
-        command to be excuted (e.g., stereo or gdalwarp)
-    args: list
-        arguments to the command as a list
-    Retuns
-    ----------
-    out: str
-        log (stdout) as str if the command executed, error message if the command failed
-    """
-
-    #from dshean/vmap.py
-
-    binpath = which(bin)
-    #if binpath is None:
-        #msg = ("Unable to find executable %s\n"
-        #"Install ASP and ensure it is in your PATH env variable\n"
-       #"https://ti.arc.nasa.gov/tech/asr/intelligent-robotics/ngt/stereo/" % bin)
-        #sys.exit(msg)
-    #binpath = os.path.join('/opt/StereoPipeline/bin/',bin)
-    call = [binpath,]
-    if args is not None:
-        call.extend(args)
-    #print(call)
-    try:
-        out = subprocess.run(call,check=True,capture_output=True,encoding='UTF-8').stdout
-    except:
-        out = "the command {} failed to run, see corresponding asp log".format(call)
-    return out
 
 ### Functions for datum checks
 
@@ -613,6 +623,7 @@ def gdal_warp(src_fn: str,
                    resampleAlg=resampling_alg,
                    srcSRS=src_srs, xRes=res, yRes=res,
                    dstSRS=dst_srs, errorThreshold=tolerance,
+                   targetAlignedPixels=True,
                    callback=gdal.TermProgress_nocb)
     ds = None
 

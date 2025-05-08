@@ -84,9 +84,10 @@ def create_dsm(extent_geojson: str,
     # The method returns pointcloud readers, as well as the pointcloud file CRS as a WKT string
     # Specfying a buffer_value > 0 will generate overlapping DEM tiles, resulting in a seamless
     # final mosaicked DEM
-    readers, POINTCLOUD_CRS = dsm_functions.return_readers(input_aoi, input_crs,
-    pointcloud_resolution = 1, n_rows=5, n_cols=5, buffer_value=5)
-
+    readers, POINTCLOUD_CRS,extents,original_extents = dsm_functions.return_readers(input_aoi, input_crs,
+                                                           pointcloud_resolution = 1, n_rows=5, n_cols=5, buffer_value=5)
+    #readers, POINTCLOUD_CRS = dsm_functions.return_reader_inclusive(input_aoi, input_crs,
+    #                                                                pointcloud_resolution=POINTCLOUD_RESOLUTION)
     # NOTE: if source_wkt is passed, override POINTCLOUD_CRSs
     if source_wkt:
         with open(source_wkt, 'r') as f:
@@ -127,6 +128,7 @@ def create_dsm(extent_geojson: str,
             output_type=OUTPUT_TYPE
         )
         dsm_stage = dsm_functions.create_dem_stage(dem_filename=str(dsm_file),
+                                                   extent=original_extents[i],
                                         pointcloud_resolution=POINTCLOUD_RESOLUTION,
                                         gridmethod=GRID_METHOD, dimension='Z')
         pipeline_dsm['pipeline'] += pdal_pipeline_dsm
@@ -164,6 +166,7 @@ def create_dsm(extent_geojson: str,
         )
 
         dtm_stage = dsm_functions.create_dem_stage(dem_filename=str(dtm_file),
+                                        extent=original_extents[i],
                                         pointcloud_resolution=POINTCLOUD_RESOLUTION,
                                         gridmethod=GRID_METHOD, dimension='Z')
         # this is only required for the DTM
@@ -204,6 +207,7 @@ def create_dsm(extent_geojson: str,
         )
 
         intensity_stage = dsm_functions.create_dem_stage(dem_filename=str(intensity_file),
+                                        extent=original_extents[i],
                                         pointcloud_resolution=POINTCLOUD_RESOLUTION,
                                         gridmethod=GRID_METHOD, dimension='Intensity')
 
@@ -230,13 +234,13 @@ def create_dsm(extent_geojson: str,
         print("*** Now creating raster composites ***")
         dsm_mos_fn = f"{output_prefix}-DSM_mos.tif"
         print(f"Creating DSM mosaic at {dsm_mos_fn}")
-        _ = dsm_functions.dem_mosaic(dsm_fn_list,dsm_mos_fn)
+        dsm_functions.raster_mosaic(dsm_fn_list,dsm_mos_fn)
         dtm_mos_fn = f"{output_prefix}-DTM_mos.tif"
         print(f"Creating DTM mosaic at {dtm_mos_fn}")
-        _ = dsm_functions.dem_mosaic(dtm_fn_list,dtm_mos_fn)
+        dsm_functions.raster_mosaic(dtm_fn_list,dtm_mos_fn)
         intensity_mos_fn = f"{output_prefix}-intensity_mos.tif"
         print(f"Creating intensity raster mosaic at {intensity_mos_fn}")
-        _ = dsm_functions.dem_mosaic(intensity_fn_list,intensity_mos_fn)
+        dsm_functions.raster_mosaic(intensity_fn_list,intensity_mos_fn)
         if cleanup:
             print("User selected to remove intermediate tile outputs")
             for fn in dsm_fn_list + dtm_fn_list + intensity_fn_list:
