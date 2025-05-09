@@ -45,7 +45,8 @@ def return_readers(input_aoi,
                    pointcloud_resolution=1,
                    n_rows = 5,
                    n_cols=5,
-                   buffer_value=5):
+                   buffer_value=5,
+                   return_all_interescting_surveys=False):
     """
     This method takes an input aoi and finds overlapping 3DEP EPT data from https://s3-us-west-2.amazonaws.com/usgs-lidar-public/{usgs_dataset_name}/ept.json
     It then returns a series of readers corresponding to non-overlapping areas for PDAL processing pipelines
@@ -64,7 +65,8 @@ def return_readers(input_aoi,
         The number of columns to divide the AOI into, by default 5.
     buffer_value : int, optional
         The buffer value in meters to apply to each tile, by default 5.
-
+    return_all_interescting_surveys : bool, optional
+        If True, return all intersecting surveys, by default False.
     Returns
     -------
     list of dict
@@ -114,26 +116,28 @@ def return_readers(input_aoi,
             for _, row in gdf.iterrows():
                 if row.geometry.intersects(aoi_4326):
                     usgs_dataset_name = row['name']
-                    break
+                    print("Dataset being used: ", usgs_dataset_name)
+                    url = f"https://s3-us-west-2.amazonaws.com/usgs-lidar-public/{usgs_dataset_name}/ept.json"
+                    reader = {
+                    "type": "readers.ept",
+                    "filename": url,
+                    "resolution": pointcloud_resolution,
+                    "polygon": str(aoi_3857.wkt),
+                    }
 
-            print("Dataset being used: ", usgs_dataset_name)
-            url = f"https://s3-us-west-2.amazonaws.com/usgs-lidar-public/{usgs_dataset_name}/ept.json"
-            reader = {
-            "type": "readers.ept",
-            "filename": url,
-            "resolution": pointcloud_resolution,
-            "polygon": str(aoi_3857.wkt),
-            }
+                    # SRS associated with the 3DEP dataset
+                    response = requests.get(url)
+                    data = response.json()
+                    srs_wkt = data['srs']['wkt']
 
-            # SRS associated with the 3DEP dataset
-            response = requests.get(url)
-            data = response.json()
-            srs_wkt = data['srs']['wkt']
+                    pointcloud_input_crs.append(CRS.from_wkt(srs_wkt))
+                    readers.append(reader)
+                    extents.append(aoi_3857.bounds)
+                    original_extents.append(src_bounds_transformed_3857)
+                    if not return_all_interescting_surveys:
+                        break
 
-            pointcloud_input_crs.append(CRS.from_wkt(srs_wkt))
-            readers.append(reader)
-            extents.append(aoi_3857.bounds)
-            original_extents.append(src_bounds_transformed_3857)
+            
 
     return readers, pointcloud_input_crs, extents, original_extents
 

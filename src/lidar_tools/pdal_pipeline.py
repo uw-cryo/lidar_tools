@@ -38,7 +38,8 @@ def create_dsm(extent_geojson: str,
                source_wkt: str =  None,
                mosaic: bool = True,
                cleanup: bool = True,
-               reproject: bool = True) -> None:
+               reproject: bool = True,
+               process_all_interescting_surveys: bool = False) -> None:
     """
     Create a Digital Surface Model (DSM) from a given extent and point cloud data.
     This function divides a region of interest into tiles and generates a DSM geotiff from EPT point clouds for each tile using PDAL
@@ -59,6 +60,8 @@ def create_dsm(extent_geojson: str,
         If true, remove the intermediate tif files for the output tiles
     reproject: bool
         If true, perform final reprojection from EPSG:3857 to user sepecified CRS
+    process_all_interescting_surveys: bool
+        If true, process all intersecting surveys. If false, only process the first LiDAR survey that intersects the extent defined in the GeoJSON file.
     Returns
     -------
     None
@@ -85,7 +88,7 @@ def create_dsm(extent_geojson: str,
     # Specfying a buffer_value > 0 will generate overlapping DEM tiles, resulting in a seamless
     # final mosaicked DEM
     readers, POINTCLOUD_CRS,extents,original_extents = dsm_functions.return_readers(input_aoi, input_crs,
-                                                           pointcloud_resolution = 1, n_rows=5, n_cols=5, buffer_value=5)
+                                                           pointcloud_resolution = 1, n_rows=5, n_cols=5, buffer_value=5,return_all_interescting_surveys=process_all_interescting_surveys)
     #readers, POINTCLOUD_CRS = dsm_functions.return_reader_inclusive(input_aoi, input_crs,
     #                                                                pointcloud_resolution=POINTCLOUD_RESOLUTION)
     # NOTE: if source_wkt is passed, override POINTCLOUD_CRSs
