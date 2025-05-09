@@ -46,7 +46,7 @@ def return_readers(input_aoi,
                    n_rows = 5,
                    n_cols=5,
                    buffer_value=5,
-                   return_all_interescting_surveys=False):
+                   return_all_intersecting_surveys=False):
     """
     This method takes an input aoi and finds overlapping 3DEP EPT data from https://s3-us-west-2.amazonaws.com/usgs-lidar-public/{usgs_dataset_name}/ept.json
     It then returns a series of readers corresponding to non-overlapping areas for PDAL processing pipelines
@@ -134,7 +134,7 @@ def return_readers(input_aoi,
                     readers.append(reader)
                     extents.append(aoi_3857.bounds)
                     original_extents.append(src_bounds_transformed_3857)
-                    if not return_all_interescting_surveys:
+                    if not return_all_intersecting_surveys:
                         break
 
             
@@ -612,7 +612,28 @@ def confirm_3dep_vertical(raster_fn: str,
         out = False
     return out
 
+def check_raster_validity(raster_fn: str) -> bool:
+    """
+    Check if a raster file is valid and can be opened using rioxarray and CRS check
 
+    Parameters
+    ----------
+    raster_fn : str
+        Path to the raster file.
+
+    Returns
+    -------
+    bool
+        True if the raster file is valid, False otherwise.
+    """
+    da = rioxarray.open_rasterio(raster_fn,masked=True).squeeze()
+    if da.rio.crs is None:
+        #print(f"Raster {raster_fn} does not have a valid CRS.")
+        out = False
+    else:
+        #print(f"Raster {raster_fn} has a valid CRS.")
+        out = True
+    return out   
 def gdal_warp(src_fn: str,
                 dst_fn: str, 
                 src_srs: str, 

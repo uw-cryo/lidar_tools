@@ -39,7 +39,7 @@ def create_dsm(extent_geojson: str,
                mosaic: bool = True,
                cleanup: bool = True,
                reproject: bool = True,
-               process_all_interescting_surveys: bool = False) -> None:
+               process_all_intersecting_surveys: bool = False) -> None:
     """
     Create a Digital Surface Model (DSM) from a given extent and point cloud data.
     This function divides a region of interest into tiles and generates a DSM geotiff from EPT point clouds for each tile using PDAL
@@ -60,7 +60,7 @@ def create_dsm(extent_geojson: str,
         If true, remove the intermediate tif files for the output tiles
     reproject: bool
         If true, perform final reprojection from EPSG:3857 to user sepecified CRS
-    process_all_interescting_surveys: bool
+    process_all_intersecting_surveys: bool
         If true, process all intersecting surveys. If false, only process the first LiDAR survey that intersects the extent defined in the GeoJSON file.
     Returns
     -------
@@ -88,7 +88,7 @@ def create_dsm(extent_geojson: str,
     # Specfying a buffer_value > 0 will generate overlapping DEM tiles, resulting in a seamless
     # final mosaicked DEM
     readers, POINTCLOUD_CRS,extents,original_extents = dsm_functions.return_readers(input_aoi, input_crs,
-                                                           pointcloud_resolution = 1, n_rows=5, n_cols=5, buffer_value=5,return_all_interescting_surveys=process_all_interescting_surveys)
+                                                           pointcloud_resolution = 1, n_rows=5, n_cols=5, buffer_value=5,return_all_intersecting_surveys=process_all_intersecting_surveys)
     #readers, POINTCLOUD_CRS = dsm_functions.return_reader_inclusive(input_aoi, input_crs,
     #                                                                pointcloud_resolution=POINTCLOUD_RESOLUTION)
     # NOTE: if source_wkt is passed, override POINTCLOUD_CRSs
@@ -144,7 +144,8 @@ def create_dsm(extent_geojson: str,
         pipeline_dsm = pdal.Pipeline(json.dumps(pipeline_dsm))
         try:
             pipeline_dsm.execute()
-            dsm_fn_list.append(dsm_file.as_posix())
+            if dsm_functions.check_raster_validity(dsm_file):
+                dsm_fn_list.append(dsm_file.as_posix())
         except RuntimeError as e:
             print(f"A RuntimeError occured for dsm tile {i}: {e}")
             pass
@@ -186,7 +187,8 @@ def create_dsm(extent_geojson: str,
         pipeline_dtm = pdal.Pipeline(json.dumps(pipeline_dtm))
         try:
             pipeline_dtm.execute()
-            dtm_fn_list.append(dtm_file.as_posix())
+            if dsm_functions.check_raster_validity(dtm_file):
+                dtm_fn_list.append(dtm_file.as_posix())
         except RuntimeError as e:
             print(f"A RuntimeError occured for dtm tile {i}: {e}")
             pass
@@ -227,7 +229,8 @@ def create_dsm(extent_geojson: str,
         pipeline_intensity = pdal.Pipeline(json.dumps(pipeline_intensity))
         try:
             pipeline_intensity.execute()
-            intensity_fn_list.append(intensity_file.as_posix())
+            if dsm_functions.check_raster_validity(intensity_file):
+                intensity_fn_list.append(intensity_file.as_posix())
         except RuntimeError as e:
             print(f"A RuntimeError occured for dsm tile {i}: {e}")
             pass
