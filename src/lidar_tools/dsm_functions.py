@@ -340,7 +340,7 @@ def raster_mosaic(img_list,outfn):
     gdal.BuildVRT(vrt_fn,img_list,
                   callback=gdal.TermProgress_nocb)
     # translate to COG
-    gdal.Translate(outfn,vrt_fn,options=gdal.TranslateOptions(creationOptions=['COMPRESS=LZW','TILED=YES','COPY_SRC_OVERVIEWS=YES']),
+    gdal.Translate(outfn,vrt_fn,
                    callback=gdal.TermProgress_nocb)
     # delete vrt
     os.remove(vrt_fn)
@@ -649,6 +649,20 @@ def gdal_warp(src_fn: str,
                    srcSRS=src_srs, xRes=res, yRes=res,
                    dstSRS=dst_srs, errorThreshold=tolerance,
                    targetAlignedPixels=True,
+                   creationOptions=['COMPRESS=LZW','TILED=YES','COPY_SRC_OVERVIEWS=YES'],
                    callback=gdal.TermProgress_nocb)
     ds = None
+def gdal_add_overview(raster_fn: str) -> None:
+    """
+    Add overviews to a raster file using GDAL.
 
+    Parameters
+    ----------
+    raster_fn : str
+        Path to the raster file.
+    """
+    ds = gdal.Open(raster_fn, 1)
+    gdal.SetConfigOption('COMPRESS_OVERVIEW', 'DEFLATE')
+    ds.BuildOverviews("GAUSS",[2,4,8,16,32,64,128,256,512,1024,2048,4096],
+                      callback=gdal.TermProgress_nocb)
+    ds = None
