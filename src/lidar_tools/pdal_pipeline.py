@@ -6,6 +6,7 @@ os.environ['PROJ_NETWORK'] = 'ON' # Ensure this is 'ON' to get shift grids over 
 print(f"PROJ_NETWORK is {os.environ['PROJ_NETWORK']}")
 from lidar_tools import dsm_functions
 import pdal
+from pyproj import CRS
 from shapely.geometry import Polygon
 import geopandas as gpd
 import json
@@ -36,14 +37,12 @@ def create_dsm(extent_geojson: str,
                target_wkt: str,
                output_prefix: str,
                source_wkt: str =  None,
-               mosaic: bool = True,
+               process_specific_3dep_survey: str = None,
+               process_all_intersecting_surveys: bool = False,
                cleanup: bool = True,
-               reproject: bool = True,
-               process_all_intersecting_surveys: bool = False) -> None:
+               ) -> None:
     """
-    Create a Digital Surface Model (DSM) from a given extent and point cloud data.
-    This function divides a region of interest into tiles and generates a DSM geotiff from EPT point clouds for each tile using PDAL
-
+    Create a Digital Surface Model (DSM), Digital Terrain Model (DTM) and intensity raster from a given extent and 3DEP point cloud data.
     Parameters
     ----------
     extent_geojson : str
@@ -54,12 +53,12 @@ def create_dsm(extent_geojson: str,
         Path to the WKT file defining the target coordinate reference system (CRS).
     output_prefix : str
         prefix with directory name and filename prefix for the project (e.g., CO_ALS_proc/CO_3DEP_ALS)
-    mosaic : bool
-        Mosaic the output tiles using a weighted average algorithm
     cleanup: bool
         If true, remove the intermediate tif files for the output tiles
     reproject: bool
         If true, perform final reprojection from EPSG:3857 to user sepecified CRS
+    process_specific_3dep_survey: str
+        If specified, only process the given 3DEP survey. This should be a string that matches the survey name in the 3DEP metadata
     process_all_intersecting_surveys: bool
         If true, process all intersecting surveys. If false, only process the first LiDAR survey that intersects the extent defined in the GeoJSON file.
     Returns
@@ -88,7 +87,9 @@ def create_dsm(extent_geojson: str,
     # Specfying a buffer_value > 0 will generate overlapping DEM tiles, resulting in a seamless
     # final mosaicked DEM
     readers, POINTCLOUD_CRS,extents,original_extents = dsm_functions.return_readers(input_aoi, input_crs,
-                                                           pointcloud_resolution = 1, n_rows=5, n_cols=5, buffer_value=5,return_all_intersecting_surveys=process_all_intersecting_surveys)
+                                                           pointcloud_resolution = 1, n_rows=5, n_cols=5, buffer_value=5,
+                                                           return_specific_3dep_survey=process_specific_3dep_survey,
+                                                           return_all_intersecting_surveys=process_all_intersecting_surveys)
     #readers, POINTCLOUD_CRS = dsm_functions.return_reader_inclusive(input_aoi, input_crs,
     #                                                                pointcloud_resolution=POINTCLOUD_RESOLUTION)
     # NOTE: if source_wkt is passed, override POINTCLOUD_CRSs
@@ -236,30 +237,32 @@ def create_dsm(extent_geojson: str,
             pass
         
 
-    if mosaic:
-        print("*** Now creating raster composites ***")
-        dsm_mos_fn = f"{output_prefix}-DSM_mos.tif"
-        print(f"Creating DSM mosaic at {dsm_mos_fn}")
-        dsm_functions.raster_mosaic(dsm_fn_list,dsm_mos_fn)
-        dtm_mos_fn = f"{output_prefix}-DTM_mos.tif"
-        print(f"Creating DTM mosaic at {dtm_mos_fn}")
-        dsm_functions.raster_mosaic(dtm_fn_list,dtm_mos_fn)
-        intensity_mos_fn = f"{output_prefix}-intensity_mos.tif"
-        print(f"Creating intensity raster mosaic at {intensity_mos_fn}")
-        dsm_functions.raster_mosaic(intensity_fn_list,intensity_mos_fn)
-        if cleanup:
-            print("User selected to remove intermediate tile outputs")
-            for fn in dsm_fn_list + dtm_fn_list + intensity_fn_list:
-                try:
-                    Path(fn).unlink()
-                except FileNotFoundError as e:
-                    print(f"Error {e} encountered for file {fn}")
-                    pass
+    
+    print("*** Now creating raster composites ***")
+    dsm_mos_fn = f"{output_prefix}-DSM_mos-temp.tif"
+    print(f"Creating DSM mosaic at {dsm_mos_fn}")
+    dsm_functions.raster_mosaic(dsm_fn_list,dsm_mos_fn)
+    dtm_mos_fn = f"{output_prefix}-DTM_mos-temp.tif"
+    print(f"Creating DTM mosaic at {dtm_mos_fn}")
+    dsm_functions.raster_mosaic(dtm_fn_list,dtm_mos_fn)
+    intensity_mos_fn = f"{output_prefix}-intensity_mos-temp.tif"
+    print(f"Creating intensity raster mosaic at {intensity_mos_fn}")
+    dsm_functions.raster_mosaic(intensity_fn_list,intensity_mos_fn)
+    
+    dsm_reproj = dsm_mos_fn.split('-temp.tif')[0]+".tif"
+    dtm_reproj = dtm_mos_fn.split('-temp.tif')[0]+".tif"
+    intensity_reproj = intensity_mos_fn.split('-temp.tif')[0]+".tif"
+    
+    
+    with open(target_wkt, 'r') as f: #open the file
+        contents = f.read()
+        target_crs = CRS.from_string(contents)
 
-    if reproject:
-        dsm_reproj = os.path.splitext(dsm_mos_fn)[0]+"_reproj.tif"
-        dtm_reproj = os.path.splitext(dtm_mos_fn)[0]+"_reproj.tif"
-        intensity_reproj = os.path.splitext(intensity_mos_fn)[0]+"_reproj.tif"
+    if target_crs != POINTCLOUD_CRS[0]:
+        print("*********Reprojecting DSM, DTM and intensity rasters****")
+        dsm_reproj = dsm_mos_fn.split('-temp.tif')[0]+".tif"
+        dtm_reproj = dtm_mos_fn.split('-temp.tif')[0]+".tif"
+        intensity_reproj = intensity_mos_fn.split('-temp.tif')[0]+".tif"
         reproject_truth_val = dsm_functions.confirm_3dep_vertical(dsm_mos_fn)
         if reproject_truth_val:
             # use input CRS which is EPSG:3857 with heights with respect to the NAVD88 
@@ -274,7 +277,28 @@ def create_dsm(extent_geojson: str,
         dsm_functions.gdal_warp(dtm_mos_fn,dtm_reproj,src_srs,target_wkt)
         print("Reprojecting intensity raster")
         dsm_functions.gdal_warp(intensity_mos_fn,intensity_reproj,src_srs,target_wkt)
+    else:
+        print("No reprojection required")
+        # rename the temp files to the final output names
+        os.rename(dsm_mos_fn, dsm_reproj)
+        os.rename(dtm_mos_fn, dtm_reproj)
+        os.rename(intensity_mos_fn, intensity_reproj)
     print("****Building Gaussian overviews for all rasters****")
     dsm_functions.gdal_add_overview(dsm_reproj)
     dsm_functions.gdal_add_overview(dtm_reproj)
     dsm_functions.gdal_add_overview(intensity_reproj)
+
+    if cleanup:
+        print("User selected to remove intermediate tile outputs")
+        for fn in dsm_fn_list + dtm_fn_list + intensity_fn_list:
+            try:
+                Path(fn).unlink()
+            except FileNotFoundError as e:
+                print(f"Error {e} encountered for file {fn}")
+                pass
+        if os.path.exists(dsm_mos_fn):
+            os.remove(dsm_mos_fn)
+        if os.path.exists(dtm_mos_fn):
+            os.remove(dtm_mos_fn)
+        if os.path.exists(intensity_mos_fn):
+            os.remove(intensity_mos_fn)

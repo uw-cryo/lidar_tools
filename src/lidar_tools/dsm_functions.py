@@ -46,6 +46,7 @@ def return_readers(input_aoi,
                    n_rows = 5,
                    n_cols=5,
                    buffer_value=5,
+                   return_specific_3dep_survey=None,
                    return_all_intersecting_surveys=False):
     """
     This method takes an input aoi and finds overlapping 3DEP EPT data from https://s3-us-west-2.amazonaws.com/usgs-lidar-public/{usgs_dataset_name}/ept.json
@@ -65,6 +66,8 @@ def return_readers(input_aoi,
         The number of columns to divide the AOI into, by default 5.
     buffer_value : int, optional
         The buffer value in meters to apply to each tile, by default 5.
+    return_specific_3dep_survey : str, optional
+        A specific 3DEP survey to return, by default first intersecting survey is returned
     return_all_interescting_surveys : bool, optional
         If True, return all intersecting surveys, by default False.
     Returns
@@ -112,28 +115,37 @@ def return_readers(input_aoi,
             gdf = gpd.read_file('https://raw.githubusercontent.com/hobuinc/usgs-lidar/master/boundaries/resources.geojson').set_crs(4326)
             # in the eventuality that the above URL breaks, we store a local copy
             # gdf = gpd.read_file('../data/shapefiles/resources.geojson').set_crs(4326)
-
+            if return_specific_3dep_survey is not None:
+                return_all_intersecting_surveys = True
             for _, row in gdf.iterrows():
                 if row.geometry.intersects(aoi_4326):
                     usgs_dataset_name = row['name']
-                    print("Dataset being used: ", usgs_dataset_name)
-                    url = f"https://s3-us-west-2.amazonaws.com/usgs-lidar-public/{usgs_dataset_name}/ept.json"
-                    reader = {
-                    "type": "readers.ept",
-                    "filename": url,
-                    "resolution": pointcloud_resolution,
-                    "polygon": str(aoi_3857.wkt),
-                    }
+                    if return_specific_3dep_survey is not None:
+                        if usgs_dataset_name == return_specific_3dep_survey:
+                            add_survey = True
+                        else:
+                            add_survey = False
+                    else:
+                        add_survey = True
+                    if add_survey:
+                        print("Dataset being used: ", usgs_dataset_name)
+                        url = f"https://s3-us-west-2.amazonaws.com/usgs-lidar-public/{usgs_dataset_name}/ept.json"
+                        reader = {
+                        "type": "readers.ept",
+                        "filename": url,
+                        "resolution": pointcloud_resolution,
+                        "polygon": str(aoi_3857.wkt),
+                        }
 
-                    # SRS associated with the 3DEP dataset
-                    response = requests.get(url)
-                    data = response.json()
-                    srs_wkt = data['srs']['wkt']
+                        # SRS associated with the 3DEP dataset
+                        response = requests.get(url)
+                        data = response.json()
+                        srs_wkt = data['srs']['wkt']
 
-                    pointcloud_input_crs.append(CRS.from_wkt(srs_wkt))
-                    readers.append(reader)
-                    extents.append(aoi_3857.bounds)
-                    original_extents.append(src_bounds_transformed_3857)
+                        pointcloud_input_crs.append(CRS.from_wkt(srs_wkt))
+                        readers.append(reader)
+                        extents.append(aoi_3857.bounds)
+                        original_extents.append(src_bounds_transformed_3857)
                     if not return_all_intersecting_surveys:
                         break
 
