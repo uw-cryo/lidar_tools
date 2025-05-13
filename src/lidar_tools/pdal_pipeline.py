@@ -33,7 +33,7 @@ DIMENSION='Z' # can be set to options accepted by writers.gdal. Set to 'intensit
 # -------------------------------------------------------
 
 
-def create_dsm(extent_geojson: str,
+def create_dsm(extent_polygon: str,
                target_wkt: str,
                output_prefix: str,
                source_wkt: str =  None,
@@ -45,7 +45,7 @@ def create_dsm(extent_geojson: str,
     Create a Digital Surface Model (DSM), Digital Terrain Model (DTM) and intensity raster from a given extent and 3DEP point cloud data.
     Parameters
     ----------
-    extent_geojson : str
+    extent_polygon : str
         Path to the GeoJSON file defining the processing extent.
     source_wkt : str or None
         Path to the WKT file defining the source coordinate reference system (CRS). If None, the CRS from the point cloud file is used.
@@ -73,8 +73,8 @@ def create_dsm(extent_geojson: str,
     """
 
     # bounds for which pointcloud is created
-    gdf = gpd.read_file(extent_geojson)
-    xmin, ymin, xmax, ymax = gdf.iloc[0].geometry.bounds
+    gdf = gpd.read_file(extent_polygon)
+    xmin, ymin, xmax, ymax = gdf.total_bounds
 
     input_aoi = Polygon.from_bounds(xmin, ymin, xmax, ymax)
     input_crs = gdf.crs.to_wkt()
