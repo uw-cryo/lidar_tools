@@ -46,7 +46,7 @@ def create_dsm(extent_polygon: str,
     Parameters
     ----------
     extent_polygon : str
-        Path to the GeoJSON file defining the processing extent.
+        Path to the polygon file defining the processing extent.
     source_wkt : str or None
         Path to the WKT file defining the source coordinate reference system (CRS). If None, the CRS from the point cloud file is used.
     target_wkt : str
