@@ -783,6 +783,6 @@ def gdal_add_overview(raster_fn: str) -> None:
     """
     ds = gdal.Open(raster_fn, 1)
     gdal.SetConfigOption('COMPRESS_OVERVIEW', 'DEFLATE')
-    ds.BuildOverviews("GAUSS",[2,4,8,16,32,64,128,256,512,1024,2048,4096],
+    ds.BuildOverviews("GAUSS",[2,4,8,16,32,64],
                       callback=gdal.TermProgress_nocb)
     ds = None
