@@ -769,6 +769,7 @@ def gdal_warp(src_fn: str,
                    srcSRS=src_srs, xRes=res, yRes=res,
                    dstSRS=dst_srs, errorThreshold=tolerance,
                    targetAlignedPixels=True,
+                   # use directly output format as COG when gaussian overview resampling is implemented upstream in GDAL
                    creationOptions=['COMPRESS=LZW','TILED=YES','COPY_SRC_OVERVIEWS=YES'],
                    callback=gdal.TermProgress_nocb)
     ds = None
