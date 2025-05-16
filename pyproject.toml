@@ -27,7 +27,15 @@ dependencies = [
   "rasterio>=1.4.3,<2",
   "scipy>=1.15.1,<2",
   "geopandas>=1.0.1,<2",
-  "requests>=2.32.3,<3"
+  "requests>=2.32.3,<3",
+  "gdal",
+  #"python-pdal>=3.5.4,<4.0.0",
+  "pdal",
+  "rioxarray>=0.19.0,<0.20.0",
+  "planetary-computer",
+  "odc-stac",
+  "pystac-client"
+
 ]
 
 [build-system]
@@ -58,10 +66,15 @@ test-create-dsm = "pdal_pipeline create-dsm --source-wkt notebooks/SRS_CRS.wkt n
 [tool.pixi.dependencies]
 cyclopts = "*"
 geopandas = "*"
-python-pdal = ">=3.4.5,<4"
-rasterio = "*"
 requests = "*"
 scipy = "*"
+pystac-client = "*"
+gdal = "*"
+#python-pdal = "*"
+pdal = "*"
+rioxarray = "*"
+planetary-computer = "*"
+odc-stac = "*"
 
 [tool.pixi.pypi-dependencies]
 lidar_tools = { path = ".", editable = false }
