@@ -293,9 +293,7 @@ def create_dsm(
         reproject_truth_val = dsm_functions.confirm_3dep_vertical(dsm_mos_fn)
         if reproject_truth_val:
             # use input CRS which is EPSG:3857 with heights with respect to the NAVD88
-            epsg_3857_navd88_fn = os.path.join(
-                os.path.dirname(__file__).split("src/")[0], "notebooks/SRS_CRS.wkt"
-            )
+            epsg_3857_navd88_fn = "https://raw.githubusercontent.com/uw-cryo/lidar_tools/refs/heads/main/notebooks/SRS_CRS.wkt"
             src_srs = epsg_3857_navd88_fn
         else:
             src_srs = "EPSG:3857"
