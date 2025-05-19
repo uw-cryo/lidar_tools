@@ -1,59 +1,67 @@
 """
 Generate DSMs from 3DEP EPT data
 """
+
 from rasterio.warp import transform_bounds
 from pyproj import CRS
 import shapely
 import geopandas as gpd
 import requests
-import subprocess
-from shutil import which
 import rasterio
-import xarray as xr 
+import xarray as xr
 import rioxarray
 import pystac_client
 import numpy as np
-#import planetary_computer
-from osgeo import gdal, gdalconst 
+
+# import planetary_computer
+from osgeo import gdal, gdalconst
 import odc.stac
-import os 
+import os
+
+gdal.UseExceptions()
+
 odc.stac.configure_rio(cloud_defaults=True)
 
 
-
-def nearest_floor(x: int | float, 
-                  a: int | float) -> int | float:
+def nearest_floor(x: int | float, a: int | float) -> int | float:
     """
     Round down to the nearest smaller multiple of a.
     From https://github.com/uw-cryo/EarthLab_AirQuality_UAV/blob/main/notebooks/EarthLab_AQ_lidar_download_processing_function.ipynb
     """
     return np.floor(x / a) * a
-def nearest_ceil(x: int | float, 
-                  a: int | float) -> int | float:
+
+
+def nearest_ceil(x: int | float, a: int | float) -> int | float:
     """
     Round down to the nearest larger multiple of a.
     From https://github.com/uw-cryo/EarthLab_AirQuality_UAV/blob/main/notebooks/EarthLab_AQ_lidar_download_processing_function.ipynb
     """
     return np.ceil(x / a) * a
-def tap_bounds(site_bounds: tuple | list | np.ndarray,
-               res: int | float)  -> list:
+
+
+def tap_bounds(site_bounds: tuple | list | np.ndarray, res: int | float) -> list:
     """
     Return target aligned pixel bounds for a given site bounds and resolution.
     From https://github.com/uw-cryo/EarthLab_AirQuality_UAV/blob/main/notebooks/EarthLab_AQ_lidar_download_processing_function.ipynb
     """
-    return ([nearest_floor(site_bounds[0], res), nearest_floor(site_bounds[1], res), \
-            nearest_ceil(site_bounds[2], res), nearest_ceil(site_bounds[3], res)])
+    return [
+        nearest_floor(site_bounds[0], res),
+        nearest_floor(site_bounds[1], res),
+        nearest_ceil(site_bounds[2], res),
+        nearest_ceil(site_bounds[3], res),
+    ]
 
 
-
-def return_readers(input_aoi: gpd.GeoDataFrame,
-                   src_crs : CRS,
-                   pointcloud_resolution: float = 1.0,
-                   n_rows: int = 5,
-                   n_cols: int = 5,
-                   buffer_value: int = 5,
-                   return_specific_3dep_survey: str = None,
-                   return_all_intersecting_surveys: bool = False) -> tuple[list, list, list, list]:
+def return_readers(
+    input_aoi: gpd.GeoDataFrame,
+    src_crs: CRS,
+    pointcloud_resolution: float = 1.0,
+    n_rows: int = 5,
+    n_cols: int = 5,
+    buffer_value: int = 5,
+    return_specific_3dep_survey: str = None,
+    return_all_intersecting_surveys: bool = False,
+) -> tuple[list, list, list, list]:
     """
     This method takes an input aoi and finds overlapping 3DEP EPT data from https://s3-us-west-2.amazonaws.com/usgs-lidar-public/{usgs_dataset_name}/ept.json
     It then returns a series of readers corresponding to non-overlapping areas for PDAL processing pipelines
@@ -100,36 +108,47 @@ def return_readers(input_aoi: gpd.GeoDataFrame,
 
     for i in range(int(n_cols)):
         for j in range(int(n_rows)):
-            aoi = shapely.geometry.Polygon.from_bounds(xmin+i*x_step, ymin+j*y_step, xmin+(i+1)*x_step, ymin+(j+1)*y_step)
+            aoi = shapely.geometry.Polygon.from_bounds(
+                xmin + i * x_step,
+                ymin + j * y_step,
+                xmin + (i + 1) * x_step,
+                ymin + (j + 1) * y_step,
+            )
 
             src_bounds_transformed = transform_bounds(src_crs, dst_crs, *aoi.bounds)
             aoi_4326 = shapely.geometry.Polygon.from_bounds(*src_bounds_transformed)
 
-            src_bounds_transformed_3857 = transform_bounds(src_crs, CRS.from_epsg(3857), *aoi.bounds)
-            #create tap bounds for the tile
-            src_bounds_transformed_3857 = tap_bounds(src_bounds_transformed_3857, pointcloud_resolution)
-            aoi_3857 = shapely.geometry.Polygon.from_bounds(*src_bounds_transformed_3857)
+            src_bounds_transformed_3857 = transform_bounds(
+                src_crs, CRS.from_epsg(3857), *aoi.bounds
+            )
+            # create tap bounds for the tile
+            src_bounds_transformed_3857 = tap_bounds(
+                src_bounds_transformed_3857, pointcloud_resolution
+            )
+            aoi_3857 = shapely.geometry.Polygon.from_bounds(
+                *src_bounds_transformed_3857
+            )
             print(aoi.bounds, src_bounds_transformed_3857)
             if buffer_value:
                 print(f"The tile polygon will be buffered by {buffer_value:.2f} m")
-                #buffer the tile polygon by the buffer value
+                # buffer the tile polygon by the buffer value
                 aoi_3857 = aoi_3857.buffer(buffer_value)
                 # now create tap bounds for the buffered tile
                 aoi_3857_bounds = tap_bounds(aoi_3857.bounds, pointcloud_resolution)
                 # now convert the buffered tile to a polygon
                 aoi_3857 = shapely.geometry.Polygon.from_bounds(*aoi_3857_bounds)
-                print(f"The buffered tile bound is: ", aoi_3857.bounds)
-                
+                print("The buffered tile bound is: ", aoi_3857.bounds)
 
-
-            gdf = gpd.read_file('https://raw.githubusercontent.com/hobuinc/usgs-lidar/master/boundaries/resources.geojson').set_crs(4326)
+            gdf = gpd.read_file(
+                "https://raw.githubusercontent.com/hobuinc/usgs-lidar/master/boundaries/resources.geojson"
+            ).set_crs(4326)
             # in the eventuality that the above URL breaks, we store a local copy
             # gdf = gpd.read_file('../data/shapefiles/resources.geojson').set_crs(4326)
             if return_specific_3dep_survey is not None:
                 return_all_intersecting_surveys = True
             for _, row in gdf.iterrows():
                 if row.geometry.intersects(aoi_4326):
-                    usgs_dataset_name = row['name']
+                    usgs_dataset_name = row["name"]
                     if return_specific_3dep_survey is not None:
                         if usgs_dataset_name == return_specific_3dep_survey:
                             add_survey = True
@@ -141,16 +160,16 @@ def return_readers(input_aoi: gpd.GeoDataFrame,
                         print("Dataset being used: ", usgs_dataset_name)
                         url = f"https://s3-us-west-2.amazonaws.com/usgs-lidar-public/{usgs_dataset_name}/ept.json"
                         reader = {
-                        "type": "readers.ept",
-                        "filename": url,
-                        "resolution": pointcloud_resolution,
-                        "polygon": str(aoi_3857.wkt),
+                            "type": "readers.ept",
+                            "filename": url,
+                            "resolution": pointcloud_resolution,
+                            "polygon": str(aoi_3857.wkt),
                         }
 
                         # SRS associated with the 3DEP dataset
                         response = requests.get(url)
                         data = response.json()
-                        srs_wkt = data['srs']['wkt']
+                        srs_wkt = data["srs"]["wkt"]
 
                         pointcloud_input_crs.append(CRS.from_wkt(srs_wkt))
                         readers.append(reader)
@@ -159,44 +178,44 @@ def return_readers(input_aoi: gpd.GeoDataFrame,
                     if not return_all_intersecting_surveys:
                         break
 
-            
-
     return readers, pointcloud_input_crs, extents, original_extents
 
 
 # need to revisit this, a lot of the functionality is not used
-def create_pdal_pipeline(filter_low_noise: bool = False, 
-                         filter_high_noise: bool = False,
-                         filter_road: bool = False, 
-                         reset_classes: bool = False, 
-                         reclassify_ground: bool = False,
-                         return_only_ground: bool = False, 
-                         percentile_filter: bool = False, 
-                         percentile_threshold: float = 0.95,
-                         group_filter: str = "first,only", 
-                         reproject: bool = True, 
-                         save_pointcloud: bool = False,
-                         pointcloud_file: str = 'pointcloud', 
-                         input_crs: CRS = None,
-                         output_crs: CRS = None, 
-                         output_type: str = 'laz')  -> dict:
+def create_pdal_pipeline(
+    filter_low_noise: bool = False,
+    filter_high_noise: bool = False,
+    filter_road: bool = False,
+    reset_classes: bool = False,
+    reclassify_ground: bool = False,
+    return_only_ground: bool = False,
+    percentile_filter: bool = False,
+    percentile_threshold: float = 0.95,
+    group_filter: str = "first,only",
+    reproject: bool = True,
+    save_pointcloud: bool = False,
+    pointcloud_file: str = "pointcloud",
+    input_crs: CRS = None,
+    output_crs: CRS = None,
+    output_type: str = "laz",
+) -> dict:
     """
     Create a PDAL pipeline for processing point clouds.
-    Parameters                          
-    ----------  
+    Parameters
+    ----------
     filter_low_noise : bool, optional
         Whether to filter low noise points, by default False.
     filter_high_noise : bool, optional
-        Whether to filter high noise points, by default False.              
+        Whether to filter high noise points, by default False.
     filter_road : bool, optional
         Whether to filter road points, by default False.
     reset_classes : bool, optional
-        Whether to reset point classifications, by default False.       
-    reclassify_ground : bool, optional          
+        Whether to reset point classifications, by default False.
+    reclassify_ground : bool, optional
         Whether to reclassify ground points, by default False.
     return_only_ground : bool, optional
-        Whether to return only ground points, by default False.         
-    percentile_filter : bool, optional      
+        Whether to return only ground points, by default False.
+    percentile_filter : bool, optional
         Whether to apply a percentile filter, by default False.
     percentile_threshold : float, optional
         The percentile threshold for the filter, by default 0.95.
@@ -204,84 +223,68 @@ def create_pdal_pipeline(filter_low_noise: bool = False,
         The group filter to apply, by default "first,only" for generating DSM.
     reproject : bool, optional
         Whether to reproject the point cloud, by default True.
-    save_pointcloud : bool, optional    
+    save_pointcloud : bool, optional
         Whether to save the point cloud to a file, by default False.
     pointcloud_file : str, optional
-        The filename for the output point cloud, by default 'pointcloud'.   
+        The filename for the output point cloud, by default 'pointcloud'.
     input_crs : pyproj.CRS, optional
         The input coordinate reference system, by default None.
     output_crs : pyproj.CRS, optional
         The output coordinate reference system, by default None.
-    output_type : str, optional 
+    output_type : str, optional
         The output type, either 'las' or 'laz', by default 'laz' if save_pointcloud is True.
     Returns
     -------
     dict
         A PDAL pipeline for processing point clouds.
     """
-    #this is probably not needed, revisit
-    assert abs(percentile_threshold) <= 1, "Percentile threshold must be in range [0, 1]"
-    assert output_type in ['las', 'laz'], "Output type must be either 'las' or 'laz'"
+    # this is probably not needed, revisit
+    assert abs(percentile_threshold) <= 1, (
+        "Percentile threshold must be in range [0, 1]"
+    )
+    assert output_type in ["las", "laz"], "Output type must be either 'las' or 'laz'"
     assert output_crs is not None, "Argument 'output_crs' must be explicitly specified!"
 
-    stage_filter_low_noise = {
-        "type":"filters.range",
-        "limits":"Classification![7:7]"
-    }
+    stage_filter_low_noise = {"type": "filters.range", "limits": "Classification![7:7]"}
     stage_filter_high_noise = {
-        "type":"filters.range",
-        "limits":"Classification![18:18]"
+        "type": "filters.range",
+        "limits": "Classification![18:18]",
     }
-    stage_filter_road = {
-        "type":"filters.range",
-        "limits":"Classification![11:11]"
-    }
-    stage_reset_classes = {
-        "type":"filters.assign",
-        "value":"Classification = 0"
-    }
+    stage_filter_road = {"type": "filters.range", "limits": "Classification![11:11]"}
+    stage_reset_classes = {"type": "filters.assign", "value": "Classification = 0"}
     stage_reclassify_ground = {
-        "type":"filters.smrf",
+        "type": "filters.smrf",
         # added from pdal smrf documentation, in turn from Pingel, 2013
-        "scalar":1.2,
-        "slope":0.2,
-        "threshold":0.45,
-        "window":8.0
+        "scalar": 1.2,
+        "slope": 0.2,
+        "threshold": 0.45,
+        "window": 8.0,
     }
-    stage_group_filter = {
-        "type":"filters.returns",
-        "groups":group_filter
+    stage_group_filter = {"type": "filters.returns", "groups": group_filter}
+    stage_percentile_filter = {
+        "type": "filters.python",
+        "script": "filter_percentile.py",
+        "pdalargs": {"percentile_threshold": percentile_threshold},
+        "function": "filter_percentile",
+        "module": "anything",
     }
-    stage_percentile_filter =  {
-        "type":"filters.python",
-        "script":"filter_percentile.py",
-        "pdalargs": {"percentile_threshold":percentile_threshold},
-        "function":"filter_percentile",
-        "module":"anything"
-    }
-    stage_return_ground = {
-        "type":"filters.range",
-        "limits":"Classification[2:2]"
-    }
+    stage_return_ground = {"type": "filters.range", "limits": "Classification[2:2]"}
 
-    stage_reprojection = {
-        "type":"filters.reprojection",
-        "out_srs":str(output_crs)
-    }
+    stage_reprojection = {"type": "filters.reprojection", "out_srs": str(output_crs)}
     if input_crs is not None:
         stage_reprojection["in_srs"] = str(input_crs)
 
     stage_save_pointcloud_las = {
         "type": "writers.las",
-        "filename": f"{pointcloud_file}.las"
+        "filename": f"{pointcloud_file}.las",
     }
-    
+
     stage_save_pointcloud_laz = {
         "type": "writers.las",
         "compression": "true",
         "minor_version": "2",
         "dataformat_id": "0",
-        "filename": f"{pointcloud_file}.laz"
+        "filename": f"{pointcloud_file}.laz",
     }
 
     # Build pipeline
@@ -316,7 +319,7 @@ def create_pdal_pipeline(filter_low_noise: bool = False,
 
     # the pipeline can save the pointclouds to a separate file if needed
     if save_pointcloud:
-        if output_type == 'laz':
+        if output_type == "laz":
             pipeline.append(stage_save_pointcloud_laz)
         else:
             pipeline.append(stage_save_pointcloud_las)
@@ -324,11 +327,13 @@ def create_pdal_pipeline(filter_low_noise: bool = False,
     return pipeline
 
 
-def create_dem_stage(dem_filename: str, 
-                     extent: list, 
-                     pointcloud_resolution: float =1.0,
-                     gridmethod: str = 'idw', 
-                     dimension: str = 'Z') -> list:
+def create_dem_stage(
+    dem_filename: str,
+    extent: list,
+    pointcloud_resolution: float = 1.0,
+    gridmethod: str = "idw",
+    dimension: str = "Z",
+) -> list:
     """
     Create a PDAL stage for generating a DEM from a point cloud.
     Parameters
@@ -342,41 +347,38 @@ def create_dem_stage(dem_filename: str,
     gridmethod : str, optional
         The grid method to use for generating the DEM, by default 'idw'.
     dimension : str, optional
-        The dimension to use for the DEM, by default 'Z'.           
-    Returns                                                             
-    ------- 
+        The dimension to use for the DEM, by default 'Z'.
+    Returns
+    -------
     list of dict
         A list of PDAL stages for generating the DEM.
     """
-    
-    #compute raster width and height
-    width = (extent[2] - extent[0]) / pointcloud_resolution 
+
+    # compute raster width and height
+    width = (extent[2] - extent[0]) / pointcloud_resolution
     height = (extent[3] - extent[1]) / pointcloud_resolution
     origin_x = extent[0]
     origin_y = extent[1]
     dem_stage = {
-            "type":"writers.gdal",
-            "filename":dem_filename,
-            "gdaldriver":'GTiff',
-            "nodata":-9999,
-            "output_type":gridmethod,
-            "resolution":float(pointcloud_resolution),
-            "origin_x":origin_x,
-            "origin_y":origin_y,
-            "width":width,
-            "height":height,
-            "gdalopts":"COMPRESS=LZW,TILED=YES,blockxsize=256,blockysize=256,COPY_SRC_OVERVIEWS=YES"
+        "type": "writers.gdal",
+        "filename": dem_filename,
+        "gdaldriver": "GTiff",
+        "nodata": -9999,
+        "output_type": gridmethod,
+        "resolution": float(pointcloud_resolution),
+        "origin_x": origin_x,
+        "origin_y": origin_y,
+        "width": width,
+        "height": height,
+        "gdalopts": "COMPRESS=LZW,TILED=YES,blockxsize=256,blockysize=256,COPY_SRC_OVERVIEWS=YES",
     }
 
-    dem_stage.update({
-            'dimension':dimension
-        })
+    dem_stage.update({"dimension": dimension})
 
     return [dem_stage]
 
 
-def raster_mosaic(img_list: list,
-                  outfn: str) -> None:
+def raster_mosaic(img_list: list, outfn: str) -> None:
     """
     Given a list of input images, mosaic them into a COG raster by using vrt and gdal_translate
     im_list: list
@@ -385,21 +387,24 @@ def raster_mosaic(img_list: list,
         Path to output mosaicked image
     """
     # create vrt
-    vrt_fn = os.path.splitext(outfn)[0]+'.vrt'
-    gdal.BuildVRT(vrt_fn,img_list,
-                  callback=gdal.TermProgress_nocb)
+    vrt_fn = os.path.splitext(outfn)[0] + ".vrt"
+    gdal.BuildVRT(vrt_fn, img_list, callback=gdal.TermProgress_nocb)
     # translate to COG
-    gdal.Translate(outfn,vrt_fn,
-                   callback=gdal.TermProgress_nocb)
+    gdal.Translate(outfn, vrt_fn, callback=gdal.TermProgress_nocb)
     # delete vrt
     os.remove(vrt_fn)
 
 
 ### Functions for datum checks
 
+
 def get_esa_worldcover(
-    bbox_input: gpd.GeoDataFrame | tuple | shapely.geometry.base.BaseGeometry | None = None,
-    version: str = "v200", mask_nodata: bool = False,
+    bbox_input: gpd.GeoDataFrame
+    | tuple
+    | shapely.geometry.base.BaseGeometry
+    | None = None,
+    version: str = "v200",
+    mask_nodata: bool = False,
 ) -> xr.DataArray:
     """
     Adapted from easysnowdata.remote_sensing.get_esa_worldcover (MIT license)
@@ -430,13 +435,13 @@ def get_esa_worldcover(
     --------
     >>> import geopandas as gpd
     >>> import easysnowdata
-    >>> 
+    >>>
     >>> # Define a bounding box for Mount Rainier
     >>> bbox = (-121.94, 46.72, -121.54, 46.99)
-    >>> 
+    >>>
     >>> # Fetch WorldCover data for the area
     >>> worldcover_da = easysnowdata.remote_sensing.get_esa_worldcover(bbox)
-    >>> 
+    >>>
     >>> # Plot the data using the example plot function
     >>> f, ax = worldcover_da.attrs['example_plot'](worldcover_da)
 
@@ -464,8 +469,6 @@ def get_esa_worldcover(
         }
         return classes
 
-    
-
     # Convert the input to a GeoDataFrame if it's not already one
     bbox_gdf = convert_bbox_to_geodataframe(bbox_input)
 
@@ -476,6 +479,7 @@ def get_esa_worldcover(
     else:
         raise ValueError("Incorrect version number. Please provide 'v100' or 'v200'.")
     import planetary_computer
+
     catalog = pystac_client.Client.open(
         "https://planetarycomputer.microsoft.com/api/stac/v1",
         modifier=planetary_computer.sign_inplace,
@@ -490,22 +494,25 @@ def get_esa_worldcover(
     )
 
     if mask_nodata:
-        worldcover_da = worldcover_da.where(worldcover_da>0)
+        worldcover_da = worldcover_da.where(worldcover_da > 0)
         worldcover_da.rio.write_nodata(0, encoded=True, inplace=True)
 
     worldcover_da.attrs["class_info"] = get_class_info()
-    #worldcover_da.attrs["cmap"] = get_class_cmap(worldcover_da.attrs["class_info"])
-    worldcover_da.attrs['data_citation'] = "Zanaga, D., Van De Kerchove, R., De Keersmaecker, W., Souverijns, N., Brockmann, C., Quast, R., Wevers, J., Grosu, A., Paccini, A., Vergnaud, S., Cartus, O., Santoro, M., Fritz, S., Georgieva, I., Lesiv, M., Carter, S., Herold, M., Li, Linlin, Tsendbazar, N.E., Ramoino, F., Arino, O. (2021). ESA WorldCover 10 m 2020 v100. doi:10.5281/zenodo.5571936."
-    
-    #worldcover_da.attrs['example_plot'] = plot_classes
+    # worldcover_da.attrs["cmap"] = get_class_cmap(worldcover_da.attrs["class_info"])
+    worldcover_da.attrs["data_citation"] = (
+        "Zanaga, D., Van De Kerchove, R., De Keersmaecker, W., Souverijns, N., Brockmann, C., Quast, R., Wevers, J., Grosu, A., Paccini, A., Vergnaud, S., Cartus, O., Santoro, M., Fritz, S., Georgieva, I., Lesiv, M., Carter, S., Herold, M., Li, Linlin, Tsendbazar, N.E., Ramoino, F., Arino, O. (2021). ESA WorldCover 10 m 2020 v100. doi:10.5281/zenodo.5571936."
+    )
+
+    # worldcover_da.attrs['example_plot'] = plot_classes
 
     return worldcover_da
 
 
-def fetch_worldcover(raster_fn: str,
-                    match_grid_da: xr.DataArray =None) -> xr.DataArray:
-    """     
-    Fetches ESA WorldCover data for a given raster file extent. 
+def fetch_worldcover(
+    raster_fn: str, match_grid_da: xr.DataArray = None
+) -> xr.DataArray:
+    """
+    Fetches ESA WorldCover data for a given raster file extent.
     This function retrieves the ESA WorldCover data for the area defined by the raster file's extent.
     Parameters
     ----------
@@ -521,23 +528,27 @@ def fetch_worldcover(raster_fn: str,
 
     with rasterio.open(raster_fn) as dataset:
         bounds = dataset.bounds
-        bounds = rasterio.warp.transform_bounds(dataset.crs, 'EPSG:4326', *bounds)
-        bbox_gdf = gpd.GeoDataFrame(geometry=[shapely.box(*bounds)],crs='EPSG:4326',index=[0])
-    
-    da_wc = get_esa_worldcover(bbox_gdf,mask_nodata=True)
+        bounds = rasterio.warp.transform_bounds(dataset.crs, "EPSG:4326", *bounds)
+        bbox_gdf = gpd.GeoDataFrame(
+            geometry=[shapely.box(*bounds)], crs="EPSG:4326", index=[0]
+        )
+
+    da_wc = get_esa_worldcover(bbox_gdf, mask_nodata=True)
     if match_grid_da is not None:
-        da_wc = da_wc.rio.reproject_match(match_grid_da,resampling=rasterio.enums.Resampling.nearest)
+        da_wc = da_wc.rio.reproject_match(
+            match_grid_da, resampling=rasterio.enums.Resampling.nearest
+        )
     return da_wc
 
-def common_mask(da_list: list,
-                apply: bool =False) -> list | np.ndarray:
+
+def common_mask(da_list: list, apply: bool = False) -> list | np.ndarray:
     """
     From a list of xarray dataarray objects sharing the same projection/extent/res, compute common mask where all input datasets have non-nan pixels
     Parameters
     ----------
     da_list : list
         List of xarray DataArray objects to compute the common mask from.
-    apply : bool, optional  
+    apply : bool, optional
         If True, apply the common mask to the input DataArray objects. Default is False.
     Returns
     -------
@@ -547,14 +558,18 @@ def common_mask(da_list: list,
     """
     # load nan layers as numpy array
     nan_arrays = np.array([np.isnan(da.values) for da in da_list])
-    common_mask = 1 - np.any(nan_arrays,axis=0)
-    
+    common_mask = 1 - np.any(nan_arrays, axis=0)
+
     if apply:
-        common_mask_da_list = [da.where(common_mask,np.nan) for da in da_list]
+        common_mask_da_list = [da.where(common_mask, np.nan) for da in da_list]
         return common_mask_da_list
     else:
         return common_mask
-def convert_bbox_to_geodataframe(bbox_input: gpd.GeoDataFrame | tuple | shapely.geometry.base.BaseGeometry) -> gpd.GeoDataFrame:
+
+
+def convert_bbox_to_geodataframe(
+    bbox_input: gpd.GeoDataFrame | tuple | shapely.geometry.base.BaseGeometry,
+) -> gpd.GeoDataFrame:
     """
     Adapted from easysnowdata.remote_sensing.get_esa_worldcover (MIT license)
     Author: Eric Gagliano https://github.com/egagli/easysnowdata/blob/main/easysnowdata/utils.py
@@ -596,9 +611,14 @@ def convert_bbox_to_geodataframe(bbox_input: gpd.GeoDataFrame | tuple | shapely.
         bbox_input = gpd.GeoDataFrame(geometry=[bbox_input], crs="EPSG:4326")
 
     return bbox_input
-               
-def get_copernicus_dem(bbox_input: gpd.GeoDataFrame | tuple | shapely.geometry.base.BaseGeometry | None = None,
-                       resolution: int = 30
+
+
+def get_copernicus_dem(
+    bbox_input: gpd.GeoDataFrame
+    | tuple
+    | shapely.geometry.base.BaseGeometry
+    | None = None,
+    resolution: int = 30,
 ) -> xr.DataArray:
     """
     Adapted from easysnowdata.remote_sensing.get_esa_worldcover (MIT license)
@@ -637,23 +657,32 @@ def get_copernicus_dem(bbox_input: gpd.GeoDataFrame | tuple | shapely.geometry.b
     Distributed by OpenTopography. https://doi.org/10.5069/G9028PQB. Accessed: 2024-03-18
     """
     import planetary_computer
+
     if resolution != 30 and resolution != 90:
-        raise ValueError("Copernicus DEM resolution is available in 30m and 90m. Please select either 30 or 90.")
+        raise ValueError(
+            "Copernicus DEM resolution is available in 30m and 90m. Please select either 30 or 90."
+        )
 
     # Convert the input to a GeoDataFrame if it's not already one
-    bbox_gdf =  convert_bbox_to_geodataframe(bbox_input)
+    bbox_gdf = convert_bbox_to_geodataframe(bbox_input)
 
-    catalog = pystac_client.Client.open("https://planetarycomputer.microsoft.com/api/stac/v1",modifier=planetary_computer.sign_inplace)
-    search = catalog.search(collections=[f"cop-dem-glo-{resolution}"],bbox=bbox_gdf.total_bounds)
-    cop_dem_da = odc.stac.load(search.items(),bbox=bbox_gdf.total_bounds,chunks={})['data'].squeeze()
-    cop_dem_da = cop_dem_da.rio.write_nodata(-32767,encoded=True)
+    catalog = pystac_client.Client.open(
+        "https://planetarycomputer.microsoft.com/api/stac/v1",
+        modifier=planetary_computer.sign_inplace,
+    )
+    search = catalog.search(
+        collections=[f"cop-dem-glo-{resolution}"], bbox=bbox_gdf.total_bounds
+    )
+    cop_dem_da = odc.stac.load(search.items(), bbox=bbox_gdf.total_bounds, chunks={})[
+        "data"
+    ].squeeze()
+    cop_dem_da = cop_dem_da.rio.write_nodata(-32767, encoded=True)
 
     return cop_dem_da
 
 
-def fetch_cop30(raster_fn: str,
-                match_grid_da: xr.DataArray = None) -> xr.DataArray:
-    """ 
+def fetch_cop30(raster_fn: str, match_grid_da: xr.DataArray = None) -> xr.DataArray:
+    """
     Fetches Copernicus DEM data for a given raster file extent.
     This function retrieves the Copernicus DEM data for the area defined by the raster file's extent.
     Parameters
@@ -669,18 +698,19 @@ def fetch_cop30(raster_fn: str,
     """
     with rasterio.open(raster_fn) as dataset:
         bounds = dataset.bounds
-        bounds = rasterio.warp.transform_bounds(dataset.crs, 'EPSG:4326', *bounds)
-        bbox_gdf = gpd.GeoDataFrame(geometry=[shapely.box(*bounds)],crs='EPSG:4326',index=[0])
-    cop_da = get_copernicus_dem(bbox_gdf,
-                                        resolution=30)
+        bounds = rasterio.warp.transform_bounds(dataset.crs, "EPSG:4326", *bounds)
+        bbox_gdf = gpd.GeoDataFrame(
+            geometry=[shapely.box(*bounds)], crs="EPSG:4326", index=[0]
+        )
+    cop_da = get_copernicus_dem(bbox_gdf, resolution=30)
     if match_grid_da is not None:
-        cop_da = cop_da.rio.reproject_match(match_grid_da,resampling=rasterio.enums.Resampling.cubic)
+        cop_da = cop_da.rio.reproject_match(
+            match_grid_da, resampling=rasterio.enums.Resampling.cubic
+        )
     return cop_da
 
 
-
-def confirm_3dep_vertical(raster_fn: str,
-                bare_diff_tolerance: float = 3.0) -> bool:
+def confirm_3dep_vertical(raster_fn: str, bare_diff_tolerance: float = 3.0) -> bool:
     """
     Check if the 3DEP LiDAR DSM is with respect to geoid or ellipsoid by comparing it with COP30 EGM2008 DEM
     Parameters
@@ -695,25 +725,34 @@ def confirm_3dep_vertical(raster_fn: str,
         True if the 3DEP LiDAR DSM is with respect to geoid, False otherwise.
     """
 
-    lidar_da = rioxarray.open_rasterio(raster_fn,masked=True).squeeze()
-    worldcover_da = fetch_worldcover(raster_fn,lidar_da)
-    cop30_da = fetch_cop30(raster_fn,lidar_da)
-    lidar_da_masked,worldcover_da_masked,cop30_da_masked = common_mask([lidar_da,worldcover_da,cop30_da],apply=True)
+    lidar_da = rioxarray.open_rasterio(raster_fn, masked=True).squeeze()
+    worldcover_da = fetch_worldcover(raster_fn, lidar_da)
+    cop30_da = fetch_cop30(raster_fn, lidar_da)
+    lidar_da_masked, worldcover_da_masked, cop30_da_masked = common_mask(
+        [lidar_da, worldcover_da, cop30_da], apply=True
+    )
     dem_diff = lidar_da_masked - cop30_da_masked
     ## Mask out bare and sparse vegetation class
     bare_sparse_mask = worldcover_da_masked == 60
-    dem_diff_bare = dem_diff.where(bare_sparse_mask,np.nan)
+    dem_diff_bare = dem_diff.where(bare_sparse_mask, np.nan)
     median_diff = np.nanmedian(dem_diff_bare.values)
-    print(f"Observed difference between COP30 EGM2008 and 3DEP LiDAR DSM over bareground and sparse vegetation surfaces is {median_diff:.2f} m")
+    print(
+        f"Observed difference between COP30 EGM2008 and 3DEP LiDAR DSM over bareground and sparse vegetation surfaces is {median_diff:.2f} m"
+    )
     if np.abs(median_diff) <= bare_diff_tolerance:
-        #this means that both COP30 and 3DEP LiDAR DSM are with respect to geoid
-        print("Looks like the 3DEP height estimates are with respect to geiod, will apply vertical datum shift to return heights with respect to ellipsoid")
+        # this means that both COP30 and 3DEP LiDAR DSM are with respect to geoid
+        print(
+            "Looks like the 3DEP height estimates are with respect to geiod, will apply vertical datum shift to return heights with respect to ellipsoid"
+        )
         out = True
     else:
-        #this means that 3DEP LiDAR DSM is with respect to ellipsoid
-        print("Looks like the 3DEP height estimates are already with respect to ellipsoid, geoid to ellipsoid transformation will not be attempted")
+        # this means that 3DEP LiDAR DSM is with respect to ellipsoid
+        print(
+            "Looks like the 3DEP height estimates are already with respect to ellipsoid, geoid to ellipsoid transformation will not be attempted"
+        )
         out = False
     return out
+
 
 def check_raster_validity(raster_fn: str) -> bool:
     """
@@ -729,26 +768,30 @@ def check_raster_validity(raster_fn: str) -> bool:
     bool
         True if the raster file is valid, False otherwise.
     """
-    da = rioxarray.open_rasterio(raster_fn,masked=True).squeeze()
+    da = rioxarray.open_rasterio(raster_fn, masked=True).squeeze()
     if da.rio.crs is None:
-        #print(f"Raster {raster_fn} does not have a valid CRS.")
+        # print(f"Raster {raster_fn} does not have a valid CRS.")
         out = False
     else:
-        #print(f"Raster {raster_fn} has a valid CRS.")
+        # print(f"Raster {raster_fn} has a valid CRS.")
         out = True
-    return out   
-def gdal_warp(src_fn: str,
-                dst_fn: str, 
-                src_srs: str, 
-                dst_srs: str, 
-                res: float = 1.0,
-                resampling_alogrithm: str ='cubic') -> None:
+    return out
+
+
+def gdal_warp(
+    src_fn: str,
+    dst_fn: str,
+    src_srs: str,
+    dst_srs: str,
+    res: float = 1.0,
+    resampling_alogrithm: str = "cubic",
+) -> None:
     """
     Warp a raster file to a new coordinate reference system and resolution using GDAL.
     Parameters
-    ----------      
+    ----------
     src_fn : str
-        Path to the source raster file. 
+        Path to the source raster file.
     dst_fn : str
         Path to the destination raster file.
     src_srs : str
@@ -757,22 +800,35 @@ def gdal_warp(src_fn: str,
         Destination coordinate reference system in WKT format
     res : float, optional
         Resolution for the output raster, by default 1.0.
-    resampling_alogrithm : str, optional    
+    resampling_alogrithm : str, optional
         Resampling algorithm to use, by default 'cubic'.
     """
     tolerance = 0
-    resampling_mapping = {"nearest":  gdalconst.GRA_NearestNeighbour, "bilinear": gdalconst.GRA_Bilinear,
-                  "cubic": gdalconst.GRA_Cubic, "cubic_spline": gdalconst.GRA_CubicSpline}
+    resampling_mapping = {
+        "nearest": gdalconst.GRA_NearestNeighbour,
+        "bilinear": gdalconst.GRA_Bilinear,
+        "cubic": gdalconst.GRA_Cubic,
+        "cubic_spline": gdalconst.GRA_CubicSpline,
+    }
     resampling_alg = resampling_mapping[resampling_alogrithm]
-    ds = gdal.Warp(dst_fn, src_fn,
-                   resampleAlg=resampling_alg,
-                   srcSRS=src_srs, xRes=res, yRes=res,
-                   dstSRS=dst_srs, errorThreshold=tolerance,
-                   targetAlignedPixels=True,
-                   # use directly output format as COG when gaussian overview resampling is implemented upstream in GDAL
-                   creationOptions=['COMPRESS=LZW','TILED=YES','COPY_SRC_OVERVIEWS=YES'],
-                   callback=gdal.TermProgress_nocb)
-    ds = None
+
+    ds = gdal.Warp(
+        dst_fn,
+        src_fn,
+        resampleAlg=resampling_alg,
+        srcSRS=src_srs,
+        xRes=res,
+        yRes=res,
+        dstSRS=dst_srs,
+        errorThreshold=tolerance,
+        targetAlignedPixels=True,
+        # use directly output format as COG when gaussian overview resampling is implemented upstream in GDAL
+        creationOptions=["COMPRESS=LZW", "TILED=YES", "COPY_SRC_OVERVIEWS=YES"],
+        callback=gdal.TermProgress_nocb,
+    )
+    ds.Close()
+
+
 def gdal_add_overview(raster_fn: str) -> None:
     """
     Add overviews to a raster file using GDAL.
@@ -782,8 +838,8 @@ def gdal_add_overview(raster_fn: str) -> None:
     raster_fn : str
         Path to the raster file.
     """
-    ds = gdal.Open(raster_fn, 1)
-    gdal.SetConfigOption('COMPRESS_OVERVIEW', 'DEFLATE')
-    ds.BuildOverviews("GAUSS",[2,4,8,16,32,64],
-                      callback=gdal.TermProgress_nocb)
-    ds = None
+    with gdal.Open(raster_fn, 1) as ds:
+        gdal.SetConfigOption("COMPRESS_OVERVIEW", "DEFLATE")
+        ds.BuildOverviews(
+            "GAUSS", [2, 4, 8, 16, 32, 64], callback=gdal.TermProgress_nocb
+        )
