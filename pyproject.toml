@@ -20,22 +20,19 @@ classifiers = [
   "Programming Language :: Python :: 3 :: Only",
 ]
 
-dependencies = [
-  #Not recommended, install via conda-forge instead
-  #"PDAL>=3.4.5,<4",
-  "cyclopts>=3.9.0,<4",
-  "rasterio>=1.4.3,<2",
-  "scipy>=1.15.1,<2",
-  "geopandas>=1.0.1,<2",
-  "requests>=2.32.3,<3",
-  "gdal",
-  #"python-pdal>=3.5.4,<4.0.0",
-  "pdal",
-  "rioxarray>=0.19.0,<0.20.0",
-  "planetary-computer",
-  "odc-stac",
-  "pystac-client"
-
+dependencies = [ 
+  "cyclopts >=3.16.1,<4", 
+  "gdal >=3.10.3,<4", 
+  "geopandas >=1.0.1,<2", 
+  "ipykernel >=6.29.5,<7",
+  "planetary-computer >=1.0.0,<2", 
+  # NOTE: from pip this installs *python-pdal*, just get from conda
+  "pdal >=3.4.5,<4", 
+  "pystac-client >=0.8.6,<0.9", 
+  "rioxarray >=0.19.0,<0.20", 
+  "requests >=2.32.3,<3", 
+  "scipy >=1.15.2,<2", 
+  "odc-stac >=0.4.0,<0.5"
 ]
 
 [build-system]
@@ -44,12 +41,16 @@ requires = ["hatchling"]
 
 [project.optional-dependencies]
 dev = [
-  "ipykernel>=6.29.5,<7",
-  "pytest >=6",
+  "mypy >=1.15.0,<2",
+  "pytest >=8.3.5,<9",
+  "ruff >=0.11.10,<0.12"
 ]
 
 [project.scripts]
 pdal_pipeline = "lidar_tools.cli:app"
+
+[tool.ruff.lint.per-file-ignores]
+"pdal_pipeline.py" = ["E402"]
 
 [tool.pixi.project]
 channels = ["conda-forge"]
@@ -58,30 +59,35 @@ platforms = ["osx-arm64", "linux-64"]
 [tool.pixi.environments]
 dev = { features = ["dev"], solve-group = "default" }
 
+[tool.pixi.tasks]
+example = "pdal_pipeline create-dsm --source-wkt notebooks/SRS_CRS.wkt notebooks/CO_LiDAR_test_area_final.geojson notebooks/UTM_13N_WGS84_G2139_3D.wkt /tmp/dem"
+
 [tool.pixi.feature.dev.tasks]
 test = "pytest"
-# pdal_pipeline create-dsm --extent-geojson notebooks/CO_LiDAR_test_area_final.geojson --source-wkt notebooks/SRS_CRS.wkt --target-wkt notebooks/UTM_13N_WGS84_G2139_3D.wkt --output-prefix /tmp/dem
+typecheck = "mypy src/lidar_tools/"
+lint = "ruff check src/lidar_tools/ --fix ; ruff format"
 test-create-dsm = "pdal_pipeline create-dsm --source-wkt notebooks/SRS_CRS.wkt notebooks/CO_LiDAR_test_area_final.geojson notebooks/UTM_13N_WGS84_G2139_3D.wkt /tmp/dem"
 
 [tool.pixi.dependencies]
 cyclopts = "*"
+gdal = "*"
 geopandas = "*"
+ipykernel = "*"
+planetary-computer = "*"
+pdal = "*"
+pystac-client = "*" 
+rioxarray = "*" 
 requests = "*"
 scipy = "*"
-pystac-client = "*"
-gdal = "*"
-#python-pdal = "*"
-pdal = "*"
-rioxarray = "*"
-planetary-computer = "*"
 odc-stac = "*"
 
 [tool.pixi.pypi-dependencies]
 lidar_tools = { path = ".", editable = false }
 
 [tool.pixi.feature.dev.dependencies]
-gdal = ">=3.10.1,<4"
+mypy = "*"
 pytest = "*"
+ruff = "*"
 
 [tool.pixi.feature.dev.pypi-dependencies]
 lidar_tools = { path = ".", editable = true }
