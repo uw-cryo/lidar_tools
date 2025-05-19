@@ -26,7 +26,6 @@ odc.stac.configure_rio(cloud_defaults=True)
 def nearest_floor(x: int | float, a: int | float) -> int | float:
     """
     Round down to the nearest smaller multiple of a.
-    From https://github.com/uw-cryo/EarthLab_AirQuality_UAV/blob/main/notebooks/EarthLab_AQ_lidar_download_processing_function.ipynb
     """
     return np.floor(x / a) * a
 
@@ -34,15 +33,30 @@ def nearest_floor(x: int | float, a: int | float) -> int | float:
 def nearest_ceil(x: int | float, a: int | float) -> int | float:
     """
     Round down to the nearest larger multiple of a.
-    From https://github.com/uw-cryo/EarthLab_AirQuality_UAV/blob/main/notebooks/EarthLab_AQ_lidar_download_processing_function.ipynb
     """
     return np.ceil(x / a) * a
 
 
 def tap_bounds(site_bounds: tuple | list | np.ndarray, res: int | float) -> list:
     """
-    Return target aligned pixel bounds for a given site bounds and resolution.
-    From https://github.com/uw-cryo/EarthLab_AirQuality_UAV/blob/main/notebooks/EarthLab_AQ_lidar_download_processing_function.ipynb
+    calculate target aligned pixel bounds for a given site bounds and resolution.
+
+    Parameters
+    ----------
+    site_bounds:
+        array of bounds with the following order [minx, miny, maxx, maxy]
+    res:
+        resolution in same units of site_bounds
+
+    Returns
+    -------
+    target_aligned_bounds: list[float]
+        Adjusted bounds such that extent is a multiple of resolution
+
+    Notes
+    -----
+    - From https://github.com/uw-cryo/EarthLab_AirQuality_UAV/blob/main/notebooks/EarthLab_AQ_lidar_download_processing_function.ipynb
+    - See also https://gdal.org/en/stable/programs/gdalwarp.html#cmdoption-gdalwarp-tap
     """
     return [
         nearest_floor(site_bounds[0], res),
@@ -84,6 +98,7 @@ def return_readers(
         A specific 3DEP survey to return, by default first intersecting survey is returned
     return_all_interescting_surveys : bool, optional
         If True, return all intersecting surveys, by default False.
+
     Returns
     -------
     list of dict
