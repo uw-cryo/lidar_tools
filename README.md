@@ -30,9 +30,9 @@ pixi install --frozen
 ```
 
 ### Example workflow
-Run our example workflow to create DSM, DEM, and LiDAR Intensity for 3DEP data in Colorado!
+Run our example workflow to create DSM, DEM, and LiDAR Intensity for 3DEP data over a part of University of Washington Campus in Seattle, WA!
 ```
-# NOTE: takes ~1hr to run 
+# NOTE: takes ~5 min to run 
 pixi run example
 ```
 
