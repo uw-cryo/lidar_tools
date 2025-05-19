@@ -7,10 +7,13 @@
 
 Tools to process airborne and satellite LiDAR point clouds
 
-**Warning!** This package is under active development!
+**Warning!** This package is under active development and may change rapidly!
+
+
 ## Datasets Supported
-* [3DEP](https://www.usgs.gov/3d-elevation-program)
-* 
+* [3DEP AWS Public Dataset](https://registry.opendata.aws/usgs-lidar/)
+
+  
 ## Quickstart
 
 `lidar_tools` is a collection of CLI scripts to process LiDAR data. It should be installed into a stand-alone environment to ensure that scripts execute as intended. We recommend using [pixi](https://pixi.sh/latest/) to install a locked software environment. 
@@ -26,9 +29,16 @@ cd lidar_tools
 pixi install --frozen
 ```
 
+### Example workflow
+Run our example workflow to create DSM, DEM, and LiDAR Intensity for 3DEP data in Colorado!
+```
+# NOTE: takes ~1hr to run 
+pixi run example
+```
+
 ## CLI Commands:
 
-Once installed, you can run scripts from a terminal:
+Once installed, you can run processing scripts from a terminal:
 
 ```bash
 export PIXI_FROZEN=true # NOTE: set this to always use locked environment
@@ -71,8 +81,6 @@ pixi shell -e dev
 Or run the test sweet
 ```
 pixi run test
-# Full dsm processing run (takes ~30min)
-pixi run test-create-dsm
 ```
 
 Run linting and formatting 

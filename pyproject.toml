@@ -58,6 +58,9 @@ platforms = ["osx-arm64", "linux-64"]
 [tool.pixi.environments]
 dev = { features = ["dev"], solve-group = "default" }
 
+[tool.pixi.tasks]
+example = "pdal_pipeline create-dsm --source-wkt notebooks/SRS_CRS.wkt notebooks/CO_LiDAR_test_area_final.geojson notebooks/UTM_13N_WGS84_G2139_3D.wkt /tmp/dem"
+
 [tool.pixi.feature.dev.tasks]
 test = "pytest"
 typecheck = "mypy src/lidar_tools/"
