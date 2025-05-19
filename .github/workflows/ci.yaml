@@ -13,12 +13,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: prefix-dev/setup-pixi@v0.8.1
+      - uses: prefix-dev/setup-pixi@v0.8.8
         with:
           environments: dev
           manifest-path: pyproject.toml
-          cache: false
-          locked: false
+          cache: true
+          frozen: true
           #cache-write:
           #  ${{ github.event_name == 'push' && github.ref_name == 'main' }}
 
