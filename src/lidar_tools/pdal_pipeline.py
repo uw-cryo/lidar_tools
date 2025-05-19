@@ -50,6 +50,7 @@ def create_dsm(
 ) -> None:
     """
     Create a Digital Surface Model (DSM), Digital Terrain Model (DTM) and intensity raster from a given extent and 3DEP point cloud data.
+
     Parameters
     ----------
     extent_polygon : str
@@ -68,6 +69,7 @@ def create_dsm(
         If specified, only process the given 3DEP survey. This should be a string that matches the survey name in the 3DEP metadata
     process_all_intersecting_surveys: bool
         If true, process all intersecting surveys. If false, only process the first LiDAR survey that intersects the extent defined in the GeoJSON file.
+
     Returns
     -------
     None
@@ -76,7 +78,7 @@ def create_dsm(
     -----
     After running this function, reproject the final DEM with the following commands:
     1. gdalwarp -s_srs SRS_CRS.wkt -t_srs UTM_13N_WGS84_G2139_3D.wkt -r cubic -tr 1.0 1.0 merged_dsm.tif merged_dsm_reprojected_UTM_13N_WGS84_G2139.tif
-    None
+
     """
 
     # bounds for which pointcloud is created

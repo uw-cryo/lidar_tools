@@ -2,6 +2,40 @@ import lidar_tools
 import geopandas as gpd
 from shapely.geometry import Polygon
 import pyproj
+import numpy as np
+
+
+def test_nearest_floor():
+    result = lidar_tools.dsm_functions.nearest_floor(10, 4)
+    expected = 8
+
+    assert result == expected
+
+
+def test_nearest_ceil():
+    result = lidar_tools.dsm_functions.nearest_ceil(10, 4)
+    expected = 12
+
+    assert result == expected
+
+
+def test_tap_bounds_floats():
+    # Check that extent mins rounded down and extent max rounded up
+    bounds = [47.08, -124.79, 49.05, -117.02]
+    resolution = 0.1
+    result = lidar_tools.dsm_functions.tap_bounds(bounds, resolution)
+    expected = np.array([47.0, -124.8, 49.1, -117.0])
+
+    np.testing.assert_almost_equal(result, expected)
+
+
+def test_tap_bounds_integers():
+    bounds = [363111, 4290903, 374892, 4298725]
+    resolution = 2
+    result = lidar_tools.dsm_functions.tap_bounds(bounds, resolution)
+    expected = np.array([363110, 4290902, 374892, 4298726])
+
+    np.testing.assert_almost_equal(result, expected)
 
 
 # Requires network
@@ -21,6 +55,7 @@ def test_return_readers():
             buffer_value=5,
         )
     )
+
     assert len(readers) == 4
     assert {"type", "filename", "resolution", "polygon"} == set(readers[0].keys())
     assert isinstance(crslist[0], pyproj.CRS)
