@@ -15,6 +15,7 @@ import numpy as np
 
 # import planetary_computer
 from osgeo import gdal, gdalconst
+import pdal
 import odc.stac
 import os
 
@@ -195,7 +196,7 @@ def return_readers(
 
     return readers, pointcloud_input_crs, extents, original_extents
 
-def return_crs_local_lpz(lpc: str):
+def return_crs_local_lpz(lpc: str)  -> CRS:
     """
     Given a local laz file, return the coordinate reference system (CRS) of the point cloud.
     Parameters
@@ -207,15 +208,15 @@ def return_crs_local_lpz(lpc: str):
     crs : pyproj.CRS
         The coordinate reference system of the point cloud.
     """
-    pipeline = pdal.Reader(lpz).pipeline()
+    pipeline = pdal.Reader(lpc).pipeline()
     pipeline.execute()
     srs_wkt2 = pipeline.srswkt2
-    crs = pyproj.CRS.from_wkt(srs_wkt2)
+    crs = CRS.from_wkt(srs_wkt2)
     
     return crs
 
 def return_lpc_bounds(lpc:str,
-                output_crs: pyproj.CRS = None):
+                output_crs: CRS = None) -> list:
     """ 
     Given a local laz file, return the bounds of the point cloud.
     Parameters  
@@ -229,22 +230,63 @@ def return_lpc_bounds(lpc:str,
     bounds : list
         The bounds of the point cloud in the format [xmin, ymin, xmax, ymax].
     """
-    pipeline = pdal.Reader(lpz).pipeline()
+    pipeline = pdal.Reader(lpc).pipeline()
     pipeline.execute()
     pdal_bounds = pipeline.quickinfo['readers.las']['bounds']
     minx,miny,maxx,maxy = (pdal_bounds['minx'],pdal_bounds['miny'],
                 pdal_bounds['maxx'],pdal_bounds['maxy'])
     if output_crs is not None:
-        if pyproj.CRS.from_wkt(pipeline.srswkt2) != output_crs:
+        if CRS.from_wkt(pipeline.srswkt2) != output_crs:
             output_bounds = transform_bounds(
-                pyproj.CRS.from_wkt(pipeline.srswkt2), 
+                CRS.from_wkt(pipeline.srswkt2), 
                 output_crs, minx, miny, maxx, maxy)
     else:
         output_bounds = [minx, miny, maxx, maxy]
     return output_bounds
 
+def return_local_lpc_reader(lpc: str,
+                output_crs: CRS = None,
+                pointcloud_resolution: float = 1.0,
+                aoi_bounds: list = None,
+                buffer_value: int = 5, #this should be multiple of input resolution
+                ) -> tuple[dict,CRS,list]:
+    """
+    Given a local laz file, return the PDAL reader for the point cloud.
+    Parameters  
+    ----------
+    lpc : str   
+        Path to the local laz file.
+    output_crs : pyproj.CRS, optional
+        The coordinate reference system to transform the bounds to, by default None.
+    aoi_bounds : list, optional 
+        The bounds of the area of interest in the format [xmin, ymin, xmax, ymax], by default None.
+    buffer_value : int, optional
+        The buffer value in meters to apply to the bounds, by default 5.
+    Returns
+    -------
+    reader : dict
+        The PDAL reader for the point cloud.
+    in_crs : pyproj.CRS
+        The coordinate reference system of the point cloud.
+    output_bounds : list
+        The bounds of the point cloud in the format [xmin, ymin, xmax, ymax] for DEM gridding.
+    """
+    #first attempt is that we just use the bounds of the laz file and grid everything within it
+    #after initial testing, we will perform intersection with the aoi_bounds, and crop the laz file to that bounds with some buffer, and then grid to that bounds without the buffer
 
-
+    #get the bounds of the laz file
+    bounds = return_lpc_bounds(lpc)
+    in_crs = return_crs_local_lpz(lpc)
+    #if the bounds are not in the output crs, transform them
+    if output_crs is not None:
+        if in_crs != output_crs:
+            bounds = transform_bounds(in_crs, output_crs, *bounds)
+    reader = {
+        "type": "readers.las",
+        "filename": lpc}
+    # tap bounds for output product and resolution
+    tapped_bounds = tap_bounds(bounds, pointcloud_resolution)
+    return reader,in_crs,tapped_bounds
 # need to revisit this, a lot of the functionality is not used
 def create_pdal_pipeline(
     filter_low_noise: bool = False,
@@ -474,7 +516,8 @@ def create_dem_stage(
     return [dem_stage]
 
 
-def raster_mosaic(img_list: list, outfn: str) -> None:
+def raster_mosaic(img_list: list, cog: bool = False,
+         outfn: str) -> None:
     """
     Given a list of input images, mosaic them into a COG raster by using vrt and gdal_translate
     im_list: list
@@ -485,8 +528,14 @@ def raster_mosaic(img_list: list, outfn: str) -> None:
     # create vrt
     vrt_fn = os.path.splitext(outfn)[0] + ".vrt"
     gdal.BuildVRT(vrt_fn, img_list, callback=gdal.TermProgress_nocb)
-    # translate to COG
-    gdal.Translate(outfn, vrt_fn, callback=gdal.TermProgress_nocb)
+    if cog:
+        # translate to COG
+        gdal.Translate(outfn, vrt_fn, 
+            creationOptions=["COMPRESS=LZW", "TILED=YES", "COPY_SRC_OVERVIEWS=YES"],
+            callback=gdal.TermProgress_nocb)
+    else:
+        # translate to COG
+        gdal.Translate(outfn, vrt_fn, callback=gdal.TermProgress_nocb)
     # delete vrt
     os.remove(vrt_fn)
 

@@ -4,6 +4,7 @@ Generate a DSM from input polygon
 
 # Needs to happen before importing GDAL/PDAL
 import os
+import glob
 
 os.environ["PROJ_NETWORK"] = (
     "ON"  # Ensure this is 'ON' to get shift grids over the internet
@@ -44,6 +45,7 @@ def create_dsm(
     target_wkt: str,
     output_prefix: str,
     source_wkt: str = None,
+    local_laz_dir: str = None,
     process_specific_3dep_survey: str = None,
     process_all_intersecting_surveys: bool = False,
     cleanup: bool = True,
@@ -65,6 +67,8 @@ def create_dsm(
         If true, remove the intermediate tif files for the output tiles
     reproject: bool
         If true, perform final reprojection from EPSG:3857 to user sepecified CRS
+    local_laz_dir: str
+        If specified, the path to a local directory containing laz files. If not specified, the function will process USGS 3DEP EPT tiles
     process_specific_3dep_survey: str
         If specified, only process the given 3DEP survey. This should be a string that matches the survey name in the 3DEP metadata
     process_all_intersecting_surveys: bool
@@ -80,38 +84,65 @@ def create_dsm(
     1. gdalwarp -s_srs SRS_CRS.wkt -t_srs UTM_13N_WGS84_G2139_3D.wkt -r cubic -tr 1.0 1.0 merged_dsm.tif merged_dsm_reprojected_UTM_13N_WGS84_G2139.tif
 
     """
-
-    # bounds for which pointcloud is created
-    gdf = gpd.read_file(extent_polygon)
-    xmin, ymin, xmax, ymax = gdf.total_bounds
-
-    input_aoi = Polygon.from_bounds(xmin, ymin, xmax, ymax)
-    input_crs = gdf.crs.to_wkt()
-
-    # specify the output CRS of DEMs
     with open(target_wkt, "r") as f:
-        OUTPUT_CRS = " ".join(f.read().replace("\n", "").split())
+            contents = f.read()
+    out_crs = CRS.from_string(contents)
+    if local_laz_dir:
+        print(f"This run will process laz files from {local_laz_dir}")
+        ept_3dep = False
+        # The method returns pointcloud readers, as well as the output DEM bounds
+        lpc_files = sorted((glob.glob(os.path.join(local_laz_dir, "*.laz"))))
+        lpc_files += sorted((glob.glob(os.path.join(local_laz_dir, "*.las"))))
+        print(f"Number of local laz files: {len(lpc_files)}")
+        print(lpc_files)
+        readers = []
+        original_extents = []
+        input_crs = []
+        for idx, lpc in enumerate(lpc_files):
+            reader, in_crs, out_extent = dsm_functions.return_local_lpc_reader(
+            lpc,
+            output_crs=target_wkt,
+            pointcloud_resolution=1.0,
+            )
+            readers.append(reader)
+            original_extents.append(out_extent)
+            input_crs.append(in_crs)
+            
+    else:
+        ept_3dep = True
+    # bounds for which pointcloud is created
+    
+    if ept_3dep:
+        gdf = gpd.read_file(extent_polygon)
+        xmin, ymin, xmax, ymax = gdf.total_bounds
 
-    # The method returns pointcloud readers, as well as the pointcloud file CRS as a WKT string
-    # Specfying a buffer_value > 0 will generate overlapping DEM tiles, resulting in a seamless
-    # final mosaicked DEM
-    readers, POINTCLOUD_CRS, extents, original_extents = dsm_functions.return_readers(
-        input_aoi,
-        input_crs,
-        pointcloud_resolution=1,
-        n_rows=5,
-        n_cols=5,
-        buffer_value=5,
-        return_specific_3dep_survey=process_specific_3dep_survey,
-        return_all_intersecting_surveys=process_all_intersecting_surveys,
-    )
-    # readers, POINTCLOUD_CRS = dsm_functions.return_reader_inclusive(input_aoi, input_crs,
-    #                                                                pointcloud_resolution=POINTCLOUD_RESOLUTION)
-    # NOTE: if source_wkt is passed, override POINTCLOUD_CRSs
-    if source_wkt:
-        with open(source_wkt, "r") as f:
-            src_wkt = f.read()
-        POINTCLOUD_CRS = [src_wkt for _ in range(len(readers))]
+        input_aoi = Polygon.from_bounds(xmin, ymin, xmax, ymax)
+        input_crs = gdf.crs.to_wkt()
+
+        # specify the output CRS of DEMs
+        with open(target_wkt, "r") as f:
+            OUTPUT_CRS = " ".join(f.read().replace("\n", "").split())
+
+        # The method returns pointcloud readers, as well as the pointcloud file CRS as a WKT string
+        # Specfying a buffer_value > 0 will generate overlapping DEM tiles, resulting in a seamless
+        # final mosaicked DEM
+        readers, POINTCLOUD_CRS, extents, original_extents = dsm_functions.return_readers(
+            input_aoi,
+            input_crs,
+            pointcloud_resolution=1,
+            n_rows=5,
+            n_cols=5,
+            buffer_value=5,
+            return_specific_3dep_survey=process_specific_3dep_survey,
+            return_all_intersecting_surveys=process_all_intersecting_surveys,
+        )
+        # readers, POINTCLOUD_CRS = dsm_functions.return_reader_inclusive(input_aoi, input_crs,
+        #                                                                pointcloud_resolution=POINTCLOUD_RESOLUTION)
+        # NOTE: if source_wkt is passed, override POINTCLOUD_CRSs
+        if source_wkt:
+            with open(source_wkt, "r") as f:
+                src_wkt = f.read()
+            POINTCLOUD_CRS = [src_wkt for _ in range(len(readers))]
 
     output_path = Path(output_prefix).parent
     prefix = Path(output_prefix).name
@@ -132,24 +163,42 @@ def create_dsm(
 
         ## DSM creation block
         pipeline_dsm = {"pipeline": [reader]}
+        if ept_3dep:
+            pdal_pipeline_dsm = dsm_functions.create_pdal_pipeline(
+                filter_low_noise=FILTER_LOW_NOISE,
+                filter_high_noise=FILTER_HIGH_NOISE,
+                filter_road=FILTER_ROAD,
+                reset_classes=RESET_CLASSES,
+                reclassify_ground=RECLASSIFY_GROUND,
+                return_only_ground=RETURN_ONLY_GROUND,
+                percentile_filter=PERCENTILE_FILTER,
+                percentile_threshold=PERCENTILE_THRESHOLD,
+                group_filter="first,only",
+                reproject=REPROJECT,
+                save_pointcloud=SAVE_POINTCLOUD,
+                pointcloud_file="pointcloud",
+                input_crs=POINTCLOUD_CRS[i],
+                output_crs=OUTPUT_CRS,
+                output_type=OUTPUT_TYPE,
+            )
+        
+        else:
+            pdal_pipeline_dsm = dsm_functions.create_pdal_pipeline(
+                filter_low_noise=FILTER_LOW_NOISE,
+                filter_high_noise=FILTER_HIGH_NOISE,
+                filter_road=FILTER_ROAD,
+                reset_classes=RESET_CLASSES,
+                reclassify_ground=RECLASSIFY_GROUND,
+                return_only_ground=RETURN_ONLY_GROUND,
+                percentile_filter=PERCENTILE_FILTER,
+                percentile_threshold=PERCENTILE_THRESHOLD,
+                group_filter="first,only",
+                reproject=True, # reproject to the output CRS
+                save_pointcloud=SAVE_POINTCLOUD,            
+                input_crs=input_crs[i],
+                output_crs=out_crs,
+                output_type=OUTPUT_TYPE)  
 
-        pdal_pipeline_dsm = dsm_functions.create_pdal_pipeline(
-            filter_low_noise=FILTER_LOW_NOISE,
-            filter_high_noise=FILTER_HIGH_NOISE,
-            filter_road=FILTER_ROAD,
-            reset_classes=RESET_CLASSES,
-            reclassify_ground=RECLASSIFY_GROUND,
-            return_only_ground=RETURN_ONLY_GROUND,
-            percentile_filter=PERCENTILE_FILTER,
-            percentile_threshold=PERCENTILE_THRESHOLD,
-            group_filter="first,only",
-            reproject=REPROJECT,
-            save_pointcloud=SAVE_POINTCLOUD,
-            pointcloud_file="pointcloud",
-            input_crs=POINTCLOUD_CRS[i],
-            output_crs=OUTPUT_CRS,
-            output_type=OUTPUT_TYPE,
-        )
         dsm_stage = dsm_functions.create_dem_stage(
             dem_filename=str(dsm_file),
             extent=original_extents[i],
@@ -175,23 +224,42 @@ def create_dsm(
 
         ## DTM creation block
         pipeline_dtm = {"pipeline": [reader]}
-        pdal_pipeline_dtm = dsm_functions.create_pdal_pipeline(
-            filter_low_noise=FILTER_LOW_NOISE,
-            filter_high_noise=FILTER_HIGH_NOISE,
-            filter_road=FILTER_ROAD,
-            reset_classes=RESET_CLASSES,
-            reclassify_ground=RECLASSIFY_GROUND,
-            return_only_ground=True,
-            percentile_filter=PERCENTILE_FILTER,
-            percentile_threshold=PERCENTILE_THRESHOLD,
-            group_filter=None,
-            reproject=REPROJECT,
-            save_pointcloud=SAVE_POINTCLOUD,
-            pointcloud_file="pointcloud",
-            input_crs=POINTCLOUD_CRS[i],
-            output_crs=OUTPUT_CRS,
-            output_type=OUTPUT_TYPE,
-        )
+        if ept_3dep:
+            pdal_pipeline_dtm = dsm_functions.create_pdal_pipeline(
+                filter_low_noise=FILTER_LOW_NOISE,
+                filter_high_noise=FILTER_HIGH_NOISE,
+                filter_road=FILTER_ROAD,
+                reset_classes=RESET_CLASSES,
+                reclassify_ground=RECLASSIFY_GROUND,
+                return_only_ground=True,
+                percentile_filter=PERCENTILE_FILTER,
+                percentile_threshold=PERCENTILE_THRESHOLD,
+                group_filter=None,
+                reproject=REPROJECT,
+                save_pointcloud=SAVE_POINTCLOUD,
+                pointcloud_file="pointcloud",
+                input_crs=POINTCLOUD_CRS[i],
+                output_crs=OUTPUT_CRS,
+                output_type=OUTPUT_TYPE,
+            )
+
+            
+        else:
+            pdal_pipeline_dtm = dsm_functions.create_pdal_pipeline(
+                filter_low_noise=FILTER_LOW_NOISE,
+                filter_high_noise=FILTER_HIGH_NOISE,
+                filter_road=FILTER_ROAD,
+                reset_classes=RESET_CLASSES,
+                reclassify_ground=RECLASSIFY_GROUND,
+                return_only_ground=True,
+                percentile_filter=PERCENTILE_FILTER,
+                percentile_threshold=PERCENTILE_THRESHOLD,
+                group_filter=None,
+                reproject=True, # reproject to the output CRS
+                save_pointcloud=SAVE_POINTCLOUD,            
+                input_crs=input_crs[i],
+                output_crs=out_crs,
+                output_type=OUTPUT_TYPE)  
 
         dtm_stage = dsm_functions.create_dem_stage(
             dem_filename=str(dtm_file),
@@ -206,7 +274,7 @@ def create_dsm(
         pipeline_dtm["pipeline"] += pdal_pipeline_dtm
         pipeline_dtm["pipeline"] += dtm_stage
 
-        # Save a copy of each pipeline
+        #Save a copy of each pipeline
         dtm_pipeline_config_fn = output_path / f"pipeline_dtm_{str(i).zfill(4)}.json"
         with open(dtm_pipeline_config_fn, "w") as f:
             f.write(json.dumps(pipeline_dtm))
@@ -222,23 +290,41 @@ def create_dsm(
 
         ## Intensity pipeline
         pipeline_intensity = {"pipeline": [reader]}
-        pdal_pipeline_surface_intensity = dsm_functions.create_pdal_pipeline(
-            filter_low_noise=FILTER_LOW_NOISE,
-            filter_high_noise=FILTER_HIGH_NOISE,
-            filter_road=FILTER_ROAD,
-            reset_classes=RESET_CLASSES,
-            reclassify_ground=RECLASSIFY_GROUND,
-            return_only_ground=False,
-            percentile_filter=PERCENTILE_FILTER,
-            percentile_threshold=PERCENTILE_THRESHOLD,
-            group_filter="first,only",
-            reproject=REPROJECT,
-            save_pointcloud=SAVE_POINTCLOUD,
-            pointcloud_file="pointcloud",
-            input_crs=POINTCLOUD_CRS[i],
-            output_crs=OUTPUT_CRS,
-            output_type=OUTPUT_TYPE,
-        )
+        if ept_3dep:
+            pdal_pipeline_surface_intensity = dsm_functions.create_pdal_pipeline(
+                filter_low_noise=FILTER_LOW_NOISE,
+                filter_high_noise=FILTER_HIGH_NOISE,
+                filter_road=FILTER_ROAD,
+                reset_classes=RESET_CLASSES,
+                reclassify_ground=RECLASSIFY_GROUND,
+                return_only_ground=False,
+                percentile_filter=PERCENTILE_FILTER,
+                percentile_threshold=PERCENTILE_THRESHOLD,
+                group_filter="first,only",
+                reproject=REPROJECT,
+                save_pointcloud=SAVE_POINTCLOUD,
+                pointcloud_file="pointcloud",
+                input_crs=POINTCLOUD_CRS[i],
+                output_crs=OUTPUT_CRS,
+                output_type=OUTPUT_TYPE,
+            )
+        
+        else:
+            pdal_pipeline_surface_intensity = dsm_functions.create_pdal_pipeline(
+                filter_low_noise=FILTER_LOW_NOISE,
+                filter_high_noise=FILTER_HIGH_NOISE,
+                filter_road=FILTER_ROAD,
+                reset_classes=RESET_CLASSES,
+                reclassify_ground=RECLASSIFY_GROUND,
+                return_only_ground=False,
+                percentile_filter=PERCENTILE_FILTER,
+                percentile_threshold=PERCENTILE_THRESHOLD,
+                group_filter="first,only",
+                reproject=True, # reproject to the output CRS
+                save_pointcloud=SAVE_POINTCLOUD,            
+                input_crs=input_crs[i],
+                output_crs=out_crs,
+                output_type=OUTPUT_TYPE)
 
         intensity_stage = dsm_functions.create_dem_stage(
             dem_filename=str(intensity_file),
@@ -265,51 +351,65 @@ def create_dsm(
         except RuntimeError as e:
             print(f"A RuntimeError occured for dsm tile {i}: {e}")
             pass
-
-    print("*** Now creating raster composites ***")
-    dsm_mos_fn = f"{output_prefix}-DSM_mos-temp.tif"
-    print(f"Creating DSM mosaic at {dsm_mos_fn}")
-    dsm_functions.raster_mosaic(dsm_fn_list, dsm_mos_fn)
-    dtm_mos_fn = f"{output_prefix}-DTM_mos-temp.tif"
-    print(f"Creating DTM mosaic at {dtm_mos_fn}")
-    dsm_functions.raster_mosaic(dtm_fn_list, dtm_mos_fn)
-    intensity_mos_fn = f"{output_prefix}-intensity_mos-temp.tif"
-    print(f"Creating intensity raster mosaic at {intensity_mos_fn}")
-    dsm_functions.raster_mosaic(intensity_fn_list, intensity_mos_fn)
+    if len(dsm_fn_list) > 1:
+        print(
+            f"Multiple DSM tiles created: {len(dsm_fn_list)}. Mosaicking required to create final DSM"
+        )
+        print("*** Now creating raster composites ***")
+        if ept_3dep:
+            dsm_mos_fn = f"{output_prefix}-DSM_mos-temp.tif"
+            dtm_mos_fn = f"{output_prefix}-DTM_mos-temp.tif"
+            intensity_mos_fn = f"{output_prefix}-intensity_mos-temp.tif"
+        else:
+            dsm_mos_fn = f"{output_prefix}-DSM_mos.tif"
+            dtm_mos_fn = f"{output_prefix}-DTM_mos.tif"
+            intensity_mos_fn = f"{output_prefix}-intensity_mos.tif"
+        
+        print(f"Creating DSM mosaic at {dsm_mos_fn}")
+        dsm_functions.raster_mosaic(dsm_fn_list, dsm_mos_fn)
+        print(f"Creating DTM mosaic at {dtm_mos_fn}")
+        dsm_functions.raster_mosaic(dtm_fn_list, dtm_mos_fn)
+        print(f"Creating intensity raster mosaic at {intensity_mos_fn}")
+        dsm_functions.raster_mosaic(intensity_fn_list, intensity_mos_fn)
 
     dsm_reproj = dsm_mos_fn.split("-temp.tif")[0] + ".tif"
     dtm_reproj = dtm_mos_fn.split("-temp.tif")[0] + ".tif"
     intensity_reproj = intensity_mos_fn.split("-temp.tif")[0] + ".tif"
 
-    with open(target_wkt, "r") as f:  # open the file
-        contents = f.read()
-        target_crs = CRS.from_string(contents)
-
-    if target_crs != POINTCLOUD_CRS[0]:
-        print("*********Reprojecting DSM, DTM and intensity rasters****")
-        dsm_reproj = dsm_mos_fn.split("-temp.tif")[0] + ".tif"
-        dtm_reproj = dtm_mos_fn.split("-temp.tif")[0] + ".tif"
-        intensity_reproj = intensity_mos_fn.split("-temp.tif")[0] + ".tif"
-        reproject_truth_val = dsm_functions.confirm_3dep_vertical(dsm_mos_fn)
-        if reproject_truth_val:
-            # use input CRS which is EPSG:3857 with heights with respect to the NAVD88
-            epsg_3857_navd88_fn = "https://raw.githubusercontent.com/uw-cryo/lidar_tools/refs/heads/main/notebooks/SRS_CRS.wkt"
-            src_srs = epsg_3857_navd88_fn
+    
+    if ept_3dep:
+        if out_crs != POINTCLOUD_CRS[0]:
+            print("*********Reprojecting DSM, DTM and intensity rasters****")
+            dsm_reproj = dsm_mos_fn.split("-temp.tif")[0] + ".tif"
+            dtm_reproj = dtm_mos_fn.split("-temp.tif")[0] + ".tif"
+            intensity_reproj = intensity_mos_fn.split("-temp.tif")[0] + ".tif"
+            reproject_truth_val = dsm_functions.confirm_3dep_vertical(dsm_mos_fn)
+            if reproject_truth_val:
+                # use input CRS which is EPSG:3857 with heights with respect to the NAVD88
+                epsg_3857_navd88_fn = "https://raw.githubusercontent.com/uw-cryo/lidar_tools/refs/heads/main/notebooks/SRS_CRS.wkt"
+                src_srs = epsg_3857_navd88_fn
+            else:
+                src_srs = "EPSG:3857"
+            print(src_srs)
+            print("Reprojecting DSM raster")
+            dsm_functions.gdal_warp(dsm_mos_fn, dsm_reproj, src_srs, target_wkt,
+                                    resampling_alogrithm="bilinear")
+            print("Reprojectiong DTM raster")
+            dsm_functions.gdal_warp(dtm_mos_fn, dtm_reproj, src_srs, target_wkt,
+                                    resampling_alogrithm="bilinear")
+            print("Reprojecting intensity raster")
+            dsm_functions.gdal_warp(intensity_mos_fn, intensity_reproj, src_srs, target_wkt,
+                                    resampling_alogrithm="bilinear")
         else:
-            src_srs = "EPSG:3857"
-        print(src_srs)
-        print("Reprojecting DSM raster")
-        dsm_functions.gdal_warp(dsm_mos_fn, dsm_reproj, src_srs, target_wkt)
-        print("Reprojectiong DTM raster")
-        dsm_functions.gdal_warp(dtm_mos_fn, dtm_reproj, src_srs, target_wkt)
-        print("Reprojecting intensity raster")
-        dsm_functions.gdal_warp(intensity_mos_fn, intensity_reproj, src_srs, target_wkt)
+            print("No reprojection required")
+            # rename the temp files to the final output names
+            os.rename(dsm_mos_fn, dsm_reproj)
+            os.rename(dtm_mos_fn, dtm_reproj)
+            os.rename(intensity_mos_fn, intensity_reproj)
     else:
-        print("No reprojection required")
-        # rename the temp files to the final output names
-        os.rename(dsm_mos_fn, dsm_reproj)
-        os.rename(dtm_mos_fn, dtm_reproj)
-        os.rename(intensity_mos_fn, intensity_reproj)
+        dsm_reproj = dsm_mos_fn
+        dtm_reproj = dtm_mos_fn
+        intensity_reproj = intensity_mos_fn
     print("****Building Gaussian overviews for all rasters****")
     dsm_functions.gdal_add_overview(dsm_reproj)
     dsm_functions.gdal_add_overview(dtm_reproj)
@@ -323,9 +423,11 @@ def create_dsm(
             except FileNotFoundError as e:
                 print(f"Error {e} encountered for file {fn}")
                 pass
-        if os.path.exists(dsm_mos_fn):
-            os.remove(dsm_mos_fn)
-        if os.path.exists(dtm_mos_fn):
-            os.remove(dtm_mos_fn)
-        if os.path.exists(intensity_mos_fn):
-            os.remove(intensity_mos_fn)
+        if ept_3dep:
+            if os.path.exists(dsm_mos_fn):
+                os.remove(dsm_mos_fn)
+            if os.path.exists(dtm_mos_fn):
+                os.remove(dtm_mos_fn)
+            if os.path.exists(intensity_mos_fn):
+                os.remove(intensity_mos_fn)
+    print("****Processing complete****")
