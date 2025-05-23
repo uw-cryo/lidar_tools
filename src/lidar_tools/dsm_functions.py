@@ -195,6 +195,55 @@ def return_readers(
 
     return readers, pointcloud_input_crs, extents, original_extents
 
+def return_crs_local_lpz(lpc: str):
+    """
+    Given a local laz file, return the coordinate reference system (CRS) of the point cloud.
+    Parameters
+    ----------
+    lpc : str   
+        Path to the local laz file.
+    Returns 
+    ----------
+    crs : pyproj.CRS
+        The coordinate reference system of the point cloud.
+    """
+    pipeline = pdal.Reader(lpz).pipeline()
+    pipeline.execute()
+    srs_wkt2 = pipeline.srswkt2
+    crs = pyproj.CRS.from_wkt(srs_wkt2)
+    
+    return crs
+
+def return_lpc_bounds(lpc:str,
+                output_crs: pyproj.CRS = None):
+    """ 
+    Given a local laz file, return the bounds of the point cloud.
+    Parameters  
+    ----------
+    lpc : str
+        Path to the local laz file.
+    output_crs : pyproj.CRS, optional
+        The coordinate reference system to transform the bounds to, by default None.
+    Returns
+    ------- 
+    bounds : list
+        The bounds of the point cloud in the format [xmin, ymin, xmax, ymax].
+    """
+    pipeline = pdal.Reader(lpz).pipeline()
+    pipeline.execute()
+    pdal_bounds = pipeline.quickinfo['readers.las']['bounds']
+    minx,miny,maxx,maxy = (pdal_bounds['minx'],pdal_bounds['miny'],
+                pdal_bounds['maxx'],pdal_bounds['maxy'])
+    if output_crs is not None:
+        if pyproj.CRS.from_wkt(pipeline.srswkt2) != output_crs:
+            output_bounds = transform_bounds(
+                pyproj.CRS.from_wkt(pipeline.srswkt2), 
+                output_crs, minx, miny, maxx, maxy)
+    else:
+        output_bounds = [minx, miny, maxx, maxy]
+    return output_bounds
+
+
 
 # need to revisit this, a lot of the functionality is not used
 def create_pdal_pipeline(
@@ -341,6 +390,37 @@ def create_pdal_pipeline(
 
     return pipeline
 
+def create_dem_stage_connor(
+    dem_filename: str,
+    extent: list,
+    pointcloud_resolution: float = 1.0,
+    gridmethod: str = "max",
+    dimension: str = "Z",
+) -> list:
+    # compute raster width and height
+    width = (extent[2] - extent[0]) / pointcloud_resolution
+    height = (extent[3] - extent[1]) / pointcloud_resolution
+    origin_x = extent[0]
+    origin_y = extent[1]
+    dem_stage = {
+        "type": "writers.gdal",
+        "filename": dem_filename,
+        "gdaldriver": "GTiff",
+        "nodata": -9999,
+        "data_type": "float32",
+        "radius": 0.5,
+        "output_type": gridmethod,
+        "resolution": float(pointcloud_resolution),
+        "origin_x": origin_x,
+        "origin_y": origin_y,
+        "width": width,
+        "height": height,
+        "gdalopts": "COMPRESS=LZW,TILED=YES,blockxsize=256,blockysize=256,COPY_SRC_OVERVIEWS=YES",
+    }
+
+    dem_stage.update({"dimension": dimension})
+
+    return [dem_stage]
 
 def create_dem_stage(
     dem_filename: str,
@@ -379,6 +459,7 @@ def create_dem_stage(
         "filename": dem_filename,
         "gdaldriver": "GTiff",
         "nodata": -9999,
+        "data_type": "float32",
         "output_type": gridmethod,
         "resolution": float(pointcloud_resolution),
         "origin_x": origin_x,
@@ -720,7 +801,7 @@ def fetch_cop30(raster_fn: str, match_grid_da: xr.DataArray = None) -> xr.DataAr
     cop_da = get_copernicus_dem(bbox_gdf, resolution=30)
     if match_grid_da is not None:
         cop_da = cop_da.rio.reproject_match(
-            match_grid_da, resampling=rasterio.enums.Resampling.cubic
+            match_grid_da, resampling=rasterio.enums.Resampling.bilinear
         )
     return cop_da
 
