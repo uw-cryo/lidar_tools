@@ -516,8 +516,9 @@ def create_dem_stage(
     return [dem_stage]
 
 
-def raster_mosaic(img_list: list, cog: bool = False,
-         outfn: str) -> None:
+def raster_mosaic(img_list: list, 
+         outfn: str,
+         cog: bool = False) -> None:
     """
     Given a list of input images, mosaic them into a COG raster by using vrt and gdal_translate
     im_list: list

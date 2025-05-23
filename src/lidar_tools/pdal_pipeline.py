@@ -360,17 +360,19 @@ def create_dsm(
             dsm_mos_fn = f"{output_prefix}-DSM_mos-temp.tif"
             dtm_mos_fn = f"{output_prefix}-DTM_mos-temp.tif"
             intensity_mos_fn = f"{output_prefix}-intensity_mos-temp.tif"
+            cog = False
         else:
             dsm_mos_fn = f"{output_prefix}-DSM_mos.tif"
             dtm_mos_fn = f"{output_prefix}-DTM_mos.tif"
             intensity_mos_fn = f"{output_prefix}-intensity_mos.tif"
+            cog = True
         
         print(f"Creating DSM mosaic at {dsm_mos_fn}")
-        dsm_functions.raster_mosaic(dsm_fn_list, dsm_mos_fn)
+        dsm_functions.raster_mosaic(dsm_fn_list, dsm_mos_fn,cog=cog)
         print(f"Creating DTM mosaic at {dtm_mos_fn}")
-        dsm_functions.raster_mosaic(dtm_fn_list, dtm_mos_fn)
+        dsm_functions.raster_mosaic(dtm_fn_list, dtm_mos_fn,cog=cog)
         print(f"Creating intensity raster mosaic at {intensity_mos_fn}")
-        dsm_functions.raster_mosaic(intensity_fn_list, intensity_mos_fn)
+        dsm_functions.raster_mosaic(intensity_fn_list, intensity_mos_fn,cog=cog)
 
     dsm_reproj = dsm_mos_fn.split("-temp.tif")[0] + ".tif"
     dtm_reproj = dtm_mos_fn.split("-temp.tif")[0] + ".tif"
