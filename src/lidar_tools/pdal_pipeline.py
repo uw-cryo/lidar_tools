@@ -3,7 +3,7 @@ Generate a DSM from input polygon
 """
 
 # Needs to happen before importing GDAL/PDAL
-import os
+import os,sys
 import glob
 
 os.environ["PROJ_NETWORK"] = (
@@ -16,29 +16,8 @@ import pdal
 from pyproj import CRS
 from shapely.geometry import Polygon
 import geopandas as gpd
-import json
+
 from pathlib import Path
-
-# NOTE: Hardcoding global settings for now, can expose as script arguments later
-# -------------------------------------------------------
-# Set pointcloud processing parameters
-FILTER_LOW_NOISE = False
-FILTER_HIGH_NOISE = False
-FILTER_ROAD = False
-RETURN_ONLY_GROUND = False  # Set true for DTM
-RESET_CLASSES = False
-RECLASSIFY_GROUND = False
-PERCENTILE_FILTER = False  # Set to True to apply percentile based filtering of Z values
-PERCENTILE_THRESHOLD = 0.95  # Percentile value to filter out noisy Z returns
-
-REPROJECT = False
-SAVE_POINTCLOUD = False
-POINTCLOUD_RESOLUTION = 1
-OUTPUT_TYPE = "laz"
-GRID_METHOD = "idw"
-DIMENSION = "Z"  # can be set to options accepted by writers.gdal. Set to 'intensity' to return intensity rasters
-# -------------------------------------------------------
-
 
 def create_dsm(
     extent_polygon: str,
@@ -49,6 +28,7 @@ def create_dsm(
     process_specific_3dep_survey: str = None,
     process_all_intersecting_surveys: bool = False,
     cleanup: bool = True,
+    parallel: bool = False,
 ) -> None:
     """
     Create a Digital Surface Model (DSM), Digital Terrain Model (DTM) and intensity raster from a given extent and 3DEP point cloud data.
@@ -90,270 +70,51 @@ def create_dsm(
     if local_laz_dir:
         print(f"This run will process laz files from {local_laz_dir}")
         ept_3dep = False
-        # The method returns pointcloud readers, as well as the output DEM bounds
-        lpc_files = sorted((glob.glob(os.path.join(local_laz_dir, "*.laz"))))
-        lpc_files += sorted((glob.glob(os.path.join(local_laz_dir, "*.las"))))
-        print(f"Number of local laz files: {len(lpc_files)}")
-        print(lpc_files)
-        readers = []
-        original_extents = []
-        input_crs = []
-        for idx, lpc in enumerate(lpc_files):
-            reader, in_crs, out_extent = dsm_functions.return_local_lpc_reader(
-            lpc,
-            output_crs=target_wkt,
-            pointcloud_resolution=1.0,
-            )
-            readers.append(reader)
-            original_extents.append(out_extent)
-            input_crs.append(in_crs)
-            
+        (dsm_pipeline_list, dsm_fn_list, 
+        dtm_pipeline_list, dtm_fn_list, 
+        intensity_pipeline_list, intensity_fn_list) = dsm_functions.create_lpc_pipeline(
+                                    local_laz_dir=local_laz_dir,
+                                    target_wkt=target_wkt,output_prefix=output_prefix)
     else:
+        print("This run will process 3DEP EPT tiles")
         ept_3dep = True
-    # bounds for which pointcloud is created
+        (dsm_pipeline_list, dsm_fn_list, 
+        dtm_pipeline_list, dtm_fn_list, 
+        intensity_pipeline_list, intensity_fn_list) = dsm_functions.create_ept_3dep_pipeline(
+                                extent_polygon,target_wkt,output_prefix,
+                                n_rows=5, n_cols=5,buffer_value=5,
+                                process_specific_3dep_survey=process_specific_3dep_survey,
+                                process_all_intersecting_surveys=process_all_intersecting_surveys
+        )
+
+    #execute the pipelines
+    if not parallel:
+        final_dsm_fn_list = []
+        print("Running DSM/DTM/intensity pipelines sequentially")
+        for i, pipeline in enumerate(dsm_pipeline_list):
+            dsm = dsm_functions.execute_pipeline(pipeline,dsm_fn_list[i])
+            if dsm is not None:
+                final_dsm_fn_list.append(dsm)
+        
+        final_dtm_fn_list = []
+        for i, pipeline in enumerate(dtm_pipeline_list):
+            dtm = dsm_functions.execute_pipeline(pipeline,dtm_fn_list[i])
+            if dtm is not None:
+                final_dtm_fn_list.append(dtm)
+        
+        final_intensity_fn_list = []
+        for i, pipeline in enumerate(intensity_pipeline_list):
+            intensity = dsm_functions.execute_pipeline(pipeline,intensity_fn_list[i])
+            if intensity is not None:
+                final_intensity_fn_list.append(intensity)
+    else:
+        print("Running DSM/DTM/intensity pipelines in parallel")
+        print("This is not yet implemented, please run the function with parallel=False")
+        sys.exit(1)
     
-    if ept_3dep:
-        gdf = gpd.read_file(extent_polygon)
-        xmin, ymin, xmax, ymax = gdf.total_bounds
-
-        input_aoi = Polygon.from_bounds(xmin, ymin, xmax, ymax)
-        input_crs = gdf.crs.to_wkt()
-
-        # specify the output CRS of DEMs
-        with open(target_wkt, "r") as f:
-            OUTPUT_CRS = " ".join(f.read().replace("\n", "").split())
-
-        # The method returns pointcloud readers, as well as the pointcloud file CRS as a WKT string
-        # Specfying a buffer_value > 0 will generate overlapping DEM tiles, resulting in a seamless
-        # final mosaicked DEM
-        readers, POINTCLOUD_CRS, extents, original_extents = dsm_functions.return_readers(
-            input_aoi,
-            input_crs,
-            pointcloud_resolution=1,
-            n_rows=5,
-            n_cols=5,
-            buffer_value=5,
-            return_specific_3dep_survey=process_specific_3dep_survey,
-            return_all_intersecting_surveys=process_all_intersecting_surveys,
-        )
-        # readers, POINTCLOUD_CRS = dsm_functions.return_reader_inclusive(input_aoi, input_crs,
-        #                                                                pointcloud_resolution=POINTCLOUD_RESOLUTION)
-        # NOTE: if source_wkt is passed, override POINTCLOUD_CRSs
-        if source_wkt:
-            with open(source_wkt, "r") as f:
-                src_wkt = f.read()
-            POINTCLOUD_CRS = [src_wkt for _ in range(len(readers))]
-
-    output_path = Path(output_prefix).parent
-    prefix = Path(output_prefix).name
-    output_path = Path(output_path)
-    output_path.mkdir(exist_ok=True)
-
-    print(f"Number of readers: {len(readers)}")
-    dsm_fn_list = []
-    dtm_fn_list = []
-    intensity_fn_list = []
-    for i, reader in enumerate(readers):
-        print(f"Processing reader #{i}")
-        dsm_file = output_path / f"{prefix}_dsm_tile_aoi_{str(i).zfill(4)}.tif"
-        dtm_file = output_path / f"{prefix}_dtm_tile_aoi_{str(i).zfill(4)}.tif"
-        intensity_file = (
-            output_path / f"{prefix}_intensity_tile_aoi_{str(i).zfill(4)}.tif"
-        )
-
-        ## DSM creation block
-        pipeline_dsm = {"pipeline": [reader]}
-        if ept_3dep:
-            pdal_pipeline_dsm = dsm_functions.create_pdal_pipeline(
-                filter_low_noise=FILTER_LOW_NOISE,
-                filter_high_noise=FILTER_HIGH_NOISE,
-                filter_road=FILTER_ROAD,
-                reset_classes=RESET_CLASSES,
-                reclassify_ground=RECLASSIFY_GROUND,
-                return_only_ground=RETURN_ONLY_GROUND,
-                percentile_filter=PERCENTILE_FILTER,
-                percentile_threshold=PERCENTILE_THRESHOLD,
-                group_filter="first,only",
-                reproject=REPROJECT,
-                save_pointcloud=SAVE_POINTCLOUD,
-                pointcloud_file="pointcloud",
-                input_crs=POINTCLOUD_CRS[i],
-                output_crs=OUTPUT_CRS,
-                output_type=OUTPUT_TYPE,
-            )
-        
-        else:
-            pdal_pipeline_dsm = dsm_functions.create_pdal_pipeline(
-                filter_low_noise=FILTER_LOW_NOISE,
-                filter_high_noise=FILTER_HIGH_NOISE,
-                filter_road=FILTER_ROAD,
-                reset_classes=RESET_CLASSES,
-                reclassify_ground=RECLASSIFY_GROUND,
-                return_only_ground=RETURN_ONLY_GROUND,
-                percentile_filter=PERCENTILE_FILTER,
-                percentile_threshold=PERCENTILE_THRESHOLD,
-                group_filter="first,only",
-                reproject=True, # reproject to the output CRS
-                save_pointcloud=SAVE_POINTCLOUD,            
-                input_crs=input_crs[i],
-                output_crs=out_crs,
-                output_type=OUTPUT_TYPE)  
-
-        dsm_stage = dsm_functions.create_dem_stage(
-            dem_filename=str(dsm_file),
-            extent=original_extents[i],
-            pointcloud_resolution=POINTCLOUD_RESOLUTION,
-            gridmethod=GRID_METHOD,
-            dimension="Z",
-        )
-        pipeline_dsm["pipeline"] += pdal_pipeline_dsm
-        pipeline_dsm["pipeline"] += dsm_stage
-
-        # Save a copy of each pipeline
-        dsm_pipeline_config_fn = output_path / f"pipeline_dsm_{str(i).zfill(4)}.json"
-        with open(dsm_pipeline_config_fn, "w") as f:
-            f.write(json.dumps(pipeline_dsm))
-        pipeline_dsm = pdal.Pipeline(json.dumps(pipeline_dsm))
-        try:
-            pipeline_dsm.execute()
-            if dsm_functions.check_raster_validity(dsm_file):
-                dsm_fn_list.append(dsm_file.as_posix())
-        except RuntimeError as e:
-            print(f"A RuntimeError occured for dsm tile {i}: {e}")
-            pass
-
-        ## DTM creation block
-        pipeline_dtm = {"pipeline": [reader]}
-        if ept_3dep:
-            pdal_pipeline_dtm = dsm_functions.create_pdal_pipeline(
-                filter_low_noise=FILTER_LOW_NOISE,
-                filter_high_noise=FILTER_HIGH_NOISE,
-                filter_road=FILTER_ROAD,
-                reset_classes=RESET_CLASSES,
-                reclassify_ground=RECLASSIFY_GROUND,
-                return_only_ground=True,
-                percentile_filter=PERCENTILE_FILTER,
-                percentile_threshold=PERCENTILE_THRESHOLD,
-                group_filter=None,
-                reproject=REPROJECT,
-                save_pointcloud=SAVE_POINTCLOUD,
-                pointcloud_file="pointcloud",
-                input_crs=POINTCLOUD_CRS[i],
-                output_crs=OUTPUT_CRS,
-                output_type=OUTPUT_TYPE,
-            )
-
-            
-        else:
-            pdal_pipeline_dtm = dsm_functions.create_pdal_pipeline(
-                filter_low_noise=FILTER_LOW_NOISE,
-                filter_high_noise=FILTER_HIGH_NOISE,
-                filter_road=FILTER_ROAD,
-                reset_classes=RESET_CLASSES,
-                reclassify_ground=RECLASSIFY_GROUND,
-                return_only_ground=True,
-                percentile_filter=PERCENTILE_FILTER,
-                percentile_threshold=PERCENTILE_THRESHOLD,
-                group_filter=None,
-                reproject=True, # reproject to the output CRS
-                save_pointcloud=SAVE_POINTCLOUD,            
-                input_crs=input_crs[i],
-                output_crs=out_crs,
-                output_type=OUTPUT_TYPE)  
-
-        dtm_stage = dsm_functions.create_dem_stage(
-            dem_filename=str(dtm_file),
-            extent=original_extents[i],
-            pointcloud_resolution=POINTCLOUD_RESOLUTION,
-            gridmethod=GRID_METHOD,
-            dimension="Z",
-        )
-        # this is only required for the DTM
-        dtm_stage[0]["window_size"] = 4
-
-        pipeline_dtm["pipeline"] += pdal_pipeline_dtm
-        pipeline_dtm["pipeline"] += dtm_stage
-
-        #Save a copy of each pipeline
-        dtm_pipeline_config_fn = output_path / f"pipeline_dtm_{str(i).zfill(4)}.json"
-        with open(dtm_pipeline_config_fn, "w") as f:
-            f.write(json.dumps(pipeline_dtm))
-
-        pipeline_dtm = pdal.Pipeline(json.dumps(pipeline_dtm))
-        try:
-            pipeline_dtm.execute()
-            if dsm_functions.check_raster_validity(dtm_file):
-                dtm_fn_list.append(dtm_file.as_posix())
-        except RuntimeError as e:
-            print(f"A RuntimeError occured for dtm tile {i}: {e}")
-            pass
-
-        ## Intensity pipeline
-        pipeline_intensity = {"pipeline": [reader]}
-        if ept_3dep:
-            pdal_pipeline_surface_intensity = dsm_functions.create_pdal_pipeline(
-                filter_low_noise=FILTER_LOW_NOISE,
-                filter_high_noise=FILTER_HIGH_NOISE,
-                filter_road=FILTER_ROAD,
-                reset_classes=RESET_CLASSES,
-                reclassify_ground=RECLASSIFY_GROUND,
-                return_only_ground=False,
-                percentile_filter=PERCENTILE_FILTER,
-                percentile_threshold=PERCENTILE_THRESHOLD,
-                group_filter="first,only",
-                reproject=REPROJECT,
-                save_pointcloud=SAVE_POINTCLOUD,
-                pointcloud_file="pointcloud",
-                input_crs=POINTCLOUD_CRS[i],
-                output_crs=OUTPUT_CRS,
-                output_type=OUTPUT_TYPE,
-            )
-        
-        else:
-            pdal_pipeline_surface_intensity = dsm_functions.create_pdal_pipeline(
-                filter_low_noise=FILTER_LOW_NOISE,
-                filter_high_noise=FILTER_HIGH_NOISE,
-                filter_road=FILTER_ROAD,
-                reset_classes=RESET_CLASSES,
-                reclassify_ground=RECLASSIFY_GROUND,
-                return_only_ground=False,
-                percentile_filter=PERCENTILE_FILTER,
-                percentile_threshold=PERCENTILE_THRESHOLD,
-                group_filter="first,only",
-                reproject=True, # reproject to the output CRS
-                save_pointcloud=SAVE_POINTCLOUD,            
-                input_crs=input_crs[i],
-                output_crs=out_crs,
-                output_type=OUTPUT_TYPE)
-
-        intensity_stage = dsm_functions.create_dem_stage(
-            dem_filename=str(intensity_file),
-            extent=original_extents[i],
-            pointcloud_resolution=POINTCLOUD_RESOLUTION,
-            gridmethod=GRID_METHOD,
-            dimension="Intensity",
-        )
-
-        pipeline_intensity["pipeline"] += pdal_pipeline_surface_intensity
-        pipeline_intensity["pipeline"] += intensity_stage
-
-        # Save a copy of each pipeline
-        intensity_pipeline_config_fn = (
-            output_path / f"pipeline_intensity_{str(i).zfill(4)}.json"
-        )
-        with open(intensity_pipeline_config_fn, "w") as f:
-            f.write(json.dumps(pipeline_intensity))
-        pipeline_intensity = pdal.Pipeline(json.dumps(pipeline_intensity))
-        try:
-            pipeline_intensity.execute()
-            if dsm_functions.check_raster_validity(intensity_file):
-                intensity_fn_list.append(intensity_file.as_posix())
-        except RuntimeError as e:
-            print(f"A RuntimeError occured for dsm tile {i}: {e}")
-            pass
-    if len(dsm_fn_list) > 1:
+    if len(final_dsm_fn_list) > 1:
         print(
-            f"Multiple DSM tiles created: {len(dsm_fn_list)}. Mosaicking required to create final DSM"
+            f"Multiple DSM tiles created: {len(final_dsm_fn_list)}. Mosaicking required to create final DSM"
         )
         print("*** Now creating raster composites ***")
         if ept_3dep:
@@ -368,11 +129,11 @@ def create_dsm(
             cog = True
         
         print(f"Creating DSM mosaic at {dsm_mos_fn}")
-        dsm_functions.raster_mosaic(dsm_fn_list, dsm_mos_fn,cog=cog)
+        dsm_functions.raster_mosaic(final_dsm_fn_list, dsm_mos_fn,cog=cog)
         print(f"Creating DTM mosaic at {dtm_mos_fn}")
-        dsm_functions.raster_mosaic(dtm_fn_list, dtm_mos_fn,cog=cog)
+        dsm_functions.raster_mosaic(final_dtm_fn_list, dtm_mos_fn,cog=cog)
         print(f"Creating intensity raster mosaic at {intensity_mos_fn}")
-        dsm_functions.raster_mosaic(intensity_fn_list, intensity_mos_fn,cog=cog)
+        dsm_functions.raster_mosaic(final_intensity_fn_list, intensity_mos_fn,cog=cog)
 
     dsm_reproj = dsm_mos_fn.split("-temp.tif")[0] + ".tif"
     dtm_reproj = dtm_mos_fn.split("-temp.tif")[0] + ".tif"
@@ -380,7 +141,7 @@ def create_dsm(
 
     
     if ept_3dep:
-        if out_crs != POINTCLOUD_CRS[0]:
+        if out_crs != CRS.from_epsg(3857):
             print("*********Reprojecting DSM, DTM and intensity rasters****")
             dsm_reproj = dsm_mos_fn.split("-temp.tif")[0] + ".tif"
             dtm_reproj = dtm_mos_fn.split("-temp.tif")[0] + ".tif"
@@ -393,15 +154,21 @@ def create_dsm(
             else:
                 src_srs = "EPSG:3857"
             print(src_srs)
-            print("Reprojecting DSM raster")
-            dsm_functions.gdal_warp(dsm_mos_fn, dsm_reproj, src_srs, target_wkt,
-                                    resampling_alogrithm="bilinear")
-            print("Reprojectiong DTM raster")
-            dsm_functions.gdal_warp(dtm_mos_fn, dtm_reproj, src_srs, target_wkt,
-                                    resampling_alogrithm="bilinear")
-            print("Reprojecting intensity raster")
-            dsm_functions.gdal_warp(intensity_mos_fn, intensity_reproj, src_srs, target_wkt,
-                                    resampling_alogrithm="bilinear")
+            if not parallel:
+                print("Running reprojection sequentially")
+                print("Reprojecting DSM raster")
+                dsm_functions.gdal_warp(dsm_mos_fn, dsm_reproj, src_srs, target_wkt,
+                                        resampling_alogrithm="bilinear")
+                print("Reprojectiong DTM raster")
+                dsm_functions.gdal_warp(dtm_mos_fn, dtm_reproj, src_srs, target_wkt,
+                                        resampling_alogrithm="bilinear")
+                print("Reprojecting intensity raster")
+                dsm_functions.gdal_warp(intensity_mos_fn, intensity_reproj, src_srs, target_wkt,
+                                        resampling_alogrithm="bilinear")
+            else:
+                print("Running reprojection in parallel")
+                print("This is not yet implemented, please run the function with parallel=False")
+                sys.exit(1)
         else:
             print("No reprojection required")
             # rename the temp files to the final output names
@@ -412,14 +179,20 @@ def create_dsm(
         dsm_reproj = dsm_mos_fn
         dtm_reproj = dtm_mos_fn
         intensity_reproj = intensity_mos_fn
-    print("****Building Gaussian overviews for all rasters****")
-    dsm_functions.gdal_add_overview(dsm_reproj)
-    dsm_functions.gdal_add_overview(dtm_reproj)
-    dsm_functions.gdal_add_overview(intensity_reproj)
+    print("****Building Gaussian overviews for all rasters****") 
+    if not parallel:
+        print("Running overview creation sequentially")
+        dsm_functions.gdal_add_overview(dsm_reproj)
+        dsm_functions.gdal_add_overview(dtm_reproj)
+        dsm_functions.gdal_add_overview(intensity_reproj)
+    else:
+        print("Running overview creation in parallel")
+        print("This is not yet implemented, please run the function with parallel=False")
+        sys.exit(1)
 
     if cleanup:
         print("User selected to remove intermediate tile outputs")
-        for fn in dsm_fn_list + dtm_fn_list + intensity_fn_list:
+        for fn in final_dsm_fn_list + final_dtm_fn_list + final_intensity_fn_list:
             try:
                 Path(fn).unlink()
             except FileNotFoundError as e:
