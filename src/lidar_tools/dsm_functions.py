@@ -5,6 +5,7 @@ Generate DSMs from 3DEP EPT data
 from rasterio.warp import transform_bounds
 from pyproj import CRS
 import shapely
+from shapely.geometry import Polygon
 import geopandas as gpd
 import requests
 import rasterio
@@ -14,12 +15,13 @@ import pystac_client
 import numpy as np
 import json
 from pathlib import Path
-
+import glob
 # import planetary_computer
 from osgeo import gdal, gdalconst
 import pdal
 import odc.stac
 import os
+
 
 gdal.UseExceptions()
 
@@ -351,8 +353,8 @@ def create_pdal_pipeline(
     assert abs(percentile_threshold) <= 1, (
         "Percentile threshold must be in range [0, 1]"
     )
-    assert output_type in ["las", "laz"], "Output type must be either 'las' or 'laz'"
-    assert output_crs is not None, "Argument 'output_crs' must be explicitly specified!"
+    #assert output_type in ["las", "laz"], "Output type must be either 'las' or 'laz'"
+    #assert output_crs is not None, "Argument 'output_crs' must be explicitly specified!"
 
     stage_filter_low_noise = {"type": "filters.range", "limits": "Classification![7:7]"}
     stage_filter_high_noise = {
@@ -379,8 +381,8 @@ def create_pdal_pipeline(
     }
     stage_return_ground = {"type": "filters.range", "limits": "Classification[2:2]"}
 
-    stage_reprojection = {"type": "filters.reprojection", "out_srs": str(output_crs)}
-    if input_crs is not None:
+    if (output_crs is not None) & (input_crs is None) and (reproject is True):
+        stage_reprojection = {"type": "filters.reprojection", "out_srs": str(output_crs)}
         stage_reprojection["in_srs"] = str(input_crs)
 
     stage_save_pointcloud_las = {
@@ -538,7 +540,6 @@ def raster_mosaic(img_list: list,
             creationOptions=["COMPRESS=LZW", "TILED=YES", "COPY_SRC_OVERVIEWS=YES"],
             callback=gdal.TermProgress_nocb)
     else:
-        # translate to COG
         gdal.Translate(outfn, vrt_fn, callback=gdal.TermProgress_nocb)
     # delete vrt
     os.remove(vrt_fn)
@@ -987,7 +988,7 @@ def gdal_add_overview(raster_fn: str) -> None:
     raster_fn : str
         Path to the raster file.
     """
-    with gdal.Open(raster_fn, 1) as ds:
+    with gdal.OpenEx(raster_fn, 1, open_options=["IGNORE_COG_LAYOUT_BREAK=YES"]) as ds:
         gdal.SetConfigOption("COMPRESS_OVERVIEW", "DEFLATE")
         ds.BuildOverviews(
             "GAUSS", [2, 4, 8, 16, 32, 64], callback=gdal.TermProgress_nocb
@@ -1031,7 +1032,7 @@ def create_lpc_pipeline(local_laz_dir: str,target_wkt: str,output_prefix: str,ra
     intensity_pipeline_list = []
     
     for i, reader in enumerate(readers):
-        print(f"Processing reader #{i}")
+        #print(f"Processing reader #{i}")
         dsm_file = output_path / f"{prefix}_dsm_tile_aoi_{str(i).zfill(4)}.tif"
         dtm_file = output_path / f"{prefix}_dtm_tile_aoi_{str(i).zfill(4)}.tif"
         intensity_file = (

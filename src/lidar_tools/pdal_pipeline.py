@@ -4,7 +4,7 @@ Generate a DSM from input polygon
 
 # Needs to happen before importing GDAL/PDAL
 import os,sys
-import glob
+
 
 os.environ["PROJ_NETWORK"] = (
     "ON"  # Ensure this is 'ON' to get shift grids over the internet
@@ -14,7 +14,6 @@ print(f"PROJ_NETWORK is {os.environ['PROJ_NETWORK']}")
 from lidar_tools import dsm_functions
 import pdal
 from pyproj import CRS
-from shapely.geometry import Polygon
 import geopandas as gpd
 
 from pathlib import Path
@@ -92,19 +91,19 @@ def create_dsm(
         final_dsm_fn_list = []
         print("Running DSM/DTM/intensity pipelines sequentially")
         for i, pipeline in enumerate(dsm_pipeline_list):
-            dsm = dsm_functions.execute_pipeline(pipeline,dsm_fn_list[i])
+            dsm = dsm_functions.execute_pdal_pipeline(pipeline,dsm_fn_list[i])
             if dsm is not None:
                 final_dsm_fn_list.append(dsm)
         
         final_dtm_fn_list = []
         for i, pipeline in enumerate(dtm_pipeline_list):
-            dtm = dsm_functions.execute_pipeline(pipeline,dtm_fn_list[i])
+            dtm = dsm_functions.execute_pdal_pipeline(pipeline,dtm_fn_list[i])
             if dtm is not None:
                 final_dtm_fn_list.append(dtm)
         
         final_intensity_fn_list = []
         for i, pipeline in enumerate(intensity_pipeline_list):
-            intensity = dsm_functions.execute_pipeline(pipeline,intensity_fn_list[i])
+            intensity = dsm_functions.execute_pdal_pipeline(pipeline,intensity_fn_list[i])
             if intensity is not None:
                 final_intensity_fn_list.append(intensity)
     else:
@@ -134,10 +133,10 @@ def create_dsm(
         dsm_functions.raster_mosaic(final_dtm_fn_list, dtm_mos_fn,cog=cog)
         print(f"Creating intensity raster mosaic at {intensity_mos_fn}")
         dsm_functions.raster_mosaic(final_intensity_fn_list, intensity_mos_fn,cog=cog)
-
-    dsm_reproj = dsm_mos_fn.split("-temp.tif")[0] + ".tif"
-    dtm_reproj = dtm_mos_fn.split("-temp.tif")[0] + ".tif"
-    intensity_reproj = intensity_mos_fn.split("-temp.tif")[0] + ".tif"
+    else:
+        dsm_mos_fn = final_dsm_fn_list[0]
+        dtm_mos_fn = final_dtm_fn_list[0]
+        intensity_mos_fn = final_intensity_fn_list[0]
 
     
     if ept_3dep:
