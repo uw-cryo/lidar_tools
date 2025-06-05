@@ -16,6 +16,9 @@ import numpy as np
 import json
 from pathlib import Path
 import glob
+import threading
+from multiprocessing import Pool, Lock
+from tqdm import tqdm
 # import planetary_computer
 from osgeo import gdal, gdalconst
 import pdal
@@ -26,6 +29,8 @@ import os
 gdal.UseExceptions()
 
 odc.stac.configure_rio(cloud_defaults=True)
+
+release_second =  5 # seconds to wait before releasing the lock
 
 
 def nearest_floor(x: int | float, a: int | float) -> int | float:
@@ -75,8 +80,8 @@ def return_readers(
     input_aoi: gpd.GeoDataFrame,
     src_crs: CRS,
     pointcloud_resolution: float = 1.0,
-    n_rows: int = 5,
-    n_cols: int = 5,
+    n_rows: int = 3,
+    n_cols: int = 3,
     buffer_value: int = 5,
     return_specific_3dep_survey: str = None,
     return_all_intersecting_surveys: bool = False,
@@ -148,16 +153,16 @@ def return_readers(
             aoi_3857 = shapely.geometry.Polygon.from_bounds(
                 *src_bounds_transformed_3857
             )
-            print(aoi.bounds, src_bounds_transformed_3857)
+            #print(aoi.bounds, src_bounds_transformed_3857)
             if buffer_value:
-                print(f"The tile polygon will be buffered by {buffer_value:.2f} m")
+                #print(f"The tile polygon will be buffered by {buffer_value:.2f} m")
                 # buffer the tile polygon by the buffer value
                 aoi_3857 = aoi_3857.buffer(buffer_value)
                 # now create tap bounds for the buffered tile
                 aoi_3857_bounds = tap_bounds(aoi_3857.bounds, pointcloud_resolution)
                 # now convert the buffered tile to a polygon
                 aoi_3857 = shapely.geometry.Polygon.from_bounds(*aoi_3857_bounds)
-                print("The buffered tile bound is: ", aoi_3857.bounds)
+                #print("The buffered tile bound is: ", aoi_3857.bounds)
 
             gdf = gpd.read_file(
                 "https://raw.githubusercontent.com/hobuinc/usgs-lidar/master/boundaries/resources.geojson"
@@ -381,9 +386,7 @@ def create_pdal_pipeline(
     }
     stage_return_ground = {"type": "filters.range", "limits": "Classification[2:2]"}
 
-    if (output_crs is not None) & (input_crs is None) and (reproject is True):
-        stage_reprojection = {"type": "filters.reprojection", "out_srs": str(output_crs)}
-        stage_reprojection["in_srs"] = str(input_crs)
+    
 
     stage_save_pointcloud_las = {
         "type": "writers.las",
@@ -424,9 +427,13 @@ def create_pdal_pipeline(
     # For creating DTMs, we want to process only ground returns
     if return_only_ground:
         pipeline.append(stage_return_ground)
-
-    if reproject:
+    
+    if (output_crs is not None) & (input_crs is not None) and (reproject is True):
+        stage_reprojection = {"type": "filters.reprojection", "out_srs": str(output_crs)}
+        stage_reprojection["in_srs"] = str(input_crs)
         pipeline.append(stage_reprojection)
+
+        
 
     # the pipeline can save the pointclouds to a separate file if needed
     if save_pointcloud:
@@ -543,6 +550,20 @@ def raster_mosaic(img_list: list,
         gdal.Translate(outfn, vrt_fn, callback=gdal.TermProgress_nocb)
     # delete vrt
     os.remove(vrt_fn)
+
+def raster_mosaic_parallel(argument_list: list) -> None:
+    """
+    Parallel wrapper for raster_mosaic function.
+    This function is used to parallelize the raster_mosaic function using multiprocessing.
+    Parameters
+    ----------
+    argument_list : list
+        List of arguments to be passed to the raster_mosaic function.
+    """
+    starting.acquire()  # no other process can get it until it is released
+    threading.Timer(release_second, starting.release).start()  # release in 10 second
+    img_list, outfn, cog = argument_list
+    raster_mosaic(img_list, outfn, cog) 
 
 
 ### Functions for datum checks
@@ -934,7 +955,7 @@ def gdal_warp(
     src_srs: str,
     dst_srs: str,
     res: float = 1.0,
-    resampling_alogrithm: str = "cubic",
+    resampling_alogrithm: str = "bilinear"
 ) -> None:
     """
     Warp a raster file to a new coordinate reference system and resolution using GDAL.
@@ -978,6 +999,26 @@ def gdal_warp(
     )
     ds.Close()
 
+def gdal_warp_parallel(argument_list) -> None:
+    """
+    Add overviews to a raster file using GDAL.
+
+    Parameters
+    ----------
+    raster_fn : str
+        Path to the raster file.
+    """
+    starting.acquire()  # no other process can get it until it is released
+    threading.Timer(release_second, starting.release).start()  # release in 10 second
+    src_fn, dst_fn,src_srs,dst_srs,res,resampling_alogrithm = argument_list
+    gdal_warp(
+        src_fn=src_fn,
+        dst_fn=dst_fn,
+        src_srs=src_srs,
+        dst_srs=dst_srs,
+        res=res,
+        resampling_alogrithm=resampling_alogrithm)
+
 
 def gdal_add_overview(raster_fn: str) -> None:
     """
@@ -994,6 +1035,19 @@ def gdal_add_overview(raster_fn: str) -> None:
             "GAUSS", [2, 4, 8, 16, 32, 64], callback=gdal.TermProgress_nocb
         )
 
+def gdal_add_overview_parallel(raster_fn: str) -> None:
+    """
+    Add overviews to a raster file using GDAL.
+
+    Parameters
+    ----------
+    raster_fn : str
+        Path to the raster file.
+    """
+    starting.acquire()  # no other process can get it until it is released
+    threading.Timer(release_second, starting.release).start()  # release in 10 second
+    gdal_add_overview(
+        raster_fn=raster_fn)
 
 ###### Provider specific functions to return appropriate pipelines for raster creation
 
@@ -1133,7 +1187,7 @@ def create_lpc_pipeline(local_laz_dir: str,target_wkt: str,output_prefix: str,ra
 
 def create_ept_3dep_pipeline(extent_polygon,target_wkt,output_prefix,
                                 raster_resolution=1.0,
-                                n_rows=5, n_cols=5,buffer_value=5,
+                                n_rows=3, n_cols=3,buffer_value=5,
                                 process_specific_3dep_survey=None,process_all_intersecting_surveys=False):
     gdf = gpd.read_file(extent_polygon)
     xmin, ymin, xmax, ymax = gdf.total_bounds
@@ -1149,9 +1203,9 @@ def create_ept_3dep_pipeline(extent_polygon,target_wkt,output_prefix,
         input_aoi,
         input_crs,
         pointcloud_resolution=1,
-        n_rows=5,
-        n_cols=5,
-        buffer_value=5,
+        n_rows=n_rows,
+        n_cols=n_cols,
+        buffer_value=buffer_value,
         return_specific_3dep_survey=process_specific_3dep_survey,
         return_all_intersecting_surveys=process_all_intersecting_surveys
     )
@@ -1169,7 +1223,7 @@ def create_ept_3dep_pipeline(extent_polygon,target_wkt,output_prefix,
     intensity_pipeline_list = []
     intensity_fn_list = []
     for i, reader in enumerate(readers):
-        print(f"Processing reader #{i}")
+        #print(f"Processing reader #{i}")
         dsm_file = output_path / f"{prefix}_dsm_tile_aoi_{str(i).zfill(4)}.tif"
         dtm_file = output_path / f"{prefix}_dtm_tile_aoi_{str(i).zfill(4)}.tif"
         intensity_file = (
@@ -1287,3 +1341,28 @@ def execute_pdal_pipeline(pdal_pipeline: json,
     except RuntimeError as e:
         print(f"A RuntimeError occured for file {output_fn}: {e}")
         pass
+def init(lock):
+    global starting
+    starting = lock
+
+def run_imap_multiprocessing(func, argument_list, num_processes):
+    pool = Pool(
+        processes=num_processes, initializer=init, initargs=[Lock()]
+    )
+
+    result_list_tqdm = []
+    for result in tqdm(
+        pool.imap(func=func, iterable=argument_list), total=len(argument_list)
+    ):
+        result_list_tqdm.append(result)
+
+    return result_list_tqdm
+
+def execute_pdal_pipeline_parallel(argument_list):
+    starting.acquire()  # no other process can get it until it is released
+    threading.Timer(release_second, starting.release).start()  # release in 10 second
+    pdal_pipeline, output_fn = argument_list
+    return execute_pdal_pipeline(
+        pdal_pipeline=pdal_pipeline,
+        output_fn=output_fn
+    )

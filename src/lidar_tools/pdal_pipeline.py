@@ -15,8 +15,12 @@ from lidar_tools import dsm_functions
 import pdal
 from pyproj import CRS
 import geopandas as gpd
-
 from pathlib import Path
+
+
+
+
+
 
 def create_dsm(
     extent_polygon: str,
@@ -81,7 +85,7 @@ def create_dsm(
         dtm_pipeline_list, dtm_fn_list, 
         intensity_pipeline_list, intensity_fn_list) = dsm_functions.create_ept_3dep_pipeline(
                                 extent_polygon,target_wkt,output_prefix,
-                                n_rows=5, n_cols=5,buffer_value=5,
+                                n_rows=3, n_cols=3,buffer_value=5,
                                 process_specific_3dep_survey=process_specific_3dep_survey,
                                 process_all_intersecting_surveys=process_all_intersecting_surveys
         )
@@ -108,8 +112,16 @@ def create_dsm(
                 final_intensity_fn_list.append(intensity)
     else:
         print("Running DSM/DTM/intensity pipelines in parallel")
-        print("This is not yet implemented, please run the function with parallel=False")
-        sys.exit(1)
+        dsm_argument_list = [(dsm_pipeline_list[i], dsm_fn_list[i]) for i in range(len(dsm_pipeline_list))]
+        final_dsm_fn_list = dsm_functions.run_imap_multiprocessing(dsm_functions.execute_pdal_pipeline_parallel,
+            dsm_argument_list,num_processes=10)
+        dtm_argument_list = [(dtm_pipeline_list[i], dtm_fn_list[i]) for i in range(len(dtm_pipeline_list))]
+        final_dtm_fn_list = dsm_functions.run_imap_multiprocessing(dsm_functions.execute_pdal_pipeline_parallel,
+            dtm_argument_list,num_processes=10)
+        intensity_argument_list = [(intensity_pipeline_list[i], intensity_fn_list[i]) for i in range(len(intensity_pipeline_list))]
+        final_intensity_fn_list = dsm_functions.run_imap_multiprocessing(dsm_functions.execute_pdal_pipeline_parallel,
+            intensity_argument_list,num_processes=10)
+    print("****Processing complete for all tiles****")
     
     if len(final_dsm_fn_list) > 1:
         print(
@@ -126,13 +138,24 @@ def create_dsm(
             dtm_mos_fn = f"{output_prefix}-DTM_mos.tif"
             intensity_mos_fn = f"{output_prefix}-intensity_mos.tif"
             cog = True
-        
-        print(f"Creating DSM mosaic at {dsm_mos_fn}")
-        dsm_functions.raster_mosaic(final_dsm_fn_list, dsm_mos_fn,cog=cog)
-        print(f"Creating DTM mosaic at {dtm_mos_fn}")
-        dsm_functions.raster_mosaic(final_dtm_fn_list, dtm_mos_fn,cog=cog)
-        print(f"Creating intensity raster mosaic at {intensity_mos_fn}")
-        dsm_functions.raster_mosaic(final_intensity_fn_list, intensity_mos_fn,cog=cog)
+        if not parallel:
+            print("Running mosaicking sequentially")
+            print(f"Creating DSM mosaic at {dsm_mos_fn}")
+            dsm_functions.raster_mosaic(final_dsm_fn_list, dsm_mos_fn,cog=cog)
+            print(f"Creating DTM mosaic at {dtm_mos_fn}")
+            dsm_functions.raster_mosaic(final_dtm_fn_list, dtm_mos_fn,cog=cog)
+            print(f"Creating intensity raster mosaic at {intensity_mos_fn}")
+            dsm_functions.raster_mosaic(final_intensity_fn_list, intensity_mos_fn,cog=cog)
+        else:
+            mos_arg_list = [(final_dsm_fn_list, dsm_mos_fn, cog),
+                            (final_dtm_fn_list, dtm_mos_fn, cog),
+                            (final_intensity_fn_list, intensity_mos_fn, cog)]
+            print("Running mosaicking in parallel")
+            dsm_functions.run_imap_multiprocessing(
+                dsm_functions.raster_mosaic_parallel,
+                mos_arg_list,
+                num_processes=3
+            )
     else:
         dsm_mos_fn = final_dsm_fn_list[0]
         dtm_mos_fn = final_dtm_fn_list[0]
@@ -166,8 +189,12 @@ def create_dsm(
                                         resampling_alogrithm="bilinear")
             else:
                 print("Running reprojection in parallel")
-                print("This is not yet implemented, please run the function with parallel=False")
-                sys.exit(1)
+                resolution = 1.0 #hardcoded for now, will change tomorrow
+                reprojection_arg_list = [(dsm_mos_fn, dsm_reproj, src_srs, target_wkt, resolution, "bilinear"),
+                                        (dtm_mos_fn, dtm_reproj, src_srs, target_wkt, resolution, "bilinear"),
+                                        (intensity_mos_fn, intensity_reproj, src_srs, target_wkt, resolution, "bilinear")]
+                dsm_functions.run_imap_multiprocessing(dsm_functions.gdal_warp_parallel,
+                    reprojection_arg_list,num_processes=3)
         else:
             print("No reprojection required")
             # rename the temp files to the final output names
@@ -186,8 +213,11 @@ def create_dsm(
         dsm_functions.gdal_add_overview(intensity_reproj)
     else:
         print("Running overview creation in parallel")
-        print("This is not yet implemented, please run the function with parallel=False")
-        sys.exit(1)
+        dsm_functions.run_imap_multiprocessing(
+            dsm_functions.gdal_add_overview_parallel,
+            [dsm_reproj, dtm_reproj, intensity_reproj],
+            num_processes=3
+        )
 
     if cleanup:
         print("User selected to remove intermediate tile outputs")
