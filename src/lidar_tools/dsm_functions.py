@@ -17,6 +17,7 @@ import json
 from pathlib import Path
 import glob
 import threading
+#from threading import Lock
 from multiprocessing import Pool, Lock
 from tqdm import tqdm
 # import planetary_computer
@@ -30,7 +31,7 @@ gdal.UseExceptions()
 
 odc.stac.configure_rio(cloud_defaults=True)
 
-release_second =  5 # seconds to wait before releasing the lock
+release_second =  10 # seconds to wait before releasing the lock in parallel processing
 
 
 def nearest_floor(x: int | float, a: int | float) -> int | float:
@@ -78,10 +79,8 @@ def tap_bounds(site_bounds: tuple | list | np.ndarray, res: int | float) -> list
 
 def return_readers(
     input_aoi: gpd.GeoDataFrame,
-    src_crs: CRS,
     pointcloud_resolution: float = 1.0,
-    n_rows: int = 3,
-    n_cols: int = 3,
+    tile_size_km: float = 1.0,
     buffer_value: int = 5,
     return_specific_3dep_survey: str = None,
     return_all_intersecting_surveys: bool = False,
@@ -94,14 +93,8 @@ def return_readers(
     ----------
     input_aoi : shapely.geometry.Polygon
         The area of interest as a polygon.
-    src_crs : pyproj.CRS
-        The coordinate reference system of the input AOI.
     pointcloud_resolution : int, optional
         The resolution of the point cloud data, by default 1.
-    n_rows : int, optional
-        The number of rows to divide the AOI into, by default 5.
-    n_cols : int, optional
-        The number of columns to divide the AOI into, by default 5.
     buffer_value : int, optional
         The buffer value in meters to apply to each tile, by default 5.
     return_specific_3dep_survey : str, optional
@@ -120,35 +113,42 @@ def return_readers(
     list of list
         A list of original extents for each reader.
     """
-    xmin, ymin, xmax, ymax = input_aoi.bounds
-    x_step = (xmax - xmin) / n_cols
-    y_step = (ymax - ymin) / n_rows
+    # since we will query the USGS 3DEP EPT data which are in EPSG:3857, 
+    # and our logic is to divide in X x X km tile grid, 
+    # we need to convert the input AOI to EPSG:3857 which is in metric units
+    input_aoi = input_aoi.to_crs(CRS.from_epsg(3857))
+    xmin, ymin, xmax, ymax = input_aoi.total_bounds
+    x_step = tile_size_km * 1000  # convert km to m
+    y_step = tile_size_km * 1000  # convert km to m
+    n_cols = int(np.ceil((xmax - xmin) / x_step))
+    n_rows = int(np.ceil((ymax - ymin) / y_step))
 
-    dst_crs = CRS.from_epsg(4326)
+    crs_4326 = CRS.from_epsg(4326)
 
     readers = []
     pointcloud_input_crs = []
     original_extents = []
     extents = []
 
-    for i in range(int(n_cols)):
-        for j in range(int(n_rows)):
+    for i in range(n_cols):
+        for j in range(n_rows):
             aoi = shapely.geometry.Polygon.from_bounds(
                 xmin + i * x_step,
                 ymin + j * y_step,
-                xmin + (i + 1) * x_step,
-                ymin + (j + 1) * y_step,
+                min(xmin + (i + 1) * x_step, xmax),  # Ensure the tile does not exceed AOI bounds
+                min(ymin + (j + 1) * y_step, ymax),  # Ensure the tile does not exceed AOI bounds
             )
 
-            src_bounds_transformed = transform_bounds(src_crs, dst_crs, *aoi.bounds)
+            src_bounds_transformed = transform_bounds(CRS.from_epsg(3857), crs_4326, *aoi.bounds) # convert to epsg:4326 for intersection with EPT bounds check
             aoi_4326 = shapely.geometry.Polygon.from_bounds(*src_bounds_transformed)
 
-            src_bounds_transformed_3857 = transform_bounds(
-                src_crs, CRS.from_epsg(3857), *aoi.bounds
-            )
+            
+            #src_bounds_transformed_3857 = transform_bounds(
+            #    src_crs, CRS.from_epsg(3857), *aoi.bounds
+            #) # this is not needed, as we already have the aoi bounds in 3857
             # create tap bounds for the tile
             src_bounds_transformed_3857 = tap_bounds(
-                src_bounds_transformed_3857, pointcloud_resolution
+                aoi.bounds, pointcloud_resolution
             )
             aoi_3857 = shapely.geometry.Polygon.from_bounds(
                 *src_bounds_transformed_3857
@@ -187,6 +187,7 @@ def return_readers(
                         reader = {
                             "type": "readers.ept",
                             "filename": url,
+                            "requests": 1,
                             "resolution": pointcloud_resolution,
                             "polygon": str(aoi_3857.wkt),
                         }
@@ -1187,24 +1188,19 @@ def create_lpc_pipeline(local_laz_dir: str,target_wkt: str,output_prefix: str,ra
 
 def create_ept_3dep_pipeline(extent_polygon,target_wkt,output_prefix,
                                 raster_resolution=1.0,
-                                n_rows=3, n_cols=3,buffer_value=5,
+                                tile_size_km=1.0,
+                                buffer_value=5,
                                 process_specific_3dep_survey=None,process_all_intersecting_surveys=False):
     gdf = gpd.read_file(extent_polygon)
-    xmin, ymin, xmax, ymax = gdf.total_bounds
-
-    input_aoi = Polygon.from_bounds(xmin, ymin, xmax, ymax)
-    input_crs = gdf.crs.to_wkt()
-
+    
     # specify the output CRS of DEMs
     with open(target_wkt, "r") as f:
         OUTPUT_CRS = " ".join(f.read().replace("\n", "").split())
     # fetch the readers for the pointclouds
     readers, POINTCLOUD_CRS, extents, original_extents = return_readers(
-        input_aoi,
-        input_crs,
+        gdf,
         pointcloud_resolution=1,
-        n_rows=n_rows,
-        n_cols=n_cols,
+        tile_size_km=tile_size_km,
         buffer_value=buffer_value,
         return_specific_3dep_survey=process_specific_3dep_survey,
         return_all_intersecting_surveys=process_all_intersecting_surveys
@@ -1359,6 +1355,7 @@ def run_imap_multiprocessing(func, argument_list, num_processes):
     return result_list_tqdm
 
 def execute_pdal_pipeline_parallel(argument_list):
+    
     starting.acquire()  # no other process can get it until it is released
     threading.Timer(release_second, starting.release).start()  # release in 10 second
     pdal_pipeline, output_fn = argument_list
@@ -1366,3 +1363,7 @@ def execute_pdal_pipeline_parallel(argument_list):
         pdal_pipeline=pdal_pipeline,
         output_fn=output_fn
     )
+    # finally:
+    #     #Ensure the lock is released even if an error occurs
+    #     if starting.locked():
+    #         starting.release()

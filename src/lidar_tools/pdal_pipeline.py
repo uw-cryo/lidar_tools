@@ -85,7 +85,8 @@ def create_dsm(
         dtm_pipeline_list, dtm_fn_list, 
         intensity_pipeline_list, intensity_fn_list) = dsm_functions.create_ept_3dep_pipeline(
                                 extent_polygon,target_wkt,output_prefix,
-                                n_rows=3, n_cols=3,buffer_value=5,
+                                buffer_value=5,
+                                tile_size_km=1.0,
                                 process_specific_3dep_survey=process_specific_3dep_survey,
                                 process_all_intersecting_surveys=process_all_intersecting_surveys
         )
