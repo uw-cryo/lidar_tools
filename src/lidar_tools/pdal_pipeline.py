@@ -16,7 +16,9 @@ import pdal
 from pyproj import CRS
 import geopandas as gpd
 from pathlib import Path
+from dask.distributed import Client,progress
 
+import dask
 
 
 
@@ -77,7 +79,8 @@ def create_dsm(
         dtm_pipeline_list, dtm_fn_list, 
         intensity_pipeline_list, intensity_fn_list) = dsm_functions.create_lpc_pipeline(
                                     local_laz_dir=local_laz_dir,
-                                    target_wkt=target_wkt,output_prefix=output_prefix)
+                                    target_wkt=target_wkt,output_prefix=output_prefix,
+                                    aoi_bounds=extent_polygon)
     else:
         print("This run will process 3DEP EPT tiles")
         ept_3dep = True
@@ -113,15 +116,33 @@ def create_dsm(
                 final_intensity_fn_list.append(intensity)
     else:
         print("Running DSM/DTM/intensity pipelines in parallel")
-        dsm_argument_list = [(dsm_pipeline_list[i], dsm_fn_list[i]) for i in range(len(dsm_pipeline_list))]
-        final_dsm_fn_list = dsm_functions.run_imap_multiprocessing(dsm_functions.execute_pdal_pipeline_parallel,
-            dsm_argument_list,num_processes=10)
-        dtm_argument_list = [(dtm_pipeline_list[i], dtm_fn_list[i]) for i in range(len(dtm_pipeline_list))]
-        final_dtm_fn_list = dsm_functions.run_imap_multiprocessing(dsm_functions.execute_pdal_pipeline_parallel,
-            dtm_argument_list,num_processes=10)
-        intensity_argument_list = [(intensity_pipeline_list[i], intensity_fn_list[i]) for i in range(len(intensity_pipeline_list))]
-        final_intensity_fn_list = dsm_functions.run_imap_multiprocessing(dsm_functions.execute_pdal_pipeline_parallel,
-            intensity_argument_list,num_processes=10)
+        final_dsm_fn_list = []
+        for idx, pipeline in enumerate(dsm_pipeline_list):
+            #print(f"Executing DSM pipeline {idx+1} of {len(dsm_pipeline_list)}")
+            final_dsm_list = dask.delayed(dsm_functions.execute_pdal_pipeline)(pipeline, dsm_fn_list[idx])
+            final_dsm_fn_list.append(final_dsm_list)
+        client = Client(threads_per_worker=2, n_workers=5)
+        futures = dask.persist(*final_dsm_fn_list)
+        final_dsm_fn_list = dask.compute(*futures)
+        print(type(final_dsm_fn_list))
+        print(final_dsm_fn_list)
+        final_dtm_fn_list = []
+        final_intensity_fn_list = []
+        for idx,pipeline in enumerate(dtm_pipeline_list):
+            #print(f"Executing DTM pipeline {idx+1} of {len(dtm_pipeline_list)}")
+            final_dtm_list = dask.delayed(dsm_functions.execute_pdal_pipeline)(pipeline, dtm_fn_list[idx])
+            final_dtm_fn_list.append(final_dtm_list)
+        client = Client(threads_per_worker=2, n_workers=5)
+        futures = dask.persist(*final_dtm_fn_list)
+        final_dtm_fn_list = dask.compute(*futures)
+
+        for idx,pipeline in enumerate(intensity_pipeline_list):
+            #print(f"Executing intensity pipeline {idx+1} of {len(intensity_pipeline_list)}")
+            final_intensity_list = dask.delayed(dsm_functions.execute_pdal_pipeline)(pipeline, intensity_fn_list[idx])
+            final_intensity_fn_list.append(final_intensity_list)
+        client = Client(threads_per_worker=2, n_workers=5)
+        futures = dask.persist(*final_intensity_fn_list)
+        final_intensity_fn_list = dask.compute(*futures)
     print("****Processing complete for all tiles****")
     
     if len(final_dsm_fn_list) > 1:
@@ -148,15 +169,15 @@ def create_dsm(
             print(f"Creating intensity raster mosaic at {intensity_mos_fn}")
             dsm_functions.raster_mosaic(final_intensity_fn_list, intensity_mos_fn,cog=cog)
         else:
-            mos_arg_list = [(final_dsm_fn_list, dsm_mos_fn, cog),
-                            (final_dtm_fn_list, dtm_mos_fn, cog),
-                            (final_intensity_fn_list, intensity_mos_fn, cog)]
-            print("Running mosaicking in parallel")
-            dsm_functions.run_imap_multiprocessing(
-                dsm_functions.raster_mosaic_parallel,
-                mos_arg_list,
-                num_processes=3
-            )
+            final_mos_list = []
+            output_mos_list = [dsm_mos_fn, dtm_mos_fn, intensity_mos_fn]
+            for idx,lists in enumerate([final_dsm_fn_list, final_dtm_fn_list, final_intensity_fn_list]):
+                
+                final_mos = (dask.delayed(dsm_functions.raster_mosaic)(lists, output_mos_list[idx], cog))
+                final_mos_list.append(final_mos)
+            client = Client(threads_per_worker=2, n_workers=5)
+            futures = dask.persist(*final_mos_list)
+            final_mos_list = dask.compute(*futures)
     else:
         dsm_mos_fn = final_dsm_fn_list[0]
         dtm_mos_fn = final_dtm_fn_list[0]
@@ -191,11 +212,16 @@ def create_dsm(
             else:
                 print("Running reprojection in parallel")
                 resolution = 1.0 #hardcoded for now, will change tomorrow
-                reprojection_arg_list = [(dsm_mos_fn, dsm_reproj, src_srs, target_wkt, resolution, "bilinear"),
-                                        (dtm_mos_fn, dtm_reproj, src_srs, target_wkt, resolution, "bilinear"),
-                                        (intensity_mos_fn, intensity_reproj, src_srs, target_wkt, resolution, "bilinear")]
-                dsm_functions.run_imap_multiprocessing(dsm_functions.gdal_warp_parallel,
-                    reprojection_arg_list,num_processes=3)
+                reproj_fn_list = [dsm_reproj, dtm_reproj, intensity_reproj]
+                dem_list = [dsm_mos_fn, dtm_mos_fn, intensity_mos_fn]
+                out_list = []
+                for idx, input_fn in enumerate(dem_list):
+                    reproj = (dask.delayed(dsm_functions.gdal_warp)(input_fn, reproj_fn_list[idx], src_srs, target_wkt,
+                                        resolution, "bilinear"))
+                    out_list.append(reproj)
+                client = Client(threads_per_worker=2, n_workers=3)
+                futures = dask.persist(*out_list)
+                out = dask.compute(*futures)
         else:
             print("No reprojection required")
             # rename the temp files to the final output names
@@ -214,11 +240,13 @@ def create_dsm(
         dsm_functions.gdal_add_overview(intensity_reproj)
     else:
         print("Running overview creation in parallel")
-        dsm_functions.run_imap_multiprocessing(
-            dsm_functions.gdal_add_overview_parallel,
-            [dsm_reproj, dtm_reproj, intensity_reproj],
-            num_processes=3
-        )
+        ovr_list = [dsm_reproj, dtm_reproj, intensity_reproj]
+        ovr_results = []    
+        for ovr in ovr_list:
+            ovr_results.append(dask.delayed(dsm_functions.gdal_add_overview)(ovr))
+        client = Client(threads_per_worker=2, n_workers=3)
+        futures = dask.persist(*ovr_results)
+        out = dask.compute(*futures)
 
     if cleanup:
         print("User selected to remove intermediate tile outputs")

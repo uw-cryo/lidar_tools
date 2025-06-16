@@ -16,10 +16,6 @@ import numpy as np
 import json
 from pathlib import Path
 import glob
-import threading
-#from threading import Lock
-from multiprocessing import Pool, Lock
-from tqdm import tqdm
 # import planetary_computer
 from osgeo import gdal, gdalconst
 import pdal
@@ -257,7 +253,7 @@ def return_lpc_bounds(lpc:str,
 def return_local_lpc_reader(lpc: str,
                 output_crs: CRS = None,
                 pointcloud_resolution: float = 1.0,
-                aoi_bounds: list = None,
+                aoi_bounds: gpd.GeoDataFrame  = None,
                 buffer_value: int = 5, #this should be multiple of input resolution
                 ) -> tuple[dict,CRS,list]:
     """
@@ -268,8 +264,8 @@ def return_local_lpc_reader(lpc: str,
         Path to the local laz file.
     output_crs : pyproj.CRS, optional
         The coordinate reference system to transform the bounds to, by default None.
-    aoi_bounds : list, optional 
-        The bounds of the area of interest in the format [xmin, ymin, xmax, ymax], by default None.
+    aoi_bounds : gpd.GeoDataFrame, optional
+        The area of interest bounds to intersect with the point cloud bounds, by default None.
     buffer_value : int, optional
         The buffer value in meters to apply to the bounds, by default 5.
     Returns
@@ -287,16 +283,45 @@ def return_local_lpc_reader(lpc: str,
     #get the bounds of the laz file
     bounds = return_lpc_bounds(lpc)
     in_crs = return_crs_local_lpz(lpc)
+    #adding function to utilize
     #if the bounds are not in the output crs, transform them
+    
     if output_crs is not None:
         if in_crs != output_crs:
             bounds = transform_bounds(in_crs, output_crs, *bounds)
+    lpc_polygon = shapely.geometry.Polygon.from_bounds(*bounds)
+    lpc_gdf = gpd.GeoDataFrame(
+        geometry=[lpc_polygon], crs=in_crs, index=[0]
+    )
+    aoi_bounds_in_crs = aoi_bounds.to_crs(in_crs)
+    
     reader = {
         "type": "readers.las",
         "filename": lpc}
+    pipeline = {"pipeline": [reader]}
+    
+    # Calculate the intersection between AOI bounds and the point cloud bounds
+    intersection = lpc_gdf.intersection(aoi_bounds_in_crs.unary_union)
+    if not intersection.is_empty.any() and intersection.area.sum() < lpc_gdf.area.sum():
+        # Modify the reader to include an extent-based filter based on the intersection area
+        output_bounds = intersection.total_bounds
+        if in_crs != output_crs:
+            output_bounds = transform_bounds(in_crs, output_crs, *output_bounds)
+        # If a buffer is specified, apply it to the intersection area
+        if buffer is not None:
+            intesection = intersection.buffer(buffer_value) 
+        intersection_bounds = intersection.total_bounds
+        crop_filter = {
+            "type": "filters.crop",
+            "bounds": f"([{intersection_bounds[0]},{intersection_bounds[2]}],"
+                    f"[{intersection_bounds[1]},{intersection_bounds[3]}])"}
+        pipeline["pipeline"] += [crop_filter]
+    else:
+        # If the intersection area is same as the point cloud bounds, use the original bounds
+        output_bounds = bounds
     # tap bounds for output product and resolution
-    tapped_bounds = tap_bounds(bounds, pointcloud_resolution)
-    return reader,in_crs,tapped_bounds
+    tapped_bounds = tap_bounds(output_bounds, pointcloud_resolution)
+    return pipeline,in_crs,tapped_bounds
 # need to revisit this, a lot of the functionality is not used
 
 def create_pdal_pipeline(
@@ -540,6 +565,8 @@ def raster_mosaic(img_list: list,
         Path to output mosaicked image
     """
     # create vrt
+    if type(img_list) is tuple:
+        img_list = list(img_list)
     vrt_fn = os.path.splitext(outfn)[0] + ".vrt"
     gdal.BuildVRT(vrt_fn, img_list, callback=gdal.TermProgress_nocb)
     if cog:
@@ -552,19 +579,7 @@ def raster_mosaic(img_list: list,
     # delete vrt
     os.remove(vrt_fn)
 
-def raster_mosaic_parallel(argument_list: list) -> None:
-    """
-    Parallel wrapper for raster_mosaic function.
-    This function is used to parallelize the raster_mosaic function using multiprocessing.
-    Parameters
-    ----------
-    argument_list : list
-        List of arguments to be passed to the raster_mosaic function.
-    """
-    starting.acquire()  # no other process can get it until it is released
-    threading.Timer(release_second, starting.release).start()  # release in 10 second
-    img_list, outfn, cog = argument_list
-    raster_mosaic(img_list, outfn, cog) 
+
 
 
 ### Functions for datum checks
@@ -1000,25 +1015,6 @@ def gdal_warp(
     )
     ds.Close()
 
-def gdal_warp_parallel(argument_list) -> None:
-    """
-    Add overviews to a raster file using GDAL.
-
-    Parameters
-    ----------
-    raster_fn : str
-        Path to the raster file.
-    """
-    starting.acquire()  # no other process can get it until it is released
-    threading.Timer(release_second, starting.release).start()  # release in 10 second
-    src_fn, dst_fn,src_srs,dst_srs,res,resampling_alogrithm = argument_list
-    gdal_warp(
-        src_fn=src_fn,
-        dst_fn=dst_fn,
-        src_srs=src_srs,
-        dst_srs=dst_srs,
-        res=res,
-        resampling_alogrithm=resampling_alogrithm)
 
 
 def gdal_add_overview(raster_fn: str) -> None:
@@ -1036,36 +1032,24 @@ def gdal_add_overview(raster_fn: str) -> None:
             "GAUSS", [2, 4, 8, 16, 32, 64], callback=gdal.TermProgress_nocb
         )
 
-def gdal_add_overview_parallel(raster_fn: str) -> None:
-    """
-    Add overviews to a raster file using GDAL.
 
-    Parameters
-    ----------
-    raster_fn : str
-        Path to the raster file.
-    """
-    starting.acquire()  # no other process can get it until it is released
-    threading.Timer(release_second, starting.release).start()  # release in 10 second
-    gdal_add_overview(
-        raster_fn=raster_fn)
 
 ###### Provider specific functions to return appropriate pipelines for raster creation
 
-def create_lpc_pipeline(local_laz_dir: str,target_wkt: str,output_prefix: str,raster_resolution: float = 1.0):
+def create_lpc_pipeline(local_laz_dir: str,target_wkt: str,output_prefix: str,raster_resolution: float = 1.0,aoi_bounds=None):
     lpc_files = sorted((glob.glob(os.path.join(local_laz_dir, "*.laz"))))
     lpc_files += sorted((glob.glob(os.path.join(local_laz_dir, "*.las"))))
     print(f"Number of local laz files: {len(lpc_files)}")
     readers = []
     original_extents = []
     input_crs = []
-
+    aoi_bounds = gpd.read_file(aoi_bounds)
     for idx, lpc in enumerate(lpc_files):
         reader, in_crs, out_extent = return_local_lpc_reader(
         lpc,
         output_crs=target_wkt,
         pointcloud_resolution=1.0,
-        )
+        aoi_bounds=aoi_bounds)
         readers.append(reader)
         original_extents.append(out_extent)
         input_crs.append(in_crs)
@@ -1095,7 +1079,7 @@ def create_lpc_pipeline(local_laz_dir: str,target_wkt: str,output_prefix: str,ra
         )
 
         ## DSM creation block
-        pipeline_dsm = {"pipeline": [reader]}
+        pipeline_dsm = reader 
         pdal_pipeline_dsm = create_pdal_pipeline(
             group_filter="first,only",
             reproject=True, # reproject to the output CRS            
@@ -1119,7 +1103,7 @@ def create_lpc_pipeline(local_laz_dir: str,target_wkt: str,output_prefix: str,ra
         dsm_fn_list.append(dsm_file.as_posix())
 
         ## DTM creation block
-        pipeline_dtm = {"pipeline": [reader]}
+        pipeline_dtm = reader
         pdal_pipeline_dtm = create_pdal_pipeline(
                 return_only_ground=True,
                 group_filter=None,
@@ -1149,7 +1133,7 @@ def create_lpc_pipeline(local_laz_dir: str,target_wkt: str,output_prefix: str,ra
         dtm_fn_list.append(dtm_file.as_posix())
 
         ## Intensity creation block
-        pipeline_intensity = {"pipeline": [reader]}
+        pipeline_intensity = reader
         pdal_pipeline_surface_intensity = create_pdal_pipeline(
                 group_filter="first,only",
                 reproject=True, # reproject to the output CRS            
@@ -1353,17 +1337,3 @@ def run_imap_multiprocessing(func, argument_list, num_processes):
         result_list_tqdm.append(result)
 
     return result_list_tqdm
-
-def execute_pdal_pipeline_parallel(argument_list):
-    
-    starting.acquire()  # no other process can get it until it is released
-    threading.Timer(release_second, starting.release).start()  # release in 10 second
-    pdal_pipeline, output_fn = argument_list
-    return execute_pdal_pipeline(
-        pdal_pipeline=pdal_pipeline,
-        output_fn=output_fn
-    )
-    # finally:
-    #     #Ensure the lock is released even if an error occurs
-    #     if starting.locked():
-    #         starting.release()
