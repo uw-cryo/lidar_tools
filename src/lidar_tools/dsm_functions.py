@@ -567,6 +567,9 @@ def raster_mosaic(img_list: list,
     # create vrt
     if type(img_list) is tuple:
         img_list = list(img_list)
+        
+    # Filter out None values from the image list
+    img_list = [img for img in img_list if img is not None]
     vrt_fn = os.path.splitext(outfn)[0] + ".vrt"
     gdal.BuildVRT(vrt_fn, img_list, callback=gdal.TermProgress_nocb)
     if cog:

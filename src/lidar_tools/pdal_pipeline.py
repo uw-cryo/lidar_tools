@@ -250,7 +250,9 @@ def create_dsm(
 
     if cleanup:
         print("User selected to remove intermediate tile outputs")
-        for fn in final_dsm_fn_list + final_dtm_fn_list + final_intensity_fn_list:
+        tile_list = dsm_fn_list + dtm_fn_list + intensity_fn_list
+        tile_list = [tile for tile in tile_list if tile is not None]
+        for fn in tile_list:
             try:
                 Path(fn).unlink()
             except FileNotFoundError as e:
