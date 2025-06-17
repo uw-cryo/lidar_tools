@@ -124,8 +124,7 @@ def create_dsm(
         client = Client(threads_per_worker=2, n_workers=5)
         futures = dask.persist(*final_dsm_fn_list)
         final_dsm_fn_list = dask.compute(*futures)
-        print(type(final_dsm_fn_list))
-        print(final_dsm_fn_list)
+        client.close()
         final_dtm_fn_list = []
         final_intensity_fn_list = []
         for idx,pipeline in enumerate(dtm_pipeline_list):
@@ -135,6 +134,7 @@ def create_dsm(
         client = Client(threads_per_worker=2, n_workers=5)
         futures = dask.persist(*final_dtm_fn_list)
         final_dtm_fn_list = dask.compute(*futures)
+        client.close()
 
         for idx,pipeline in enumerate(intensity_pipeline_list):
             #print(f"Executing intensity pipeline {idx+1} of {len(intensity_pipeline_list)}")
@@ -143,6 +143,7 @@ def create_dsm(
         client = Client(threads_per_worker=2, n_workers=5)
         futures = dask.persist(*final_intensity_fn_list)
         final_intensity_fn_list = dask.compute(*futures)
+        client.close()
     print("****Processing complete for all tiles****")
     
     if len(final_dsm_fn_list) > 1:
@@ -178,6 +179,7 @@ def create_dsm(
             client = Client(threads_per_worker=2, n_workers=5)
             futures = dask.persist(*final_mos_list)
             final_mos_list = dask.compute(*futures)
+            client.close()
     else:
         dsm_mos_fn = final_dsm_fn_list[0]
         dtm_mos_fn = final_dtm_fn_list[0]
@@ -222,6 +224,7 @@ def create_dsm(
                 client = Client(threads_per_worker=2, n_workers=3)
                 futures = dask.persist(*out_list)
                 out = dask.compute(*futures)
+                client.close()
         else:
             print("No reprojection required")
             # rename the temp files to the final output names
@@ -247,6 +250,7 @@ def create_dsm(
         client = Client(threads_per_worker=2, n_workers=3)
         futures = dask.persist(*ovr_results)
         out = dask.compute(*futures)
+        client.close()
 
     if cleanup:
         print("User selected to remove intermediate tile outputs")
