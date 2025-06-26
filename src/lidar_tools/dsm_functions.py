@@ -21,6 +21,7 @@ from osgeo import gdal, gdalconst
 import pdal
 import odc.stac
 import os
+import gc
 
 
 gdal.UseExceptions()
@@ -178,12 +179,12 @@ def return_readers(
                     else:
                         add_survey = True
                     if add_survey:
-                        print("Dataset being used: ", usgs_dataset_name)
+                        #print("Dataset being used: ", usgs_dataset_name)
                         url = f"https://s3-us-west-2.amazonaws.com/usgs-lidar-public/{usgs_dataset_name}/ept.json"
                         reader = {
                             "type": "readers.ept",
                             "filename": url,
-                            "requests": 1,
+                            "requests": 15,
                             "resolution": pointcloud_resolution,
                             "polygon": str(aoi_3857.wkt),
                         }
@@ -202,7 +203,7 @@ def return_readers(
 
     return readers, pointcloud_input_crs, extents, original_extents
 
-def return_crs_local_lpz(lpc: str)  -> CRS:
+def return_crs_local_lpc(lpc: str)  -> CRS:
     """
     Given a local laz file, return the coordinate reference system (CRS) of the point cloud.
     Parameters
@@ -239,13 +240,16 @@ def return_lpc_bounds(lpc:str,
     pipeline = pdal.Reader(lpc).pipeline()
     pipeline.execute()
     pdal_bounds = pipeline.quickinfo['readers.las']['bounds']
+    #print(pdal_bounds)
     minx,miny,maxx,maxy = (pdal_bounds['minx'],pdal_bounds['miny'],
                 pdal_bounds['maxx'],pdal_bounds['maxy'])
+    #print(f"Bounds of the point cloud: {minx}, {miny}, {maxx}, {maxy}")
     if output_crs is not None:
         if CRS.from_wkt(pipeline.srswkt2) != output_crs:
             output_bounds = transform_bounds(
                 CRS.from_wkt(pipeline.srswkt2), 
                 output_crs, minx, miny, maxx, maxy)
+        
     else:
         output_bounds = [minx, miny, maxx, maxy]
     return output_bounds
@@ -282,13 +286,12 @@ def return_local_lpc_reader(lpc: str,
 
     #get the bounds of the laz file
     bounds = return_lpc_bounds(lpc)
-    in_crs = return_crs_local_lpz(lpc)
+    in_crs = return_crs_local_lpc(lpc)
+    
     #adding function to utilize
     #if the bounds are not in the output crs, transform them
     
-    if output_crs is not None:
-        if in_crs != output_crs:
-            bounds = transform_bounds(in_crs, output_crs, *bounds)
+    
     lpc_polygon = shapely.geometry.Polygon.from_bounds(*bounds)
     lpc_gdf = gpd.GeoDataFrame(
         geometry=[lpc_polygon], crs=in_crs, index=[0]
@@ -299,29 +302,63 @@ def return_local_lpc_reader(lpc: str,
         "type": "readers.las",
         "filename": lpc}
     pipeline = {"pipeline": [reader]}
-    
+    #with open(output_crs, "r") as f:
+    #        contents = f.read()
+    #output_crs = CRS.from_string(contents)
+    #in_crs = in_crs.to_2d()
+    #output_crs = output_crs.to_2d()
     # Calculate the intersection between AOI bounds and the point cloud bounds
+    #print(f"aoi bounds in crs: {aoi_bounds_in_crs.total_bounds}")
+    #print(f"aoi unary union: {aoi_bounds_in_crs.unary_union.bounds}")
     intersection = lpc_gdf.intersection(aoi_bounds_in_crs.unary_union)
-    if not intersection.is_empty.any() and intersection.area.sum() < lpc_gdf.area.sum():
+    #print(output_crs)
+    #print(f"lpc: {transform_bounds(in_crs, output_crs, *bounds)}")
+    #print(f"AOI: {transform_bounds(in_crs, output_crs, *aoi_bounds_in_crs.total_bounds)}")
+    #print(f"original AOI: {transform_bounds(CRS.from_epsg(4326), output_crs, *aoi_bounds.total_bounds)}")
+    #print(f"Intersection bounds: {transform_bounds(in_crs, output_crs, *intersection.total_bounds)}")
+    #print(f"Intersection area: {intersection.area}")
+    if (not intersection.is_empty.any()):
+        #print("this tile intesects with the AOI bounds")
         # Modify the reader to include an extent-based filter based on the intersection area
-        output_bounds = intersection.total_bounds
-        if in_crs != output_crs:
-            output_bounds = transform_bounds(in_crs, output_crs, *output_bounds)
-        # If a buffer is specified, apply it to the intersection area
-        if buffer is not None:
-            intesection = intersection.buffer(buffer_value) 
-        intersection_bounds = intersection.total_bounds
-        crop_filter = {
-            "type": "filters.crop",
-            "bounds": f"([{intersection_bounds[0]},{intersection_bounds[2]}],"
-                    f"[{intersection_bounds[1]},{intersection_bounds[3]}])"}
-        pipeline["pipeline"] += [crop_filter]
+        return_reader = True
+        #print("Performing cropping")
+
+        if intersection.area.values[0] < lpc_gdf.area.values[0]:
+            output_bounds = intersection.total_bounds
+            #crop to extent of intersection area
+            if buffer_value is not None:
+                intesection = intersection.buffer(buffer_value) 
+            intersection_bounds = intersection.total_bounds
+            
+            crop_filter = {
+                "type": "filters.crop",
+                "bounds": f"([{intersection_bounds[0]},{intersection_bounds[2]}],"
+                        f"[{intersection_bounds[1]},{intersection_bounds[3]}])"}
+            pipeline["pipeline"] += [crop_filter]
+            
+        else:
+            # If the intersection area is same as the point cloud bounds, use the original bounds
+            #print("Intersection area is same as the point cloud bounds")
+            output_bounds = bounds
+            #print(7)
     else:
-        # If the intersection area is same as the point cloud bounds, use the original bounds
-        output_bounds = bounds
-    # tap bounds for output product and resolution
-    tapped_bounds = tap_bounds(output_bounds, pointcloud_resolution)
-    return pipeline,in_crs,tapped_bounds
+        return_reader = False
+    if return_reader:
+        if output_crs is not None:
+            #print(2)
+            if in_crs != output_crs:
+                output_bounds = transform_bounds(in_crs, output_crs, *output_bounds)
+              #  print(3)
+        tapped_bounds = tap_bounds(output_bounds, pointcloud_resolution)
+        #print("Tapped bounds: ", tapped_bounds)
+        # If a buffer is specified, apply it to the intersection area
+        return pipeline, in_crs, tapped_bounds
+    else:
+        #print("No intersection with AOI bounds, returning None")
+        return None, None, None
+    
+
+
 # need to revisit this, a lot of the functionality is not used
 
 def create_pdal_pipeline(
@@ -556,7 +593,8 @@ def create_dem_stage(
 
 def raster_mosaic(img_list: list, 
          outfn: str,
-         cog: bool = False) -> None:
+         cog: bool = False,
+         ) -> None:
     """
     Given a list of input images, mosaic them into a COG raster by using vrt and gdal_translate
     im_list: list
@@ -965,6 +1003,8 @@ def check_raster_validity(raster_fn: str) -> bool:
     else:
         # print(f"Raster {raster_fn} has a valid CRS.")
         out = True
+    da = None
+    gc.collect()
     return out
 
 
@@ -1013,7 +1053,7 @@ def gdal_warp(
         errorThreshold=tolerance,
         targetAlignedPixels=True,
         # use directly output format as COG when gaussian overview resampling is implemented upstream in GDAL
-        creationOptions=["COMPRESS=LZW", "TILED=YES", "COPY_SRC_OVERVIEWS=YES"],
+        creationOptions=["COMPRESS=LZW", "TILED=YES", "COPY_SRC_OVERVIEWS=YES","BIGTIFF=IF_NEEDED"],
         callback=gdal.TermProgress_nocb,
     )
     ds.Close()
@@ -1053,9 +1093,11 @@ def create_lpc_pipeline(local_laz_dir: str,target_wkt: str,output_prefix: str,ra
         output_crs=target_wkt,
         pointcloud_resolution=1.0,
         aoi_bounds=aoi_bounds)
-        readers.append(reader)
-        original_extents.append(out_extent)
-        input_crs.append(in_crs)
+        #print(reader)
+        if reader is not None:
+            readers.append(reader)
+            original_extents.append(out_extent)
+            input_crs.append(in_crs)
     
     output_path = Path(output_prefix).parent
     prefix = Path(output_prefix).name
@@ -1300,7 +1342,31 @@ def create_ept_3dep_pipeline(extent_polygon,target_wkt,output_prefix,
     return dsm_pipeline_list, dsm_fn_list, dtm_pipeline_list, dtm_fn_list, intensity_pipeline_list, intensity_fn_list
 
 
+def find_longitude_of_origin_from_utm(epsg_code):
+    crs = CRS.from_epsg(epsg_code)
+    return crs.to_json_dict()['conversion']['parameters'][1]['value']
 
+def write_local_utm_3DCRS_G2139(path_to_base_utm10_def,zone='17N',outfn=None):
+    with open(path_to_base_utm10_def, 'r') as f: #open the file
+        input_crs = f.read() 
+    if 'N' in zone:
+        zone_num = zone.split('N')[0]
+        epsg_code = int(f"326{zone_num}")
+    else:
+        zone_num = zone.split('S')[0]
+        epsg_code = int(f"327{zone_num}")
+    #find center longitude
+    center_long = find_longitude_of_origin_from_utm(epsg_code)
+    mod_crs = input_crs.replace("UTM 10N", f"UTM {zone}")
+    mod_crs = mod_crs.replace("UTM zone 10N", f"UTM zone {zone}")
+    mod_crs = mod_crs.replace('"Longitude of natural origin",-123', 
+                          f'"Longitude of natural origin",{center_long}')
+    if outfn is None:
+        outfn = f'UTM_{zone}_WGS84_G2139_3D.wkt'
+    print(f"Writing 3D CRS at {outfn}")
+    with open(outfn,'w') as f:
+        f.write(mod_crs)
+    return outfn
 
 def execute_pdal_pipeline(pdal_pipeline: json,
                         output_fn: str) -> str:
@@ -1318,12 +1384,16 @@ def execute_pdal_pipeline(pdal_pipeline: json,
         The filename of the output raster is successfully saved, otherwise nothing is returned
     """
     try:
-        pdal_pipeline.execute()
+        out = pdal_pipeline.execute()
+        out = None
         if check_raster_validity(output_fn):
             return output_fn
+        pdal_pipeline = None
+        gc.collect()
     except RuntimeError as e:
         print(f"A RuntimeError occured for file {output_fn}: {e}")
         pass
+        gc.collect()
 def init(lock):
     global starting
     starting = lock
