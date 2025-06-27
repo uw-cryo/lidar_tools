@@ -27,7 +27,6 @@ import geopandas as gpd
 from pathlib import Path
 from dask.distributed import LocalCluster,Client,progress
 from joblib import Parallel, delayed
-from tqdm import tqdm
 import dask
 import requests
 
