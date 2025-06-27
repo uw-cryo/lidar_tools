@@ -16,6 +16,13 @@ print(f"PROJ_NETWORK is {os.environ['PROJ_NETWORK']}")
 from lidar_tools import dsm_functions
 import pdal
 from pyproj import CRS
+from shapely.geometry import Polygon
+from shapely.geometry.polygon import orient as _orient
+import numpy as np
+import json
+from pathlib import Path
+import warnings
+
 import geopandas as gpd
 from pathlib import Path
 from dask.distributed import LocalCluster,Client,progress
@@ -81,6 +88,7 @@ def _memory_safe_batch_processing(pipeline_list, fn_list, batch_size=25, restart
 
     client.close()
     return final_results
+
 
 
 
@@ -155,6 +163,15 @@ def create_dsm(
                 f.write(response.text)
         target_wkt = dsm_functions.write_local_utm_3DCRS_G2139(path_to_base_utm10_def,zone=zone,outfn=target_wkt)
 
+    # bounds for which pointcloud is created
+    gdf = gpd.read_file(extent_polygon)
+    _check_polygon_area(gdf)
+    
+    xmin, ymin, xmax, ymax = gdf.total_bounds
+    input_aoi = Polygon.from_bounds(xmin, ymin, xmax, ymax)
+    input_crs = gdf.crs.to_wkt()
+
+    # specify the output CRS of DEMs
     with open(target_wkt, "r") as f:
             contents = f.read()
     out_crs = CRS.from_string(contents)
@@ -447,6 +464,7 @@ def create_dsm(
             except FileNotFoundError as e:
                 print(f"Error {e} encountered for file {fn}")
                 pass
+
         if ept_3dep:
             if os.path.exists(dsm_mos_fn):
                 os.remove(dsm_mos_fn)
@@ -455,3 +473,69 @@ def create_dsm(
             if os.path.exists(intensity_mos_fn):
                 os.remove(intensity_mos_fn)
     print("****Processing complete****")
+
+
+def geographic_area(gf: gpd.GeoDataFrame) -> gpd.pd.Series:
+    """
+    Estimate the geographic area of each polygon in a GeoDataFrame in m^2
+
+    Parameters
+    ----------
+    gf : gpd.GeoDataFrame
+        A GeoDataFrame containing the geometries for which the area needs to be calculated. The GeoDataFrame
+        must have a geographic coordinate system (latitude and longitude).
+
+    Returns
+    -------
+    pd.Series
+        A Pandas Series containing the area of each polygon in the input GeoDataFrame in m^2.
+
+    Raises
+    ------
+    TypeError
+        If the GeoDataFrame does not have a geographic coordinate system.
+
+    Notes
+    ----------
+    - Only works for areas up to 1/2 of globe (https://github.com/pyproj4/pyproj/issues/1401)
+    """
+    if gf.crs is None or not gf.crs.is_geographic:
+        msg = "This function requires a GeoDataFrame with gf.crs.is_geographic==True"
+        raise TypeError(msg)
+
+    geod = gf.crs.get_geod()
+
+    def area_calc(geom):
+        if geom.geom_type not in ["MultiPolygon", "Polygon"]:
+            return np.nan
+
+        # For MultiPolygon do each separately
+        if geom.geom_type == "MultiPolygon":
+            return np.sum([area_calc(p) for p in geom.geoms])
+
+        # orient to ensure a counter-clockwise traversal.
+        # geometry_area_perimeter returns (area, perimeter)
+        return geod.geometry_area_perimeter(_orient(geom, 1))[0]
+
+    return gf.geometry.apply(area_calc)
+
+
+def _check_polygon_area(gf: gpd.GeoDataFrame) -> None:
+    """
+    Issue a warning if area is bigger than threshold
+    """
+    warn_if_larger_than = 100_000  # km^2
+
+    # Fast track if projected and units are meters:
+    if gf.crs.is_projected and gf.crs.axis_info[0].unit_name == "metre":
+        area = gf.area * 1e-6
+    else:
+        area = geographic_area(gf.to_crs("EPSG:4326")) * 1e-6
+
+    print(area.values[0])
+    if area.to_numpy() >= warn_if_larger_than:
+        msg = f"Very large AOI ({area.values[0]:e} km^2) requested, processing may be slow or crash. Recommended AOI size is <{warn_if_larger_than:e} km^2"
+        warnings.warn(msg)
+    else:
+        print(f"Starting Processing of {area.values[0]:e} km^2 AOI")
+
