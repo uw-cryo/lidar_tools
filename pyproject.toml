@@ -80,6 +80,8 @@ rioxarray = "*"
 requests = "*"
 scipy = "*"
 odc-stac = "*"
+dask = ">=2025.5.1,<2026"
+distributed = ">=2025.5.1,<2026"
 
 [tool.pixi.pypi-dependencies]
 lidar_tools = { path = ".", editable = false }
