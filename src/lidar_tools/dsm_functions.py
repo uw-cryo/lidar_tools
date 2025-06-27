@@ -28,7 +28,7 @@ gdal.UseExceptions()
 
 odc.stac.configure_rio(cloud_defaults=True)
 
-release_second =  10 # seconds to wait before releasing the lock in parallel processing
+
 
 
 def nearest_floor(x: int | float, a: int | float) -> int | float:
@@ -219,7 +219,7 @@ def return_crs_local_lpc(lpc: str)  -> CRS:
     pipeline.execute()
     srs_wkt2 = pipeline.srswkt2
     crs = CRS.from_wkt(srs_wkt2)
-    
+    pipeline = None
     return crs
 
 def return_lpc_bounds(lpc:str,
@@ -239,6 +239,7 @@ def return_lpc_bounds(lpc:str,
     """
     pipeline = pdal.Reader(lpc).pipeline()
     pipeline.execute()
+    
     pdal_bounds = pipeline.quickinfo['readers.las']['bounds']
     #print(pdal_bounds)
     minx,miny,maxx,maxy = (pdal_bounds['minx'],pdal_bounds['miny'],
@@ -252,6 +253,7 @@ def return_lpc_bounds(lpc:str,
         
     else:
         output_bounds = [minx, miny, maxx, maxy]
+    pipeline = None
     return output_bounds
 
 def return_local_lpc_reader(lpc: str,
