@@ -5,6 +5,7 @@ Generate DSMs from 3DEP EPT data
 from rasterio.warp import transform_bounds
 from pyproj import CRS
 import shapely
+from shapely.geometry import Polygon
 import geopandas as gpd
 import requests
 import rasterio
@@ -12,15 +13,22 @@ import xarray as xr
 import rioxarray
 import pystac_client
 import numpy as np
-
+import json
+from pathlib import Path
+import glob
 # import planetary_computer
 from osgeo import gdal, gdalconst
+import pdal
 import odc.stac
 import os
+import gc
+
 
 gdal.UseExceptions()
 
 odc.stac.configure_rio(cloud_defaults=True)
+
+
 
 
 def nearest_floor(x: int | float, a: int | float) -> int | float:
@@ -68,10 +76,8 @@ def tap_bounds(site_bounds: tuple | list | np.ndarray, res: int | float) -> list
 
 def return_readers(
     input_aoi: gpd.GeoDataFrame,
-    src_crs: CRS,
     pointcloud_resolution: float = 1.0,
-    n_rows: int = 5,
-    n_cols: int = 5,
+    tile_size_km: float = 1.0,
     buffer_value: int = 5,
     return_specific_3dep_survey: str = None,
     return_all_intersecting_surveys: bool = False,
@@ -84,14 +90,8 @@ def return_readers(
     ----------
     input_aoi : shapely.geometry.Polygon
         The area of interest as a polygon.
-    src_crs : pyproj.CRS
-        The coordinate reference system of the input AOI.
     pointcloud_resolution : int, optional
         The resolution of the point cloud data, by default 1.
-    n_rows : int, optional
-        The number of rows to divide the AOI into, by default 5.
-    n_cols : int, optional
-        The number of columns to divide the AOI into, by default 5.
     buffer_value : int, optional
         The buffer value in meters to apply to each tile, by default 5.
     return_specific_3dep_survey : str, optional
@@ -110,49 +110,56 @@ def return_readers(
     list of list
         A list of original extents for each reader.
     """
-    xmin, ymin, xmax, ymax = input_aoi.bounds
-    x_step = (xmax - xmin) / n_cols
-    y_step = (ymax - ymin) / n_rows
+    # since we will query the USGS 3DEP EPT data which are in EPSG:3857, 
+    # and our logic is to divide in X x X km tile grid, 
+    # we need to convert the input AOI to EPSG:3857 which is in metric units
+    input_aoi = input_aoi.to_crs(CRS.from_epsg(3857))
+    xmin, ymin, xmax, ymax = input_aoi.total_bounds
+    x_step = tile_size_km * 1000  # convert km to m
+    y_step = tile_size_km * 1000  # convert km to m
+    n_cols = int(np.ceil((xmax - xmin) / x_step))
+    n_rows = int(np.ceil((ymax - ymin) / y_step))
 
-    dst_crs = CRS.from_epsg(4326)
+    crs_4326 = CRS.from_epsg(4326)
 
     readers = []
     pointcloud_input_crs = []
     original_extents = []
     extents = []
 
-    for i in range(int(n_cols)):
-        for j in range(int(n_rows)):
+    for i in range(n_cols):
+        for j in range(n_rows):
             aoi = shapely.geometry.Polygon.from_bounds(
                 xmin + i * x_step,
                 ymin + j * y_step,
-                xmin + (i + 1) * x_step,
-                ymin + (j + 1) * y_step,
+                min(xmin + (i + 1) * x_step, xmax),  # Ensure the tile does not exceed AOI bounds
+                min(ymin + (j + 1) * y_step, ymax),  # Ensure the tile does not exceed AOI bounds
             )
 
-            src_bounds_transformed = transform_bounds(src_crs, dst_crs, *aoi.bounds)
+            src_bounds_transformed = transform_bounds(CRS.from_epsg(3857), crs_4326, *aoi.bounds) # convert to epsg:4326 for intersection with EPT bounds check
             aoi_4326 = shapely.geometry.Polygon.from_bounds(*src_bounds_transformed)
 
-            src_bounds_transformed_3857 = transform_bounds(
-                src_crs, CRS.from_epsg(3857), *aoi.bounds
-            )
+            
+            #src_bounds_transformed_3857 = transform_bounds(
+            #    src_crs, CRS.from_epsg(3857), *aoi.bounds
+            #) # this is not needed, as we already have the aoi bounds in 3857
             # create tap bounds for the tile
             src_bounds_transformed_3857 = tap_bounds(
-                src_bounds_transformed_3857, pointcloud_resolution
+                aoi.bounds, pointcloud_resolution
             )
             aoi_3857 = shapely.geometry.Polygon.from_bounds(
                 *src_bounds_transformed_3857
             )
-            print(aoi.bounds, src_bounds_transformed_3857)
+            #print(aoi.bounds, src_bounds_transformed_3857)
             if buffer_value:
-                print(f"The tile polygon will be buffered by {buffer_value:.2f} m")
+                #print(f"The tile polygon will be buffered by {buffer_value:.2f} m")
                 # buffer the tile polygon by the buffer value
                 aoi_3857 = aoi_3857.buffer(buffer_value)
                 # now create tap bounds for the buffered tile
                 aoi_3857_bounds = tap_bounds(aoi_3857.bounds, pointcloud_resolution)
                 # now convert the buffered tile to a polygon
                 aoi_3857 = shapely.geometry.Polygon.from_bounds(*aoi_3857_bounds)
-                print("The buffered tile bound is: ", aoi_3857.bounds)
+                #print("The buffered tile bound is: ", aoi_3857.bounds)
 
             gdf = gpd.read_file(
                 "https://raw.githubusercontent.com/hobuinc/usgs-lidar/master/boundaries/resources.geojson"
@@ -172,11 +179,12 @@ def return_readers(
                     else:
                         add_survey = True
                     if add_survey:
-                        print("Dataset being used: ", usgs_dataset_name)
+                        #print("Dataset being used: ", usgs_dataset_name)
                         url = f"https://s3-us-west-2.amazonaws.com/usgs-lidar-public/{usgs_dataset_name}/ept.json"
                         reader = {
                             "type": "readers.ept",
                             "filename": url,
+                            "requests": 15,
                             "resolution": pointcloud_resolution,
                             "polygon": str(aoi_3857.wkt),
                         }
@@ -195,8 +203,166 @@ def return_readers(
 
     return readers, pointcloud_input_crs, extents, original_extents
 
+def return_crs_local_lpc(lpc: str)  -> CRS:
+    """
+    Given a local laz file, return the coordinate reference system (CRS) of the point cloud.
+    Parameters
+    ----------
+    lpc : str   
+        Path to the local laz file.
+    Returns 
+    ----------
+    crs : pyproj.CRS
+        The coordinate reference system of the point cloud.
+    """
+    pipeline = pdal.Reader(lpc).pipeline()
+    pipeline.execute()
+    srs_wkt2 = pipeline.srswkt2
+    crs = CRS.from_wkt(srs_wkt2)
+    pipeline = None
+    return crs
+
+def return_lpc_bounds(lpc:str,
+                output_crs: CRS = None) -> list:
+    """ 
+    Given a local laz file, return the bounds of the point cloud.
+    Parameters  
+    ----------
+    lpc : str
+        Path to the local laz file.
+    output_crs : pyproj.CRS, optional
+        The coordinate reference system to transform the bounds to, by default None.
+    Returns
+    ------- 
+    bounds : list
+        The bounds of the point cloud in the format [xmin, ymin, xmax, ymax].
+    """
+    pipeline = pdal.Reader(lpc).pipeline()
+    pipeline.execute()
+    
+    pdal_bounds = pipeline.quickinfo['readers.las']['bounds']
+    #print(pdal_bounds)
+    minx,miny,maxx,maxy = (pdal_bounds['minx'],pdal_bounds['miny'],
+                pdal_bounds['maxx'],pdal_bounds['maxy'])
+    #print(f"Bounds of the point cloud: {minx}, {miny}, {maxx}, {maxy}")
+    if output_crs is not None:
+        if CRS.from_wkt(pipeline.srswkt2) != output_crs:
+            output_bounds = transform_bounds(
+                CRS.from_wkt(pipeline.srswkt2), 
+                output_crs, minx, miny, maxx, maxy)
+        
+    else:
+        output_bounds = [minx, miny, maxx, maxy]
+    pipeline = None
+    return output_bounds
+
+def return_local_lpc_reader(lpc: str,
+                output_crs: CRS = None,
+                pointcloud_resolution: float = 1.0,
+                aoi_bounds: gpd.GeoDataFrame  = None,
+                buffer_value: int = 5, #this should be multiple of input resolution
+                ) -> tuple[dict,CRS,list]:
+    """
+    Given a local laz file, return the PDAL reader for the point cloud.
+    Parameters  
+    ----------
+    lpc : str   
+        Path to the local laz file.
+    output_crs : pyproj.CRS, optional
+        The coordinate reference system to transform the bounds to, by default None.
+    aoi_bounds : gpd.GeoDataFrame, optional
+        The area of interest bounds to intersect with the point cloud bounds, by default None.
+    buffer_value : int, optional
+        The buffer value in meters to apply to the bounds, by default 5.
+    Returns
+    -------
+    reader : dict
+        The PDAL reader for the point cloud.
+    in_crs : pyproj.CRS
+        The coordinate reference system of the point cloud.
+    output_bounds : list
+        The bounds of the point cloud in the format [xmin, ymin, xmax, ymax] for DEM gridding.
+    """
+    #first attempt is that we just use the bounds of the laz file and grid everything within it
+    #after initial testing, we will perform intersection with the aoi_bounds, and crop the laz file to that bounds with some buffer, and then grid to that bounds without the buffer
+
+    #get the bounds of the laz file
+    bounds = return_lpc_bounds(lpc)
+    in_crs = return_crs_local_lpc(lpc)
+    
+    #adding function to utilize
+    #if the bounds are not in the output crs, transform them
+    
+    
+    lpc_polygon = shapely.geometry.Polygon.from_bounds(*bounds)
+    lpc_gdf = gpd.GeoDataFrame(
+        geometry=[lpc_polygon], crs=in_crs, index=[0]
+    )
+    aoi_bounds_in_crs = aoi_bounds.to_crs(in_crs)
+    
+    reader = {
+        "type": "readers.las",
+        "filename": lpc}
+    pipeline = {"pipeline": [reader]}
+    #with open(output_crs, "r") as f:
+    #        contents = f.read()
+    #output_crs = CRS.from_string(contents)
+    #in_crs = in_crs.to_2d()
+    #output_crs = output_crs.to_2d()
+    # Calculate the intersection between AOI bounds and the point cloud bounds
+    #print(f"aoi bounds in crs: {aoi_bounds_in_crs.total_bounds}")
+    #print(f"aoi unary union: {aoi_bounds_in_crs.unary_union.bounds}")
+    intersection = lpc_gdf.intersection(aoi_bounds_in_crs.unary_union)
+    #print(output_crs)
+    #print(f"lpc: {transform_bounds(in_crs, output_crs, *bounds)}")
+    #print(f"AOI: {transform_bounds(in_crs, output_crs, *aoi_bounds_in_crs.total_bounds)}")
+    #print(f"original AOI: {transform_bounds(CRS.from_epsg(4326), output_crs, *aoi_bounds.total_bounds)}")
+    #print(f"Intersection bounds: {transform_bounds(in_crs, output_crs, *intersection.total_bounds)}")
+    #print(f"Intersection area: {intersection.area}")
+    if (not intersection.is_empty.any()):
+        #print("this tile intesects with the AOI bounds")
+        # Modify the reader to include an extent-based filter based on the intersection area
+        return_reader = True
+        #print("Performing cropping")
+
+        if intersection.area.values[0] < lpc_gdf.area.values[0]:
+            output_bounds = intersection.total_bounds
+            #crop to extent of intersection area
+            if buffer_value is not None:
+                intesection = intersection.buffer(buffer_value) 
+            intersection_bounds = intersection.total_bounds
+            
+            crop_filter = {
+                "type": "filters.crop",
+                "bounds": f"([{intersection_bounds[0]},{intersection_bounds[2]}],"
+                        f"[{intersection_bounds[1]},{intersection_bounds[3]}])"}
+            pipeline["pipeline"] += [crop_filter]
+            
+        else:
+            # If the intersection area is same as the point cloud bounds, use the original bounds
+            #print("Intersection area is same as the point cloud bounds")
+            output_bounds = bounds
+            #print(7)
+    else:
+        return_reader = False
+    if return_reader:
+        if output_crs is not None:
+            #print(2)
+            if in_crs != output_crs:
+                output_bounds = transform_bounds(in_crs, output_crs, *output_bounds)
+              #  print(3)
+        tapped_bounds = tap_bounds(output_bounds, pointcloud_resolution)
+        #print("Tapped bounds: ", tapped_bounds)
+        # If a buffer is specified, apply it to the intersection area
+        return pipeline, in_crs, tapped_bounds
+    else:
+        #print("No intersection with AOI bounds, returning None")
+        return None, None, None
+    
+
 
 # need to revisit this, a lot of the functionality is not used
+
 def create_pdal_pipeline(
     filter_low_noise: bool = False,
     filter_high_noise: bool = False,
@@ -257,8 +423,8 @@ def create_pdal_pipeline(
     assert abs(percentile_threshold) <= 1, (
         "Percentile threshold must be in range [0, 1]"
     )
-    assert output_type in ["las", "laz"], "Output type must be either 'las' or 'laz'"
-    assert output_crs is not None, "Argument 'output_crs' must be explicitly specified!"
+    #assert output_type in ["las", "laz"], "Output type must be either 'las' or 'laz'"
+    #assert output_crs is not None, "Argument 'output_crs' must be explicitly specified!"
 
     stage_filter_low_noise = {"type": "filters.range", "limits": "Classification![7:7]"}
     stage_filter_high_noise = {
@@ -285,9 +451,7 @@ def create_pdal_pipeline(
     }
     stage_return_ground = {"type": "filters.range", "limits": "Classification[2:2]"}
 
-    stage_reprojection = {"type": "filters.reprojection", "out_srs": str(output_crs)}
-    if input_crs is not None:
-        stage_reprojection["in_srs"] = str(input_crs)
+    
 
     stage_save_pointcloud_las = {
         "type": "writers.las",
@@ -328,9 +492,13 @@ def create_pdal_pipeline(
     # For creating DTMs, we want to process only ground returns
     if return_only_ground:
         pipeline.append(stage_return_ground)
-
-    if reproject:
+    
+    if (output_crs is not None) & (input_crs is not None) and (reproject is True):
+        stage_reprojection = {"type": "filters.reprojection", "out_srs": str(output_crs)}
+        stage_reprojection["in_srs"] = str(input_crs)
         pipeline.append(stage_reprojection)
+
+        
 
     # the pipeline can save the pointclouds to a separate file if needed
     if save_pointcloud:
@@ -341,6 +509,37 @@ def create_pdal_pipeline(
 
     return pipeline
 
+def create_dem_stage_connor(
+    dem_filename: str,
+    extent: list,
+    pointcloud_resolution: float = 1.0,
+    gridmethod: str = "max",
+    dimension: str = "Z",
+) -> list:
+    # compute raster width and height
+    width = (extent[2] - extent[0]) / pointcloud_resolution
+    height = (extent[3] - extent[1]) / pointcloud_resolution
+    origin_x = extent[0]
+    origin_y = extent[1]
+    dem_stage = {
+        "type": "writers.gdal",
+        "filename": dem_filename,
+        "gdaldriver": "GTiff",
+        "nodata": -9999,
+        "data_type": "float32",
+        "radius": 0.5,
+        "output_type": gridmethod,
+        "resolution": float(pointcloud_resolution),
+        "origin_x": origin_x,
+        "origin_y": origin_y,
+        "width": width,
+        "height": height,
+        "gdalopts": "COMPRESS=LZW,TILED=YES,blockxsize=256,blockysize=256,COPY_SRC_OVERVIEWS=YES",
+    }
+
+    dem_stage.update({"dimension": dimension})
+
+    return [dem_stage]
 
 def create_dem_stage(
     dem_filename: str,
@@ -379,6 +578,7 @@ def create_dem_stage(
         "filename": dem_filename,
         "gdaldriver": "GTiff",
         "nodata": -9999,
+        "data_type": "float32",
         "output_type": gridmethod,
         "resolution": float(pointcloud_resolution),
         "origin_x": origin_x,
@@ -393,7 +593,10 @@ def create_dem_stage(
     return [dem_stage]
 
 
-def raster_mosaic(img_list: list, outfn: str) -> None:
+def raster_mosaic(img_list: list, 
+         outfn: str,
+         cog: bool = False,
+         ) -> None:
     """
     Given a list of input images, mosaic them into a COG raster by using vrt and gdal_translate
     im_list: list
@@ -402,12 +605,24 @@ def raster_mosaic(img_list: list, outfn: str) -> None:
         Path to output mosaicked image
     """
     # create vrt
+    if type(img_list) is tuple:
+        img_list = list(img_list)
+        
+    # Filter out None values from the image list
+    img_list = [img for img in img_list if img is not None]
     vrt_fn = os.path.splitext(outfn)[0] + ".vrt"
     gdal.BuildVRT(vrt_fn, img_list, callback=gdal.TermProgress_nocb)
-    # translate to COG
-    gdal.Translate(outfn, vrt_fn, callback=gdal.TermProgress_nocb)
+    if cog:
+        # translate to COG
+        gdal.Translate(outfn, vrt_fn, 
+            creationOptions=["COMPRESS=LZW", "TILED=YES", "COPY_SRC_OVERVIEWS=YES"],
+            callback=gdal.TermProgress_nocb)
+    else:
+        gdal.Translate(outfn, vrt_fn, callback=gdal.TermProgress_nocb)
     # delete vrt
     os.remove(vrt_fn)
+
+
 
 
 ### Functions for datum checks
@@ -720,7 +935,7 @@ def fetch_cop30(raster_fn: str, match_grid_da: xr.DataArray = None) -> xr.DataAr
     cop_da = get_copernicus_dem(bbox_gdf, resolution=30)
     if match_grid_da is not None:
         cop_da = cop_da.rio.reproject_match(
-            match_grid_da, resampling=rasterio.enums.Resampling.cubic
+            match_grid_da, resampling=rasterio.enums.Resampling.bilinear
         )
     return cop_da
 
@@ -790,6 +1005,8 @@ def check_raster_validity(raster_fn: str) -> bool:
     else:
         # print(f"Raster {raster_fn} has a valid CRS.")
         out = True
+    da = None
+    gc.collect()
     return out
 
 
@@ -799,7 +1016,7 @@ def gdal_warp(
     src_srs: str,
     dst_srs: str,
     res: float = 1.0,
-    resampling_alogrithm: str = "cubic",
+    resampling_alogrithm: str = "bilinear"
 ) -> None:
     """
     Warp a raster file to a new coordinate reference system and resolution using GDAL.
@@ -838,10 +1055,11 @@ def gdal_warp(
         errorThreshold=tolerance,
         targetAlignedPixels=True,
         # use directly output format as COG when gaussian overview resampling is implemented upstream in GDAL
-        creationOptions=["COMPRESS=LZW", "TILED=YES", "COPY_SRC_OVERVIEWS=YES"],
+        creationOptions=["COMPRESS=LZW", "TILED=YES", "COPY_SRC_OVERVIEWS=YES","BIGTIFF=IF_NEEDED"],
         callback=gdal.TermProgress_nocb,
     )
     ds.Close()
+
 
 
 def gdal_add_overview(raster_fn: str) -> None:
@@ -853,8 +1071,344 @@ def gdal_add_overview(raster_fn: str) -> None:
     raster_fn : str
         Path to the raster file.
     """
-    with gdal.Open(raster_fn, 1) as ds:
+    with gdal.OpenEx(raster_fn, 1, open_options=["IGNORE_COG_LAYOUT_BREAK=YES"]) as ds:
         gdal.SetConfigOption("COMPRESS_OVERVIEW", "DEFLATE")
         ds.BuildOverviews(
             "GAUSS", [2, 4, 8, 16, 32, 64], callback=gdal.TermProgress_nocb
         )
+
+
+
+###### Provider specific functions to return appropriate pipelines for raster creation
+
+def create_lpc_pipeline(local_laz_dir: str,target_wkt: str,output_prefix: str,raster_resolution: float = 1.0,aoi_bounds=None):
+    lpc_files = sorted((glob.glob(os.path.join(local_laz_dir, "*.laz"))))
+    lpc_files += sorted((glob.glob(os.path.join(local_laz_dir, "*.las"))))
+    print(f"Number of local laz files: {len(lpc_files)}")
+    readers = []
+    original_extents = []
+    input_crs = []
+    aoi_bounds = gpd.read_file(aoi_bounds)
+    for idx, lpc in enumerate(lpc_files):
+        reader, in_crs, out_extent = return_local_lpc_reader(
+        lpc,
+        output_crs=target_wkt,
+        pointcloud_resolution=1.0,
+        aoi_bounds=aoi_bounds)
+        #print(reader)
+        if reader is not None:
+            readers.append(reader)
+            original_extents.append(out_extent)
+            input_crs.append(in_crs)
+    
+    output_path = Path(output_prefix).parent
+    prefix = Path(output_prefix).name
+    output_path = Path(output_path)
+    output_path.mkdir(exist_ok=True)
+    print(f"Number of readers: {len(readers)}")
+    with open(target_wkt, "r") as f:
+            contents = f.read()
+    out_crs = CRS.from_string(contents)
+
+    dsm_fn_list = []
+    dsm_pipeline_list = []
+    dtm_fn_list = []
+    dtm_pipeline_list = []
+    intensity_fn_list = []
+    intensity_pipeline_list = []
+    
+    for i, reader in enumerate(readers):
+        #print(f"Processing reader #{i}")
+        dsm_file = output_path / f"{prefix}_dsm_tile_aoi_{str(i).zfill(4)}.tif"
+        dtm_file = output_path / f"{prefix}_dtm_tile_aoi_{str(i).zfill(4)}.tif"
+        intensity_file = (
+            output_path / f"{prefix}_intensity_tile_aoi_{str(i).zfill(4)}.tif"
+        )
+
+        ## DSM creation block
+        pipeline_dsm = reader 
+        pdal_pipeline_dsm = create_pdal_pipeline(
+            group_filter="first,only",
+            reproject=True, # reproject to the output CRS            
+            input_crs=input_crs[i],
+            output_crs=out_crs)  
+        dsm_stage = create_dem_stage(
+            dem_filename=str(dsm_file),
+            extent=original_extents[i],
+            pointcloud_resolution=raster_resolution,
+            gridmethod="idw",
+            dimension="Z",
+        )
+        pipeline_dsm["pipeline"] += pdal_pipeline_dsm
+        pipeline_dsm["pipeline"] += dsm_stage
+        # Save a copy of each pipeline
+        dsm_pipeline_config_fn = output_path / f"pipeline_dsm_{str(i).zfill(4)}.json"
+        with open(dsm_pipeline_config_fn, "w") as f:
+            f.write(json.dumps(pipeline_dsm))
+        pipeline_dsm = pdal.Pipeline(json.dumps(pipeline_dsm))
+        dsm_pipeline_list.append(pipeline_dsm)
+        dsm_fn_list.append(dsm_file.as_posix())
+
+        ## DTM creation block
+        pipeline_dtm = reader
+        pdal_pipeline_dtm = create_pdal_pipeline(
+                return_only_ground=True,
+                group_filter=None,
+                reproject=True, # reproject to the output CRS            
+                input_crs=input_crs[i],
+                output_crs=out_crs)  
+
+        dtm_stage = create_dem_stage(
+            dem_filename=str(dtm_file),
+            extent=original_extents[i],
+            pointcloud_resolution=raster_resolution,
+            gridmethod="idw",
+            dimension="Z",
+        )
+        # this is only required for the DTM
+        dtm_stage[0]["window_size"] = 4
+
+        pipeline_dtm["pipeline"] += pdal_pipeline_dtm
+        pipeline_dtm["pipeline"] += dtm_stage
+
+        #Save a copy of each pipeline
+        dtm_pipeline_config_fn = output_path / f"pipeline_dtm_{str(i).zfill(4)}.json"
+        with open(dtm_pipeline_config_fn, "w") as f:
+            f.write(json.dumps(pipeline_dtm))
+        pipeline_dtm = pdal.Pipeline(json.dumps(pipeline_dtm))
+        dtm_pipeline_list.append(pipeline_dtm)
+        dtm_fn_list.append(dtm_file.as_posix())
+
+        ## Intensity creation block
+        pipeline_intensity = reader
+        pdal_pipeline_surface_intensity = create_pdal_pipeline(
+                group_filter="first,only",
+                reproject=True, # reproject to the output CRS            
+                input_crs=input_crs[i],
+                output_crs=out_crs)
+
+        intensity_stage = create_dem_stage(
+            dem_filename=str(intensity_file),
+            extent=original_extents[i],
+            pointcloud_resolution=raster_resolution,
+            gridmethod="idw",
+            dimension="Intensity",
+        )
+        pipeline_intensity["pipeline"] += pdal_pipeline_surface_intensity
+        pipeline_intensity["pipeline"] += intensity_stage
+
+        # Save a copy of each pipeline
+        intensity_pipeline_config_fn = (
+            output_path / f"pipeline_intensity_{str(i).zfill(4)}.json"
+        )
+        with open(intensity_pipeline_config_fn, "w") as f:
+            f.write(json.dumps(pipeline_intensity))
+        pipeline_intensity = pdal.Pipeline(json.dumps(pipeline_intensity))
+        intensity_pipeline_list.append(pipeline_intensity)
+        intensity_fn_list.append(intensity_file.as_posix())
+    # return the pipelines and filenames
+    return (
+        dsm_pipeline_list,  # list of PDAL pipelines for DSM creation       
+        dsm_fn_list,        # list of output filenames for DSM
+        dtm_pipeline_list,  # list of PDAL pipelines for DTM creation
+        dtm_fn_list,        # list of output filenames for DTM
+        intensity_pipeline_list,  # list of PDAL pipelines for Intensity creation
+        intensity_fn_list,  # list of output filenames for Intensity
+    )
+
+
+def create_ept_3dep_pipeline(extent_polygon,target_wkt,output_prefix,
+                                raster_resolution=1.0,
+                                tile_size_km=1.0,
+                                buffer_value=5,
+                                process_specific_3dep_survey=None,process_all_intersecting_surveys=False):
+    gdf = gpd.read_file(extent_polygon)
+    
+    # specify the output CRS of DEMs
+    with open(target_wkt, "r") as f:
+        OUTPUT_CRS = " ".join(f.read().replace("\n", "").split())
+    # fetch the readers for the pointclouds
+    readers, POINTCLOUD_CRS, extents, original_extents = return_readers(
+        gdf,
+        pointcloud_resolution=1,
+        tile_size_km=tile_size_km,
+        buffer_value=buffer_value,
+        return_specific_3dep_survey=process_specific_3dep_survey,
+        return_all_intersecting_surveys=process_all_intersecting_surveys
+    )
+    
+    output_path = Path(output_prefix).parent
+    prefix = Path(output_prefix).name
+    output_path = Path(output_path)
+    output_path.mkdir(exist_ok=True)
+    
+    print(f"Number of readers: {len(readers)}")
+    dsm_pipeline_list = []
+    dsm_fn_list = []
+    dtm_pipeline_list = []
+    dtm_fn_list = []
+    intensity_pipeline_list = []
+    intensity_fn_list = []
+    for i, reader in enumerate(readers):
+        #print(f"Processing reader #{i}")
+        dsm_file = output_path / f"{prefix}_dsm_tile_aoi_{str(i).zfill(4)}.tif"
+        dtm_file = output_path / f"{prefix}_dtm_tile_aoi_{str(i).zfill(4)}.tif"
+        intensity_file = (
+            output_path / f"{prefix}_intensity_tile_aoi_{str(i).zfill(4)}.tif"
+        )
+        ## DSM creation block
+        pipeline_dsm = {"pipeline": [reader]}
+        pdal_pipeline_dsm = create_pdal_pipeline(
+                group_filter="first,only",
+                reproject=False,
+                input_crs=POINTCLOUD_CRS[i])
+
+        dsm_stage = create_dem_stage(
+            dem_filename=str(dsm_file),
+            extent=original_extents[i],
+            pointcloud_resolution=raster_resolution,
+            gridmethod="idw",
+            dimension="Z"
+        )
+        pipeline_dsm["pipeline"] += pdal_pipeline_dsm
+        pipeline_dsm["pipeline"] += dsm_stage
+
+        # Save a copy of each pipeline
+        dsm_pipeline_config_fn = output_path / f"pipeline_dsm_{str(i).zfill(4)}.json"
+        with open(dsm_pipeline_config_fn, "w") as f:
+            f.write(json.dumps(pipeline_dsm))
+        pipeline_dsm = pdal.Pipeline(json.dumps(pipeline_dsm))
+        dsm_pipeline_list.append(pipeline_dsm)
+        dsm_fn_list.append(dsm_file.as_posix())
+
+        ## DTM creation block
+        pipeline_dtm = {"pipeline": [reader]}
+        pdal_pipeline_dtm = create_pdal_pipeline(
+                return_only_ground=True,
+                group_filter=None,
+                reproject=False,
+                input_crs=POINTCLOUD_CRS[i]
+            )  
+
+        dtm_stage = create_dem_stage(
+            dem_filename=str(dtm_file),
+            extent=original_extents[i],
+            pointcloud_resolution=raster_resolution,
+            gridmethod="idw",
+            dimension="Z",
+        )
+        # this is only required for the DTM
+        dtm_stage[0]["window_size"] = 4
+
+        pipeline_dtm["pipeline"] += pdal_pipeline_dtm
+        pipeline_dtm["pipeline"] += dtm_stage
+
+        #Save a copy of each pipeline
+        dtm_pipeline_config_fn = output_path / f"pipeline_dtm_{str(i).zfill(4)}.json"
+        with open(dtm_pipeline_config_fn, "w") as f:
+            f.write(json.dumps(pipeline_dtm))
+
+        pipeline_dtm = pdal.Pipeline(json.dumps(pipeline_dtm))
+        dtm_pipeline_list.append(pipeline_dtm)
+        dtm_fn_list.append(dtm_file.as_posix())
+
+        ## Intensity pipeline
+        pipeline_intensity = {"pipeline": [reader]}
+        pdal_pipeline_surface_intensity = create_pdal_pipeline(
+                return_only_ground=False,
+                group_filter="first,only",
+                reproject=False,
+                input_crs=POINTCLOUD_CRS[i],
+                )
+
+        intensity_stage = create_dem_stage(
+            dem_filename=str(intensity_file),
+            extent=original_extents[i],
+            pointcloud_resolution=raster_resolution,
+            gridmethod="idw",
+            dimension="Intensity",
+        )
+
+        pipeline_intensity["pipeline"] += pdal_pipeline_surface_intensity
+        pipeline_intensity["pipeline"] += intensity_stage
+
+        # Save a copy of each pipeline
+        intensity_pipeline_config_fn = (
+            output_path / f"pipeline_intensity_{str(i).zfill(4)}.json"
+        )
+        with open(intensity_pipeline_config_fn, "w") as f:
+            f.write(json.dumps(pipeline_intensity))
+        pipeline_intensity = pdal.Pipeline(json.dumps(pipeline_intensity))
+        intensity_pipeline_list.append(pipeline_intensity)
+        intensity_fn_list.append(intensity_file.as_posix())
+    return dsm_pipeline_list, dsm_fn_list, dtm_pipeline_list, dtm_fn_list, intensity_pipeline_list, intensity_fn_list
+
+
+def find_longitude_of_origin_from_utm(epsg_code):
+    crs = CRS.from_epsg(epsg_code)
+    return crs.to_json_dict()['conversion']['parameters'][1]['value']
+
+def write_local_utm_3DCRS_G2139(path_to_base_utm10_def,zone='17N',outfn=None):
+    with open(path_to_base_utm10_def, 'r') as f: #open the file
+        input_crs = f.read() 
+    if 'N' in zone:
+        zone_num = zone.split('N')[0]
+        epsg_code = int(f"326{zone_num}")
+    else:
+        zone_num = zone.split('S')[0]
+        epsg_code = int(f"327{zone_num}")
+    #find center longitude
+    center_long = find_longitude_of_origin_from_utm(epsg_code)
+    mod_crs = input_crs.replace("UTM 10N", f"UTM {zone}")
+    mod_crs = mod_crs.replace("UTM zone 10N", f"UTM zone {zone}")
+    mod_crs = mod_crs.replace('"Longitude of natural origin",-123', 
+                          f'"Longitude of natural origin",{center_long}')
+    if outfn is None:
+        outfn = f'UTM_{zone}_WGS84_G2139_3D.wkt'
+    print(f"Writing 3D CRS at {outfn}")
+    with open(outfn,'w') as f:
+        f.write(mod_crs)
+    return outfn
+
+def execute_pdal_pipeline(pdal_pipeline: json,
+                        output_fn: str) -> str:
+    """
+    Execute a PDAL pipeline and optionally save the output to a file.
+    Parameters
+    ----------
+    pdal_pipeline : json
+        The PDAL pipeline in JSON format.
+    output_fn : str, optional
+        The filename to save the raster output, by default None.
+    Returns
+    -------
+    output_fn : str
+        The filename of the output raster is successfully saved, otherwise nothing is returned
+    """
+    try:
+        out = pdal_pipeline.execute()
+        out = None
+        if check_raster_validity(output_fn):
+            return output_fn
+        pdal_pipeline = None
+        gc.collect()
+    except RuntimeError as e:
+        print(f"A RuntimeError occured for file {output_fn}: {e}")
+        pass
+        gc.collect()
+def init(lock):
+    global starting
+    starting = lock
+
+def run_imap_multiprocessing(func, argument_list, num_processes):
+    pool = Pool(
+        processes=num_processes, initializer=init, initargs=[Lock()]
+    )
+
+    result_list_tqdm = []
+    for result in tqdm(
+        pool.imap(func=func, iterable=argument_list), total=len(argument_list)
+    ):
+        result_list_tqdm.append(result)
+
+    return result_list_tqdm
