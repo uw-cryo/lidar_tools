@@ -38,6 +38,7 @@ def create_dsm(
     local_utm: bool = False,
     source_wkt: str = None,
     local_laz_dir: str = None,
+    ept_tile_size_km: float = 1.0,
     process_specific_3dep_survey: str = None,
     process_all_intersecting_surveys: bool = False,
     cleanup: bool = True,
@@ -145,7 +146,7 @@ def create_dsm(
             final_intensity_fn_list) = dsm_functions.execute_ept_3dep_pipeline(
                 extent_polygon, target_wkt, output_prefix,
                 buffer_value=5,
-                tile_size_km=5.0,
+                tile_size_km=ept_tile_size_km,
                 process_specific_3dep_survey=process_specific_3dep_survey,
                 process_all_intersecting_surveys=process_all_intersecting_surveys)
 
@@ -300,10 +301,10 @@ def create_dsm(
             dsm_functions.raster_mosaic(final_dsm_fn_list, dsm_mos_fn,
                 cog=cog,out_extent=out_extent)
             print(f"Creating DTM mosaic at {dtm_mos_no_fill_fn}")
-            dsm_functions.raster_mosaic(dtm_no_fill_fn_list, dtm_mos_fn,
+            dsm_functions.raster_mosaic(final_dtm_no_fill_fn_list, dtm_mos_no_fill_fn,
                 cog=cog,out_extent=out_extent)
             print(f"Creating DTM mosaic with window size 4 at {dtm_mos_fill_fn}")
-            dsm_functions.raster_mosaic(dtm_fill_fn_list, dtm_mos_fill_fn,
+            dsm_functions.raster_mosaic(final_dtm_fill_fn_list, dtm_mos_fill_fn,
                 cog=cog,out_extent=out_extent)
             print(f"Creating intensity raster mosaic at {intensity_mos_fn}")
             dsm_functions.raster_mosaic(final_intensity_fn_list, intensity_mos_fn,
