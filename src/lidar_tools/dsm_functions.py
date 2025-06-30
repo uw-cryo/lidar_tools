@@ -101,13 +101,15 @@ def execute_ept_3dep_pipeline(extent_polygon,target_wkt,output_prefix,
     dsm_pipeline_list = []
     dsm_fn_list = []
     dtm_pipeline_list = []
-    dtm_fn_list = []
+    dtm_no_fill_fn_list = []
+    dtm_fill_fn_list = []
     intensity_pipeline_list = []
     intensity_fn_list = []
     for i, reader in enumerate(readers):
         print(f"Processing reader #{i}")
         dsm_file = output_path / f"{prefix}_dsm_tile_aoi_{str(i).zfill(4)}.tif"
-        dtm_file = output_path / f"{prefix}_dtm_tile_aoi_{str(i).zfill(4)}.tif"
+        dtm_file_z_fill = output_path / f"{prefix}_dtm_tile_aoi_fill4_{str(i).zfill(4)}.tif"
+        dtm_file_no_z_fill = output_path / f"{prefix}_dtm_tile_aoi_no_fill{str(i).zfill(4)}.tif"
         intensity_file = (
             output_path / f"{prefix}_intensity_tile_aoi_{str(i).zfill(4)}.tif"
         )
@@ -137,37 +139,60 @@ def execute_ept_3dep_pipeline(extent_polygon,target_wkt,output_prefix,
         dsm_fn_list.append(dsm_file.as_posix())
         pipeline_dsm.execute()
 
-        ## DTM creation block
-        pipeline_dtm = {"pipeline": [reader]}
-        pdal_pipeline_dtm = create_pdal_pipeline(
+        ## DTM creation block without z-fill
+        pipeline_dtm_no_z_fill = {"pipeline": [reader]}
+        pdal_pipeline_dtm_no_z_fill = create_pdal_pipeline(
                 return_only_ground=True,
                 group_filter=None,
                 reproject=False,
                 input_crs=POINTCLOUD_CRS[i]
             )  
+        pdal_pipeline_dtm_z_fill = pdal_pipeline_dtm_no_z_fill.copy() #for later
 
         dtm_stage = create_dem_stage(
-            dem_filename=str(dtm_file),
+            dem_filename=str(dtm_file_no_z_fill),
             extent=original_extents[i],
             pointcloud_resolution=raster_resolution,
             gridmethod="idw",
             dimension="Z",
         )
-        # this is only required for the DTM
-        dtm_stage[0]["window_size"] = 4
+        pipeline_dtm_no_z_fill["pipeline"] += pdal_pipeline_dtm_no_z_fill
+        pipeline_dtm_no_z_fill["pipeline"] += dtm_stage
+        
 
-        pipeline_dtm["pipeline"] += pdal_pipeline_dtm
-        pipeline_dtm["pipeline"] += dtm_stage
+        
+        #Save a copy of each pipeline
+        dtm_pipeline_config_fn = output_path / f"pipeline_dtm_no_fill_{str(i).zfill(4)}.json"
+        with open(dtm_pipeline_config_fn, "w") as f:
+            f.write(json.dumps(pdal_pipeline_dtm_no_z_fill))
+
+        pdal_pipeline_dtm_no_z_fill = pdal.Pipeline(json.dumps(pipeline_dtm_no_z_fill))
+        #dtm_pipeline_list.append(pipeline_dtm)
+        dtm_no_fill_fn_list.append(dtm_file_no_z_fill.as_posix())
+        pdal_pipeline_dtm_no_z_fill.execute()
+
+        # add this to make a DTM which has gaps filled by an intepolation window size of 4
+        pipeline_dtm_z_fill = {"pipeline": [reader]}
+        dtm_stage = create_dem_stage(
+            dem_filename=str(dtm_file_z_fill),
+            extent=original_extents[i],
+            pointcloud_resolution=raster_resolution,
+            gridmethod="idw",
+            dimension="Z",
+        )
+        dtm_stage[0]["window_size"] = 4
+        pipeline_dtm_z_fill["pipeline"] += pdal_pipeline_dtm_z_fill
+        pipeline_dtm_z_fill["pipeline"] += dtm_stage
 
         #Save a copy of each pipeline
-        dtm_pipeline_config_fn = output_path / f"pipeline_dtm_{str(i).zfill(4)}.json"
+        dtm_pipeline_config_fn = output_path / f"pipeline_dtm_fill_{str(i).zfill(4)}.json"
         with open(dtm_pipeline_config_fn, "w") as f:
-            f.write(json.dumps(pipeline_dtm))
+            f.write(json.dumps(pdal_pipeline_dtm_z_fill))
 
-        pipeline_dtm = pdal.Pipeline(json.dumps(pipeline_dtm))
-        #dtm_pipeline_list.append(pipeline_dtm)
-        dtm_fn_list.append(dtm_file.as_posix())
-        pipeline_dtm.execute()
+        pdal_pipeline_dtm_z_fill = pdal.Pipeline(json.dumps(pipeline_dtm_z_fill))
+        #dtm_pipeline_list.append(pipeline_dtm_z_fill)
+        dtm_fill_fn_list.append(dtm_file_z_fill.as_posix())
+        pdal_pipeline_dtm_z_fill.execute()
 
 
         ## Intensity pipeline
@@ -200,7 +225,7 @@ def execute_ept_3dep_pipeline(extent_polygon,target_wkt,output_prefix,
         #intensity_pipeline_list.append(pipeline_intensity)
         intensity_fn_list.append(intensity_file.as_posix())
         pipeline_intensity.execute()
-    return  dsm_fn_list, dtm_fn_list, intensity_fn_list
+    return  dsm_fn_list, dtm_no_fill_fn_list, dtm_fill_fn_list, intensity_fn_list
 
 def return_readers(
     input_aoi: gpd.GeoDataFrame,

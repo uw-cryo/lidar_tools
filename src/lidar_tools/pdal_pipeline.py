@@ -138,42 +138,20 @@ def create_dsm(
     else:
         print("This run will process 3DEP EPT tiles")
         ept_3dep = True
-        (dsm_pipeline_list, dsm_fn_list, 
-        dtm_pipeline_list, dtm_fn_list, 
-        intensity_pipeline_list, intensity_fn_list) = dsm_functions.create_ept_3dep_pipeline(
-                                extent_polygon,target_wkt,output_prefix,
-                                buffer_value=5,
-                                tile_size_km=1.0,
-                                process_specific_3dep_survey=process_specific_3dep_survey,
-                                process_all_intersecting_surveys=process_all_intersecting_surveys
-        )
+        
+        if not parallel:
+            print("Running DSM/DTM/intensity pipelines sequentially")
+            (final_dsm_fn_list, final_dtm_no_fill_fn_list, final_dtm_fill_fn_list, 
+            final_intensity_fn_list) = dsm_functions.execute_ept_3dep_pipeline(
+                extent_polygon, target_wkt, output_prefix,
+                buffer_value=5,
+                tile_size_km=5.0,
+                process_specific_3dep_survey=process_specific_3dep_survey,
+                process_all_intersecting_surveys=process_all_intersecting_surveys)
 
     #execute the pipelines
-    if not parallel:
-        final_dsm_fn_list = []
-        print("Running DSM/DTM/intensity pipelines sequentially")
-        for i, pipeline in enumerate(dsm_pipeline_list):
-            dsm = dsm_functions.execute_pdal_pipeline(pipeline,dsm_fn_list[i])
-            del pipeline
-            if dsm is not None:
-                final_dsm_fn_list.append(dsm)
-        del dsm_pipeline_list
-        final_dtm_fn_list = []
-        for i, pipeline in enumerate(dtm_pipeline_list):
-            dtm = dsm_functions.execute_pdal_pipeline(pipeline,dtm_fn_list[i])
-            del pipeline
-            if dtm is not None:
-                final_dtm_fn_list.append(dtm)
-        del dtm_pipeline_list
+    
         
-        final_intensity_fn_list = []
-        for i, pipeline in enumerate(intensity_pipeline_list):
-            intensity = dsm_functions.execute_pdal_pipeline(pipeline,intensity_fn_list[i])
-            del pipeline
-            if intensity is not None:
-                final_intensity_fn_list.append(intensity)
-        del intensity_pipeline_list
-        print("Running DSM/DTM/intensity pipelines sequentially")
         # (final_dsm_fn_list,
         # final_dtm_fn_list, 
         # final_intensity_fn_list) = dsm_functions.execute_ept_3dep_pipeline(extent_polygon,target_wkt,output_prefix,
@@ -181,120 +159,120 @@ def create_dsm(
         #                         tile_size_km=5.0,
         #                         process_specific_3dep_survey=process_specific_3dep_survey,
         #                         process_all_intersecting_surveys=process_all_intersecting_surveys)
-    else:
-        print("Running DSM/DTM/intensity pipelines in parallel")
-        joblib_list = []
-        final_dsm_task_list = []
-        for idx, pipeline in enumerate(dsm_pipeline_list):
-            #print(f"Executing DSM pipeline {idx+1} of {len(dsm_pipeline_list)}")
-            delayed_task = dask.delayed(dsm_functions.execute_pdal_pipeline)(pipeline, dsm_fn_list[idx])
-            final_dsm_task_list.append(delayed_task)
-            joblib_list.append((pipeline,dsm_fn_list[idx]))
-        #final_dsm_fn_list = Parallel(n_jobs=5)(delayed(dsm_functions.execute_pdal_pipeline)(pipeline, dsm_fn) for pipeline, dsm_fn in joblib_list)
+        else:
+            print("Running DSM/DTM/intensity pipelines in parallel")
+            joblib_list = []
+            final_dsm_task_list = []
+            for idx, pipeline in enumerate(dsm_pipeline_list):
+                #print(f"Executing DSM pipeline {idx+1} of {len(dsm_pipeline_list)}")
+                delayed_task = dask.delayed(dsm_functions.execute_pdal_pipeline)(pipeline, dsm_fn_list[idx])
+                final_dsm_task_list.append(delayed_task)
+                joblib_list.append((pipeline,dsm_fn_list[idx]))
+            #final_dsm_fn_list = Parallel(n_jobs=5)(delayed(dsm_functions.execute_pdal_pipeline)(pipeline, dsm_fn) for pipeline, dsm_fn in joblib_list)
         
 
         
-# Example usage
-        #final_dsm_fn_list = _memory_safe_batch_processing(dsm_pipeline_list, dsm_fn_list, batch_size=50, restart_every=3)
-        #final_dsm_fn_list = list(Parallel(n_jobs=6)(delayed(dsm_functions.execute_pdal_pipeline)(
-        #pipeline, dsm_fn_list[idx]) for idx,pipeline  in enumerate(dsm_pipeline_list)))
-        #with Client(threads_per_worker=2, n_workers=5 ) as client:
-        #    futures = client.map(dsm_functions.execute_pdal_pipeline, dsm_pipeline_list, dsm_fn_list)
-        #    final_dsm_fn_list = client.gather(futures)
-        #cluster = LocalCluster(threads_per_worker=2, n_workers=5,processes=False)
-        #dask.config.set(scheduler='multiprocessing')
-        final_dsm_fn_list = [] 
-        if len(final_dsm_task_list) > 20:
-            print(f"Executing dask jobs in batches of 20")
-            batch_size = 20
-            for i in range(0, len(final_dsm_task_list), batch_size):
-                batch_tasks = final_dsm_task_list[i:i + batch_size]
+            # Example usage
+            #final_dsm_fn_list = _memory_safe_batch_processing(dsm_pipeline_list, dsm_fn_list, batch_size=50, restart_every=3)
+            #final_dsm_fn_list = list(Parallel(n_jobs=6)(delayed(dsm_functions.execute_pdal_pipeline)(
+            #pipeline, dsm_fn_list[idx]) for idx,pipeline  in enumerate(dsm_pipeline_list)))
+            #with Client(threads_per_worker=2, n_workers=5 ) as client:
+            #    futures = client.map(dsm_functions.execute_pdal_pipeline, dsm_pipeline_list, dsm_fn_list)
+            #    final_dsm_fn_list = client.gather(futures)
+            #cluster = LocalCluster(threads_per_worker=2, n_workers=5,processes=False)
+            #dask.config.set(scheduler='multiprocessing')
+            final_dsm_fn_list = [] 
+            if len(final_dsm_task_list) > 20:
+                print(f"Executing dask jobs in batches of 20")
+                batch_size = 20
+                for i in range(0, len(final_dsm_task_list), batch_size):
+                    batch_tasks = final_dsm_task_list[i:i + batch_size]
+                    cluster = LocalCluster(n_workers=5)
+                    client = Client(cluster)
+                    results = dask.compute(*batch_tasks)
+                    final_dsm_fn_list.extend(results)
+                    client.close()
+            else:
                 cluster = LocalCluster(n_workers=5)
                 client = Client(cluster)
-                results = dask.compute(*batch_tasks)
-                final_dsm_fn_list.extend(results)
+                final_dsm_fn_list = dask.compute(*final_dsm_task_list)
                 client.close()
-        else:
-            cluster = LocalCluster(n_workers=5)
-            client = Client(cluster)
-            final_dsm_fn_list = dask.compute(*final_dsm_task_list)
-            client.close()
-        final_dsm_task_list = None
-        
-        #futures = dask.persist(*final_dsm_fn_list)
-        #final_dsm_fn_list = dask.compute(*futures)
+            final_dsm_task_list = None
+            
+            #futures = dask.persist(*final_dsm_fn_list)
+            #final_dsm_fn_list = dask.compute(*futures)
 
-        final_dtm_task_list = []
-        #final_intensity_fn_list = []
-        for idx,pipeline in enumerate(dtm_pipeline_list):
-            #print(f"Executing DTM pipeline {idx+1} of {len(dtm_pipeline_list)}")
-            delayed_task = dask.delayed(dsm_functions.execute_pdal_pipeline)(pipeline, dtm_fn_list[idx])
-            final_dtm_task_list.append(delayed_task)
-        final_dtm_fn_list = []
-        if len(final_dtm_task_list) > 20:           
-            print(f"Executing dask jobs in batches of 20")
-            batch_size = 20
-            for i in range(0, len(final_dtm_task_list), batch_size):
-                batch_tasks = final_dtm_task_list[i:i + batch_size]
+            final_dtm_task_list = []
+            #final_intensity_fn_list = []
+            for idx,pipeline in enumerate(dtm_pipeline_list):
+                #print(f"Executing DTM pipeline {idx+1} of {len(dtm_pipeline_list)}")
+                delayed_task = dask.delayed(dsm_functions.execute_pdal_pipeline)(pipeline, dtm_fn_list[idx])
+                final_dtm_task_list.append(delayed_task)
+            final_dtm_fn_list = []
+            if len(final_dtm_task_list) > 20:           
+                print(f"Executing dask jobs in batches of 20")
+                batch_size = 20
+                for i in range(0, len(final_dtm_task_list), batch_size):
+                    batch_tasks = final_dtm_task_list[i:i + batch_size]
+                    cluster = LocalCluster(n_workers=5)
+                    client = Client(cluster)
+                    results = dask.compute(*batch_tasks)
+                    final_dtm_fn_list.extend(results)
+                    client.close()
+            else:
                 cluster = LocalCluster(n_workers=5)
                 client = Client(cluster)
-                results = dask.compute(*batch_tasks)
-                final_dtm_fn_list.extend(results)
+                final_dtm_fn_list = dask.compute(*final_dtm_task_list)
                 client.close()
-        else:
-            cluster = LocalCluster(n_workers=5)
-            client = Client(cluster)
-            final_dtm_fn_list = dask.compute(*final_dtm_task_list)
-            client.close()
-        final_dtm_task_list = None
+            final_dtm_task_list = None
 
 
-        #final_dtm_fn_list = list(Parallel(n_jobs=6)(delayed(d
-        #cluster = LocalCluster(threads_per_worker=2, n_workers=5,memory_limit='10GB',
-        #                       memory_target_fraction=0.95,processes=True)
-        #client = Client(cluster)
-        #futures = dask.persist(*final_dtm_fn_list)
-        #final_dtm_fn_list = dask.compute(*futures)
-        #final_dtm_fn_list = dask.compute(*final_dtm_fn_list)
-        #client.close()
-        #final_dtm_fn_list = list(Parallel(n_jobs=6)(delayed(dsm_functions.execute_pdal_pipeline)(
-        #    pipeline, dtm_fn_list[idx]) for idx,pipeline  in enumerate(dtm_pipeline_list)))
+            #final_dtm_fn_list = list(Parallel(n_jobs=6)(delayed(d
+            #cluster = LocalCluster(threads_per_worker=2, n_workers=5,memory_limit='10GB',
+            #                       memory_target_fraction=0.95,processes=True)
+            #client = Client(cluster)
+            #futures = dask.persist(*final_dtm_fn_list)
+            #final_dtm_fn_list = dask.compute(*futures)
+            #final_dtm_fn_list = dask.compute(*final_dtm_fn_list)
+            #client.close()
+            #final_dtm_fn_list = list(Parallel(n_jobs=6)(delayed(dsm_functions.execute_pdal_pipeline)(
+            #    pipeline, dtm_fn_list[idx]) for idx,pipeline  in enumerate(dtm_pipeline_list)))
 
-        #for idx,pipeline in enumerate(intensity_pipeline_list):
-            #print(f"Executing intensity pipeline {idx+1} of {len(intensity_pipeline_list)}")
-        #    final_intensity_list = dask.delayed(dsm_functions.execute_pdal_pipeline)(pipeline, intensity_fn_list[idx])
-        #    final_intensity_fn_list.append(final_intensity_list)
-        #cluster = LocalCluster(threads_per_worker=2, n_workers=5,memory_limit='10GB',
-        #                       memory_target_fraction=0.95,processes=True)
-        #client = Client(cluster)
-        #futures = dask.persist(*final_intensity_fn_list)
-        #final_intensity_fn_list = dask.compute(*futures)
-        #final_intensity_fn_list = dask.compute(*final_intensity_fn_list)
-        #client.close()
-        #final_intensity_fn_list = list(Parallel(n_jobs=6)(delayed(dsm_functions.execute_pdal_pipeline)(
-         #   pipeline, intensity_fn_list[idx]) for idx,pipeline  in enumerate(intensity_pipeline_list)))
-        final_intensity_task_list = []
-        final_intensity_fn_list = []
-        for idx,pipeline in enumerate(intensity_pipeline_list):
-            #print(f"Executing intensity pipeline {idx+1} of {len(intensity_pipeline_list)}")
-            delayed_task = dask.delayed(dsm_functions.execute_pdal_pipeline)(pipeline, intensity_fn_list[idx])
-            final_intensity_task_list.append(delayed_task)
-        if len(final_intensity_task_list) > 20:
-            print(f"Executing dask jobs in batches of 20")
-            batch_size = 20
-            for i in range(0, len(final_intensity_task_list), batch_size):
-                batch_tasks = final_intensity_task_list[i:i + batch_size]
+            #for idx,pipeline in enumerate(intensity_pipeline_list):
+                #print(f"Executing intensity pipeline {idx+1} of {len(intensity_pipeline_list)}")
+            #    final_intensity_list = dask.delayed(dsm_functions.execute_pdal_pipeline)(pipeline, intensity_fn_list[idx])
+            #    final_intensity_fn_list.append(final_intensity_list)
+            #cluster = LocalCluster(threads_per_worker=2, n_workers=5,memory_limit='10GB',
+            #                       memory_target_fraction=0.95,processes=True)
+            #client = Client(cluster)
+            #futures = dask.persist(*final_intensity_fn_list)
+            #final_intensity_fn_list = dask.compute(*futures)
+            #final_intensity_fn_list = dask.compute(*final_intensity_fn_list)
+            #client.close()
+            #final_intensity_fn_list = list(Parallel(n_jobs=6)(delayed(dsm_functions.execute_pdal_pipeline)(
+            #   pipeline, intensity_fn_list[idx]) for idx,pipeline  in enumerate(intensity_pipeline_list)))
+            final_intensity_task_list = []
+            final_intensity_fn_list = []
+            for idx,pipeline in enumerate(intensity_pipeline_list):
+                #print(f"Executing intensity pipeline {idx+1} of {len(intensity_pipeline_list)}")
+                delayed_task = dask.delayed(dsm_functions.execute_pdal_pipeline)(pipeline, intensity_fn_list[idx])
+                final_intensity_task_list.append(delayed_task)
+            if len(final_intensity_task_list) > 20:
+                print(f"Executing dask jobs in batches of 20")
+                batch_size = 20
+                for i in range(0, len(final_intensity_task_list), batch_size):
+                    batch_tasks = final_intensity_task_list[i:i + batch_size]
+                    cluster = LocalCluster(n_workers=5)
+                    client = Client(cluster)
+                    results = dask.compute(*batch_tasks)
+                    final_intensity_fn_list.extend(results)
+                    client.close()
+            else:
                 cluster = LocalCluster(n_workers=5)
                 client = Client(cluster)
-                results = dask.compute(*batch_tasks)
-                final_intensity_fn_list.extend(results)
+                final_intensity_fn_list = dask.compute(*final_intensity_task_list)
                 client.close()
-        else:
-            cluster = LocalCluster(n_workers=5)
-            client = Client(cluster)
-            final_intensity_fn_list = dask.compute(*final_intensity_task_list)
-            client.close()
-        final_intensity_task_list = None
+            final_intensity_task_list = None
     print("****Processing complete for all tiles****")
     
     if len(final_dsm_fn_list) > 1:
@@ -304,13 +282,15 @@ def create_dsm(
         print("*** Now creating raster composites ***")
         if ept_3dep:
             dsm_mos_fn = f"{output_prefix}-DSM_mos-temp.tif"
-            dtm_mos_fn = f"{output_prefix}-DTM_mos-temp.tif"
+            dtm_mos_no_fill_fn = f"{output_prefix}-DTM_no_fill_mos-temp.tif"
+            dtm_mos_fill_fn = f"{output_prefix}-DTM_fill_window_size_4_mos-temp.tif"
             intensity_mos_fn = f"{output_prefix}-intensity_mos-temp.tif"
             cog = False
             out_extent = None
         else:
             dsm_mos_fn = f"{output_prefix}-DSM_mos.tif"
-            dtm_mos_fn = f"{output_prefix}-DTM_mos.tif"
+            dtm_mos_no_fill_fn = f"{output_prefix}-DTM_no_fill_mos-temp.tif"
+            dtm_mos_fill_fn = f"{output_prefix}-DTM_fill_window_size_4_mos-temp.tif"
             intensity_mos_fn = f"{output_prefix}-intensity_mos.tif"
             out_extent = final_out_extent
             cog = False
@@ -319,8 +299,11 @@ def create_dsm(
             print(f"Creating DSM mosaic at {dsm_mos_fn}")
             dsm_functions.raster_mosaic(final_dsm_fn_list, dsm_mos_fn,
                 cog=cog,out_extent=out_extent)
-            print(f"Creating DTM mosaic at {dtm_mos_fn}")
-            dsm_functions.raster_mosaic(final_dtm_fn_list, dtm_mos_fn,
+            print(f"Creating DTM mosaic at {dtm_mos_no_fill_fn}")
+            dsm_functions.raster_mosaic(dtm_no_fill_fn_list, dtm_mos_fn,
+                cog=cog,out_extent=out_extent)
+            print(f"Creating DTM mosaic with window size 4 at {dtm_mos_fill_fn}")
+            dsm_functions.raster_mosaic(dtm_fill_fn_list, dtm_mos_fill_fn,
                 cog=cog,out_extent=out_extent)
             print(f"Creating intensity raster mosaic at {intensity_mos_fn}")
             dsm_functions.raster_mosaic(final_intensity_fn_list, intensity_mos_fn,
@@ -342,10 +325,14 @@ def create_dsm(
                 lists,output_mos_list[idx], cog) for idx,lists  in enumerate(dems_list))
     else:
         dsm_mos_fn = f"{output_prefix}-DSM_mos-temp.tif"
-        dtm_mos_fn = f"{output_prefix}-DTM_mos-temp.tif"
+        dtm_mos_no_fill_fn = f"{output_prefix}-DTM_no_fill_mos-temp.tif"
+        dtm_mos_fill_fn = f"{output_prefix}-DTM_fill_window_size_4_mos-temp.tif"
+        
+        
         intensity_mos_fn = f"{output_prefix}-intensity_mos-temp.tif"
         os.rename(final_dsm_fn_list[0], dsm_mos_fn)
-        os.rename(final_dtm_fn_list[0], dtm_mos_fn)
+        os.rename(final_dtm_no_fill_fn_list[0], dtm_mos_no_fill_fn)
+        os.rename(final_dtm_fill_fn_list[0], dtm_mos_fill_fn)
         os.rename(final_intensity_fn_list[0], intensity_mos_fn)
         print("Only one tile created, no mosaicking required")
 
@@ -354,7 +341,8 @@ def create_dsm(
         if out_crs != CRS.from_epsg(3857):
             print("*********Reprojecting DSM, DTM and intensity rasters****")
             dsm_reproj = dsm_mos_fn.split("-temp.tif")[0] + ".tif"
-            dtm_reproj = dtm_mos_fn.split("-temp.tif")[0] + ".tif"
+            dtm_no_fill_reproj = dtm_mos_no_fill_fn.split("-temp.tif")[0] + ".tif"
+            dtm_fill_reproj = dtm_mos_fill_fn.split("-temp.tif")[0] + ".tif"
             intensity_reproj = intensity_mos_fn.split("-temp.tif")[0] + ".tif"
             reproject_truth_val = dsm_functions.confirm_3dep_vertical(dsm_mos_fn)
             if reproject_truth_val:
@@ -371,8 +359,10 @@ def create_dsm(
                 dsm_functions.gdal_warp(dsm_mos_fn, dsm_reproj, src_srs, target_wkt,
                                         resampling_alogrithm="bilinear",out_extent=out_extent)
                 print("Reprojectiong DTM raster")
-                dsm_functions.gdal_warp(dtm_mos_fn, dtm_reproj, src_srs, target_wkt,
-                                        resampling_alogrithm="bilinear" , out_extent=out_extent)
+                dsm_functions.gdal_warp(dtm_mos_no_fill_fn, dtm_no_fill_reproj, src_srs, target_wkt,
+                                        resampling_alogrithm="bilinear", out_extent=out_extent)
+                dsm_functions.gdal_warp(dtm_mos_fill_fn, dtm_fill_reproj, src_srs, target_wkt,
+                                        resampling_alogrithm="bilinear", out_extent=out_extent)
                 print("Reprojecting intensity raster")
                 dsm_functions.gdal_warp(intensity_mos_fn, intensity_reproj, src_srs, target_wkt,
                                         resampling_alogrithm="bilinear" , out_extent=out_extent)
@@ -396,17 +386,23 @@ def create_dsm(
             print("No reprojection required")
             # rename the temp files to the final output names
             os.rename(dsm_mos_fn, dsm_reproj)
+            os.rename(dtm_mos_no_fill_fn, dtm_no_fill_reproj)
+            os.rename(dtm_mos_fill_fn, dtm_fill_reproj)
             os.rename(dtm_mos_fn, dtm_reproj)
             os.rename(intensity_mos_fn, intensity_reproj)
     else:
         dsm_reproj = dsm_mos_fn
+        dtm_no_fill_reproj = dtm_mos_no_fill_fn
+        dtm_fill_reproj = dtm_mos_fill_fn
+        
         dtm_reproj = dtm_mos_fn
         intensity_reproj = intensity_mos_fn
     print("****Building Gaussian overviews for all rasters****") 
     if not parallel:
         print("Running overview creation sequentially")
         dsm_functions.gdal_add_overview(dsm_reproj)
-        dsm_functions.gdal_add_overview(dtm_reproj)
+        dsm_functions.gdal_add_overview(dtm_no_fill_reproj)
+        dsm_functions.gdal_add_overview(dtm_fill_reproj)
         dsm_functions.gdal_add_overview(intensity_reproj)
     else:
         print("Running overview creation in parallel")
@@ -422,7 +418,7 @@ def create_dsm(
             ovr) for ovr in ovr_list)
     if cleanup:
         print("User selected to remove intermediate tile outputs")
-        tile_list = dsm_fn_list + dtm_fn_list + intensity_fn_list
+        tile_list = final_dsm_fn_list + final_dtm_no_fill_fn_list + final_dtm_fill_fn_list + final_intensity_fn_list
         tile_list = [tile for tile in tile_list if tile is not None]
         for fn in tile_list:
             try:
@@ -434,8 +430,10 @@ def create_dsm(
         if ept_3dep:
             if os.path.exists(dsm_mos_fn):
                 os.remove(dsm_mos_fn)
-            if os.path.exists(dtm_mos_fn):
-                os.remove(dtm_mos_fn)
+            if os.path.exists(dtm_mos_no_fill_fn):
+                os.remove(dtm_mos_no_fill_fn)
+            if os.path.exists(dtm_mos_fill_fn):
+                os.remove(dtm_mos_fill_fn)
             if os.path.exists(intensity_mos_fn):
                 os.remove(intensity_mos_fn)
     print("****Processing complete****")
