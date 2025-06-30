@@ -637,38 +637,6 @@ def create_pdal_pipeline(
 
     return pipeline
 
-def create_dem_stage_connor(
-    dem_filename: str,
-    extent: list,
-    pointcloud_resolution: float = 1.0,
-    gridmethod: str = "max",
-    dimension: str = "Z",
-) -> list:
-    # compute raster width and height
-    width = (extent[2] - extent[0]) / pointcloud_resolution
-    height = (extent[3] - extent[1]) / pointcloud_resolution
-    origin_x = extent[0]
-    origin_y = extent[1]
-    dem_stage = {
-        "type": "writers.gdal",
-        "filename": dem_filename,
-        "gdaldriver": "GTiff",
-        "nodata": -9999,
-        "data_type": "float32",
-        "radius": 0.5,
-        "output_type": gridmethod,
-        "resolution": float(pointcloud_resolution),
-        "origin_x": origin_x,
-        "origin_y": origin_y,
-        "width": width,
-        "height": height,
-        "gdalopts": "COMPRESS=LZW,TILED=YES,blockxsize=256,blockysize=256,COPY_SRC_OVERVIEWS=YES",
-    }
-
-    dem_stage.update({"dimension": dimension})
-
-    return [dem_stage]
-
 def create_dem_stage(
     dem_filename: str,
     extent: list,
