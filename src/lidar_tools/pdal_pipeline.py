@@ -175,9 +175,18 @@ def create_dsm(
             contents = f.read()
     out_crs = CRS.from_string(contents)
     #print(out_crs)
-    #out_extent = gpd.read_file(extent_polygon).to_crs(out_crs).total_bounds
+    out_extent = gdf.to_crs(out_crs).total_bounds
+    final_out_extent = dsm_functions.tap_bounds(out_extent,res=1) #this will change soon
     #print(f"Output extent in target CRS {out_crs} is {out_extent}")
-    #print(f"Output extent in target CRS {out_crs} is {dsm_functions.tap_bounds(out_extent,1)}")
+    print(f"Output extent in target CRS is {final_out_extent}")
+    gdf_out = gdf.to_crs(out_crs)
+    gdf_out['geometry'] = gdf_out['geometry'].buffer(250) #buffer by 250m
+    gdf_out = gdf_out.to_crs(input_crs) 
+    extent_polygon = os.path.join(outdir, "judicious_extent_polygon.geojson")
+    gdf_out.to_file(extent_polygon, driver='GeoJSON')
+
+    temp_extent_polygon = gpd.read_file(extent_polygon).to_crs(out_crs).buffer(250)
+
     if local_laz_dir:
         print(f"This run will process laz files from {local_laz_dir}")
         ept_3dep = False
@@ -206,20 +215,33 @@ def create_dsm(
         print("Running DSM/DTM/intensity pipelines sequentially")
         for i, pipeline in enumerate(dsm_pipeline_list):
             dsm = dsm_functions.execute_pdal_pipeline(pipeline,dsm_fn_list[i])
+            del pipeline
             if dsm is not None:
                 final_dsm_fn_list.append(dsm)
-        
+        del dsm_pipeline_list
         final_dtm_fn_list = []
         for i, pipeline in enumerate(dtm_pipeline_list):
             dtm = dsm_functions.execute_pdal_pipeline(pipeline,dtm_fn_list[i])
+            del pipeline
             if dtm is not None:
                 final_dtm_fn_list.append(dtm)
+        del dtm_pipeline_list
         
         final_intensity_fn_list = []
         for i, pipeline in enumerate(intensity_pipeline_list):
             intensity = dsm_functions.execute_pdal_pipeline(pipeline,intensity_fn_list[i])
+            del pipeline
             if intensity is not None:
                 final_intensity_fn_list.append(intensity)
+        del intensity_pipeline_list
+        print("Running DSM/DTM/intensity pipelines sequentially")
+        # (final_dsm_fn_list,
+        # final_dtm_fn_list, 
+        # final_intensity_fn_list) = dsm_functions.execute_ept_3dep_pipeline(extent_polygon,target_wkt,output_prefix,
+        #                         buffer_value=5,
+        #                         tile_size_km=5.0,
+        #                         process_specific_3dep_survey=process_specific_3dep_survey,
+        #                         process_all_intersecting_surveys=process_all_intersecting_surveys)
     else:
         print("Running DSM/DTM/intensity pipelines in parallel")
         joblib_list = []
@@ -346,19 +368,24 @@ def create_dsm(
             dtm_mos_fn = f"{output_prefix}-DTM_mos-temp.tif"
             intensity_mos_fn = f"{output_prefix}-intensity_mos-temp.tif"
             cog = False
+            out_extent = None
         else:
             dsm_mos_fn = f"{output_prefix}-DSM_mos.tif"
             dtm_mos_fn = f"{output_prefix}-DTM_mos.tif"
             intensity_mos_fn = f"{output_prefix}-intensity_mos.tif"
+            out_extent = final_out_extent
             cog = False
         if not parallel:
             print("Running mosaicking sequentially")
             print(f"Creating DSM mosaic at {dsm_mos_fn}")
-            dsm_functions.raster_mosaic(final_dsm_fn_list, dsm_mos_fn,cog=cog)
+            dsm_functions.raster_mosaic(final_dsm_fn_list, dsm_mos_fn,
+                cog=cog,out_extent=out_extent)
             print(f"Creating DTM mosaic at {dtm_mos_fn}")
-            dsm_functions.raster_mosaic(final_dtm_fn_list, dtm_mos_fn,cog=cog)
+            dsm_functions.raster_mosaic(final_dtm_fn_list, dtm_mos_fn,
+                cog=cog,out_extent=out_extent)
             print(f"Creating intensity raster mosaic at {intensity_mos_fn}")
-            dsm_functions.raster_mosaic(final_intensity_fn_list, intensity_mos_fn,cog=cog)
+            dsm_functions.raster_mosaic(final_intensity_fn_list, intensity_mos_fn,
+                cog=cog,out_extent=out_extent)
         else:
             #final_mos_list = []
             output_mos_list = [dsm_mos_fn, dtm_mos_fn, intensity_mos_fn]
@@ -397,18 +424,19 @@ def create_dsm(
                 src_srs = epsg_3857_navd88_fn
             else:
                 src_srs = "EPSG:3857"
+            out_extent = final_out_extent
             print(src_srs)
             if not parallel:
                 print("Running reprojection sequentially")
                 print("Reprojecting DSM raster")
                 dsm_functions.gdal_warp(dsm_mos_fn, dsm_reproj, src_srs, target_wkt,
-                                        resampling_alogrithm="bilinear")
+                                        resampling_alogrithm="bilinear",out_extent=out_extent)
                 print("Reprojectiong DTM raster")
                 dsm_functions.gdal_warp(dtm_mos_fn, dtm_reproj, src_srs, target_wkt,
-                                        resampling_alogrithm="bilinear")
+                                        resampling_alogrithm="bilinear" , out_extent=out_extent)
                 print("Reprojecting intensity raster")
                 dsm_functions.gdal_warp(intensity_mos_fn, intensity_reproj, src_srs, target_wkt,
-                                        resampling_alogrithm="bilinear")
+                                        resampling_alogrithm="bilinear" , out_extent=out_extent)
             else:
                 print("Running reprojection in parallel")
                 resolution = 1.0 #hardcoded for now, will change tomorrow

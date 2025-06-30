@@ -72,7 +72,135 @@ def tap_bounds(site_bounds: tuple | list | np.ndarray, res: int | float) -> list
         nearest_ceil(site_bounds[2], res),
         nearest_ceil(site_bounds[3], res),
     ]
+def execute_ept_3dep_pipeline(extent_polygon,target_wkt,output_prefix,
+                                raster_resolution=1.0,
+                                tile_size_km=1.0,
+                                buffer_value=5,
+                                process_specific_3dep_survey=None,process_all_intersecting_surveys=False):
+    gdf = gpd.read_file(extent_polygon)
+    
+    # specify the output CRS of DEMs
+    with open(target_wkt, "r") as f:
+        OUTPUT_CRS = " ".join(f.read().replace("\n", "").split())
+    # fetch the readers for the pointclouds
+    readers, POINTCLOUD_CRS, extents, original_extents = return_readers(
+        gdf,
+        pointcloud_resolution=1,
+        tile_size_km=tile_size_km,
+        buffer_value=buffer_value,
+        return_specific_3dep_survey=process_specific_3dep_survey,
+        return_all_intersecting_surveys=process_all_intersecting_surveys
+    )
+    
+    output_path = Path(output_prefix).parent
+    prefix = Path(output_prefix).name
+    output_path = Path(output_path)
+    output_path.mkdir(exist_ok=True)
+    
+    print(f"Number of readers: {len(readers)}")
+    dsm_pipeline_list = []
+    dsm_fn_list = []
+    dtm_pipeline_list = []
+    dtm_fn_list = []
+    intensity_pipeline_list = []
+    intensity_fn_list = []
+    for i, reader in enumerate(readers):
+        print(f"Processing reader #{i}")
+        dsm_file = output_path / f"{prefix}_dsm_tile_aoi_{str(i).zfill(4)}.tif"
+        dtm_file = output_path / f"{prefix}_dtm_tile_aoi_{str(i).zfill(4)}.tif"
+        intensity_file = (
+            output_path / f"{prefix}_intensity_tile_aoi_{str(i).zfill(4)}.tif"
+        )
+        ## DSM creation block
+        pipeline_dsm = {"pipeline": [reader]}
+        pdal_pipeline_dsm = create_pdal_pipeline(
+                group_filter="first,only",
+                reproject=False,
+                input_crs=POINTCLOUD_CRS[i])
 
+        dsm_stage = create_dem_stage(
+            dem_filename=str(dsm_file),
+            extent=original_extents[i],
+            pointcloud_resolution=raster_resolution,
+            gridmethod="idw",
+            dimension="Z"
+        )
+        pipeline_dsm["pipeline"] += pdal_pipeline_dsm
+        pipeline_dsm["pipeline"] += dsm_stage
+
+        # Save a copy of each pipeline
+        dsm_pipeline_config_fn = output_path / f"pipeline_dsm_{str(i).zfill(4)}.json"
+        with open(dsm_pipeline_config_fn, "w") as f:
+            f.write(json.dumps(pipeline_dsm))
+        pipeline_dsm = pdal.Pipeline(json.dumps(pipeline_dsm))
+        #dsm_pipeline_list.append(pipeline_dsm)
+        dsm_fn_list.append(dsm_file.as_posix())
+        pipeline_dsm.execute()
+
+        ## DTM creation block
+        pipeline_dtm = {"pipeline": [reader]}
+        pdal_pipeline_dtm = create_pdal_pipeline(
+                return_only_ground=True,
+                group_filter=None,
+                reproject=False,
+                input_crs=POINTCLOUD_CRS[i]
+            )  
+
+        dtm_stage = create_dem_stage(
+            dem_filename=str(dtm_file),
+            extent=original_extents[i],
+            pointcloud_resolution=raster_resolution,
+            gridmethod="idw",
+            dimension="Z",
+        )
+        # this is only required for the DTM
+        dtm_stage[0]["window_size"] = 4
+
+        pipeline_dtm["pipeline"] += pdal_pipeline_dtm
+        pipeline_dtm["pipeline"] += dtm_stage
+
+        #Save a copy of each pipeline
+        dtm_pipeline_config_fn = output_path / f"pipeline_dtm_{str(i).zfill(4)}.json"
+        with open(dtm_pipeline_config_fn, "w") as f:
+            f.write(json.dumps(pipeline_dtm))
+
+        pipeline_dtm = pdal.Pipeline(json.dumps(pipeline_dtm))
+        #dtm_pipeline_list.append(pipeline_dtm)
+        dtm_fn_list.append(dtm_file.as_posix())
+        pipeline_dtm.execute()
+
+
+        ## Intensity pipeline
+        pipeline_intensity = {"pipeline": [reader]}
+        pdal_pipeline_surface_intensity = create_pdal_pipeline(
+                return_only_ground=False,
+                group_filter="first,only",
+                reproject=False,
+                input_crs=POINTCLOUD_CRS[i],
+                )
+
+        intensity_stage = create_dem_stage(
+            dem_filename=str(intensity_file),
+            extent=original_extents[i],
+            pointcloud_resolution=raster_resolution,
+            gridmethod="idw",
+            dimension="Intensity",
+        )
+
+        pipeline_intensity["pipeline"] += pdal_pipeline_surface_intensity
+        pipeline_intensity["pipeline"] += intensity_stage
+
+        # Save a copy of each pipeline
+        intensity_pipeline_config_fn = (
+            output_path / f"pipeline_intensity_{str(i).zfill(4)}.json"
+        )
+        with open(intensity_pipeline_config_fn, "w") as f:
+            f.write(json.dumps(pipeline_intensity))
+        pipeline_intensity = pdal.Pipeline(json.dumps(pipeline_intensity))
+        #intensity_pipeline_list.append(pipeline_intensity)
+        intensity_fn_list.append(intensity_file.as_posix())
+        pipeline_intensity.execute()
+    return  dsm_fn_list, dtm_fn_list, intensity_fn_list
 
 def return_readers(
     input_aoi: gpd.GeoDataFrame,
@@ -596,6 +724,7 @@ def create_dem_stage(
 def raster_mosaic(img_list: list, 
          outfn: str,
          cog: bool = False,
+         out_extent: list = None,
          ) -> None:
     """
     Given a list of input images, mosaic them into a COG raster by using vrt and gdal_translate
@@ -612,13 +741,20 @@ def raster_mosaic(img_list: list,
     img_list = [img for img in img_list if img is not None]
     vrt_fn = os.path.splitext(outfn)[0] + ".vrt"
     gdal.BuildVRT(vrt_fn, img_list, callback=gdal.TermProgress_nocb)
+    if out_extent is not None:
+        minx, miny, maxx, maxy = out_extent
+        out_extent = [minx,maxy,maxx,miny]
     if cog:
         # translate to COG
+        print(out_extent)
         gdal.Translate(outfn, vrt_fn, 
-            creationOptions=["COMPRESS=LZW", "TILED=YES", "COPY_SRC_OVERVIEWS=YES"],
-            callback=gdal.TermProgress_nocb)
+                projWin=out_extent,
+                creationOptions=["COMPRESS=LZW", "TILED=YES", "COPY_SRC_OVERVIEWS=YES"],
+                callback=gdal.TermProgress_nocb)
+    
     else:
-        gdal.Translate(outfn, vrt_fn, callback=gdal.TermProgress_nocb)
+        print(out_extent)
+        gdal.Translate(outfn, vrt_fn, projWin=out_extent, callback=gdal.TermProgress_nocb)
     # delete vrt
     os.remove(vrt_fn)
 
@@ -1016,7 +1152,8 @@ def gdal_warp(
     src_srs: str,
     dst_srs: str,
     res: float = 1.0,
-    resampling_alogrithm: str = "bilinear"
+    resampling_alogrithm: str = "bilinear",
+    out_extent: list = None,
 ) -> None:
     """
     Warp a raster file to a new coordinate reference system and resolution using GDAL.
@@ -1055,6 +1192,7 @@ def gdal_warp(
         errorThreshold=tolerance,
         targetAlignedPixels=True,
         # use directly output format as COG when gaussian overview resampling is implemented upstream in GDAL
+        outputBounds=out_extent,
         creationOptions=["COMPRESS=LZW", "TILED=YES", "COPY_SRC_OVERVIEWS=YES","BIGTIFF=IF_NEEDED"],
         callback=gdal.TermProgress_nocb,
     )
