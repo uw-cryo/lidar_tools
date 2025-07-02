@@ -140,7 +140,10 @@ def create_dsm(
     #figure out output projection
     #if user selectes local_utm, then compute the UTM zone from the extent polygon
     #this will supersed the target_wkt option
-    
+   
+    if target_wkt is None:
+        local_utm = True
+
     if local_utm:
         gdf = gpd.read_file(extent_polygon)
         epsg_code = gdf.estimate_utm_crs().to_epsg()
@@ -154,7 +157,7 @@ def create_dsm(
         if not outdir.exists():
             outdir.mkdir(parents=True, exist_ok=True)
         target_wkt = os.path.join(outdir, f"UTM_{zone}_WGS84_G2139_3D.wkt")
-        path_to_base_utm10_def = 'UTM_10.wkt' 
+        path_to_base_utm10_def = os.path.join(outdir, 'UTM_10.wkt')
         url = "https://raw.githubusercontent.com/uw-cryo/lidar_tools/refs/heads/main/notebooks/UTM_10N_WGS84_G2139_3D.wkt"
         response = requests.get(url)
         if response.status_code == 200:
@@ -172,7 +175,7 @@ def create_dsm(
 
     # specify the output CRS of DEMs
     with open(target_wkt, "r") as f:
-            contents = f.read()
+        contents = f.read()
     out_crs = CRS.from_string(contents)
     #print(out_crs)
     #out_extent = gpd.read_file(extent_polygon).to_crs(out_crs).total_bounds
