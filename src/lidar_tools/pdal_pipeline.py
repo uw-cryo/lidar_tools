@@ -112,25 +112,25 @@ def create_dsm(
     Parameters
     ----------
     extent_polygon : str
-        Path to the polygon file defining the processing extent.
-    source_wkt : str or None
-        Path to the WKT file defining the source coordinate reference system (CRS). If None, the CRS from the point cloud file is used.
-    target_wkt : str
-        Path to the WKT file defining the target coordinate reference system (CRS).
+        Path to the vector dataset containing a polygon defining the processing extent.
     output_prefix : str
-        prefix with directory name and filename prefix for the project (e.g., CO_ALS_proc/CO_3DEP_ALS)
+        Path for output files, containing directory path and filename prefix (e.g., /tmp/CO_3DEP_ALS).
+    target_wkt : str or None
+        Path to a text file containing WKT2 definition for the output coordinate reference system (CRS). If unspecified, a local UTM CRS will be used.
+    source_wkt : str or None
+        Path to a text file containing WKT2 definition for the coordinate reference system (CRS) of the input point cloud. If unspecified, the CRS defined in the source point cloud metadata will be used.
     local_utm: bool
-        If true, compute the UTM zone from the extent polygon and use it to create the output rasters. If false, use the CRS defined in the target_wkt file.
+        Automatically determine the appropriate output CRS definition using the local UTM zone from the extent polygon.
     cleanup: bool
-        If true, remove the intermediate tif files for the output tiles
+        Remove intermediate files.
     reproject: bool
-        If true, perform final reprojection from EPSG:3857 to user sepecified CRS
-    local_laz_dir: str
-        If specified, the path to a local directory containing laz files. If not specified, the function will process USGS 3DEP EPT tiles
-    process_specific_3dep_survey: str
-        If specified, only process the given 3DEP survey. This should be a string that matches the survey name in the 3DEP metadata
+        Perform final reprojection from EPSG:3857 to user sepecified CRS.
+    local_laz_dir: str or None
+        Path to directory containing source laz point cloud files. If unspecified, source will be USGS 3DEP EPT files. 
+    process_specific_3dep_survey: str or None
+        Only process the specified 3DEP project name. If unspecified, process all 3DEP projects intersecting the user-provided processing extent.
     process_all_intersecting_surveys: bool
-        If true, process all intersecting surveys. If false, only process the first LiDAR survey that intersects the extent defined in the GeoJSON file.
+        If true, process all point clouds that intersect the processing extent. If false, the first 3DEP project encountered will be processed.
 
     Returns
     -------
