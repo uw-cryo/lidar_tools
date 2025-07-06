@@ -21,7 +21,7 @@ from osgeo import gdal, gdalconst
 import pdal
 import odc.stac
 import os
-import gc
+import copy
 
 
 gdal.UseExceptions()
@@ -1136,7 +1136,6 @@ def check_raster_validity(raster_fn: str) -> bool:
         # print(f"Raster {raster_fn} has a valid CRS.")
         out = True
     da = None
-    gc.collect()
     return out
 
 
@@ -1256,7 +1255,11 @@ def create_lpc_pipeline(local_laz_dir: str,target_wkt: str,output_prefix: str,ra
         intensity_file = (
             output_path / f"{prefix}_intensity_tile_aoi_{str(i).zfill(4)}.tif"
         )
-
+        
+        pipeline_dsm = copy.deepcopy(reader)
+        pipeline_dtm_no_z_fill = copy.deepcopy(reader)
+        pipeline_dtm_z_fill = copy.deepcopy(reader)
+        pipeline_intensity = copy.deepcopy(reader) 
         ## DSM creation block
         pipeline_dsm = reader 
         pdal_pipeline_dsm = create_pdal_pipeline(
@@ -1283,7 +1286,8 @@ def create_lpc_pipeline(local_laz_dir: str,target_wkt: str,output_prefix: str,ra
         pdal_pipeline_dsm = None
 
         ## DTM creation block
-        pipeline_dtm_no_z_fill = reader
+        
+        
         pdal_pipeline_dtm_no_z_fill = create_pdal_pipeline(
                 return_only_ground=True,
                 group_filter=None,
@@ -1313,7 +1317,7 @@ def create_lpc_pipeline(local_laz_dir: str,target_wkt: str,output_prefix: str,ra
         pdal_pipeline_dtm_no_z_fill = None
 
 
-        pipeline_dtm_z_fill = reader
+        
         dtm_stage = create_dem_stage(
             dem_filename=str(dtm_file_z_fill),
             extent=original_extents[i],
@@ -1337,7 +1341,8 @@ def create_lpc_pipeline(local_laz_dir: str,target_wkt: str,output_prefix: str,ra
         pdal_pipeline_dtm_z_fill = None
 
         ## Intensity creation block
-        pipeline_intensity = reader
+        
+        
         pdal_pipeline_surface_intensity = create_pdal_pipeline(
                 group_filter="first,only",
                 reproject=True, # reproject to the output CRS            
