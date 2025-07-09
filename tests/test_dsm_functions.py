@@ -40,34 +40,30 @@ def test_tap_bounds_integers():
 
 # Requires network
 def test_return_readers():
-    extent_geojson = "./notebooks/CO_LiDAR_test_area_final.geojson"
+    extent_geojson = "./notebooks/uw-campus.geojson"
     gf = gpd.read_file(extent_geojson)
-    xmin, ymin, xmax, ymax = gf.iloc[0].geometry.bounds
-    input_aoi = Polygon.from_bounds(xmin, ymin, xmax, ymax)
-    input_crs = gf.crs.to_wkt()
     readers, crslist, buff_reader_extent_list, original_dem_tile_grid_extent_list = (
         lidar_tools.dsm_functions.return_readers(
-            input_aoi,
-            input_crs,
+            gf,
             pointcloud_resolution=10,
-            n_rows=2,
-            n_cols=2,
+            tile_size_km=1,
             buffer_value=5,
-        )
+            return_specific_3dep_survey=None,
+            return_all_intesercting_surveys=False)
     )
 
-    assert len(readers) == 4
+    assert len(readers) == 16
     assert {"type", "filename", "resolution", "polygon"} == set(readers[0].keys())
     assert isinstance(crslist[0], pyproj.CRS)
     assert buff_reader_extent_list[0] == (
-        -11863800.0,
-        4687040.0,
-        -11856370.0,
-        4691980.0,
+        -13616292.0,
+        6047853.0,
+        -13615281.0,
+        6048864.0,
     )
     assert original_dem_tile_grid_extent_list[0] == [
-        -11863790.0,
-        4687050.0,
-        -11856380.0,
-        4691970.0,
+        -13616287.0,
+        6047858.0,
+        -13615286.0,
+        6048859.0,
     ]
