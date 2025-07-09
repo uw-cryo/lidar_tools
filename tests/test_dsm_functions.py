@@ -52,18 +52,18 @@ def test_return_readers():
             return_all_intersecting_surveys=False)
     )
 
-    assert len(readers) == 16
+    assert len(readers) == 12
     assert {"type", "filename", "resolution", "polygon"} == set(readers[0].keys())
     assert isinstance(crslist[0], pyproj.CRS)
     assert buff_reader_extent_list[0] == (
-        -13616292.0,
-        6047853.0,
-        -13615281.0,
-        6048864.0,
+        -13615921.0,
+        6048225.0,
+        -13614910.0,
+        6049236.0,
     )
     assert original_dem_tile_grid_extent_list[0] == [
-        -13616287.0,
-        6047858.0,
-        -13615286.0,
-        6048859.0,
+       -13615916.0,
+        6048230.0,
+        -13614915.0,
+        6049231.0,
     ]
