@@ -575,7 +575,7 @@ def raster_mosaic(img_list: list,
         
     # Filter out None values from the image list
     img_list = [img for img in img_list if img is not None]
-    vrt_fn = os.path.splitext(outfn)[0] + ".vrt"
+    vrt_fn = Path(outfn).with_suffix(".vrt")
     gdal.BuildVRT(vrt_fn, img_list, callback=gdal.TermProgress_nocb)
     if out_extent is not None:
         minx, miny, maxx, maxy = out_extent
@@ -1094,8 +1094,8 @@ def create_lpc_pipeline(local_laz_dir: str,
     intensity_pipeline_list : list
         List of paths to PDAL pipeline configuration files for generating intensity rasters.
     """
-    lpc_files = sorted((glob.glob(os.path.join(local_laz_dir, "*.laz"))))
-    lpc_files += sorted((glob.glob(os.path.join(local_laz_dir, "*.las"))))
+    lpc_files = sorted(Path(local_laz_dir).glob("*.laz"))
+    lpc_files += lpc_files = sorted(Path(local_laz_dir).glob("*.las"))
     print(f"Number of local laz files: {len(lpc_files)}")
     readers = []
     original_extents = []
@@ -1545,9 +1545,9 @@ def rename_rasters(raster_fn,out_fn) -> None:
     None
     This function does not return anything, it renames the raster file and its associated XML file
     """
-    import os
-    xml_fn = raster_fn+".aux.xml"
-    os.rename(raster_fn, out_fn)
-    if os.path.exists(xml_fn):
-        out_fn_xml = out_fn+".aux.xml"
-        os.rename(xml_fn, out_fn_xml)
+    raster_path = Path(raster_fn)
+    xml_fn = raster_fn + ".aux.xml"
+    Path(raster_fn).rename(out_fn)
+    if Path(xml_fn).exists():
+        out_fn_xml = out_fn + ".aux.xml"
+        Path(xml_fn).rename(out_fn_xml)

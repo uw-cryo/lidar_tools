@@ -13,7 +13,6 @@ os.environ["PROJ_NETWORK"] = (
 print(f"PROJ_NETWORK is {os.environ['PROJ_NETWORK']}")
 
 from lidar_tools import dsm_functions
-import pdal
 from pyproj import CRS
 from shapely.geometry import Polygon
 from shapely.geometry.polygon import orient as _orient
@@ -92,7 +91,7 @@ def create_dsm(
         outdir = Path(output_prefix).parent
         if not outdir.exists():
             outdir.mkdir(parents=True, exist_ok=True)
-        target_wkt = os.path.join(outdir, f"UTM_{zone}_WGS84_G2139_3D.wkt")
+        target_wkt =  outdir / f"UTM_{zone}_WGS84_G2139_3D.wkt"
         path_to_base_utm10_def = 'UTM_10.wkt' 
         url = "https://raw.githubusercontent.com/uw-cryo/lidar_tools/refs/heads/main/notebooks/UTM_10N_WGS84_G2139_3D.wkt"
         response = requests.get(url)
@@ -121,7 +120,7 @@ def create_dsm(
     gdf_out = gdf.to_crs(out_crs)
     gdf_out['geometry'] = gdf_out['geometry'].buffer(250) #buffer by 250m
     gdf_out = gdf_out.to_crs(input_crs) 
-    extent_polygon = os.path.join(outdir, "judicious_extent_polygon.geojson")
+    extent_polygon = extent_polygon = outdir / "judicious_extent_polygon.geojson"
     gdf_out.to_file(extent_polygon, driver='GeoJSON')
 
 
@@ -329,19 +328,23 @@ def create_dsm(
         for fn in tile_list:
             try:
                 Path(fn).unlink()
+                aux_xml_fn = fn+".aux.xml"
+                if Path(aux_xml_fn).exists():
+                    Path(aux_xml_fn).unlink()
             except FileNotFoundError as e:
                 print(f"Error {e} encountered for file {fn}")
                 pass
 
         if ept_3dep:
-            if os.path.exists(dsm_mos_fn):
-                os.remove(dsm_mos_fn)
-            if os.path.exists(dtm_mos_no_fill_fn):
-                os.remove(dtm_mos_no_fill_fn)
-            if os.path.exists(dtm_mos_fill_fn):
-                os.remove(dtm_mos_fill_fn)
-            if os.path.exists(intensity_mos_fn):
-                os.remove(intensity_mos_fn)
+            for fn in [dsm_mos_fn, dtm_mos_no_fill_fn, dtm_mos_fill_fn, intensity_mos_fn]:
+            try:
+                Path(fn).unlink()
+                aux_xml_fn = fn+".aux.xml"
+                if Path(aux_xml_fn).exists():
+                    Path(aux_xml_fn).unlink()
+            except FileNotFoundError as e:
+                print(f"Error {e} encountered for file {fn}")
+                pass
     print("****Processing complete****")
 
 
