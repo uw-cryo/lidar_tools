@@ -49,7 +49,7 @@ def test_return_readers():
             tile_size_km=1,
             buffer_value=5,
             return_specific_3dep_survey=None,
-            return_all_intesercting_surveys=False)
+            return_all_intersecting_surveys=False)
     )
 
     assert len(readers) == 16
