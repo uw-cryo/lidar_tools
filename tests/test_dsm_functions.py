@@ -45,7 +45,7 @@ def test_return_readers():
     readers, crslist, buff_reader_extent_list, original_dem_tile_grid_extent_list = (
         lidar_tools.dsm_functions.return_readers(
             gf,
-            pointcloud_resolution=10,
+            pointcloud_resolution=1,
             tile_size_km=1,
             buffer_value=5,
             return_specific_3dep_survey=None,
