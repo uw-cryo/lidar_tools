@@ -1101,9 +1101,11 @@ def create_lpc_pipeline(local_laz_dir: str,
     original_extents = []
     input_crs = []
     aoi_bounds = gpd.read_file(extent_polygon)
+    if isinstance(target_wkt,Path):
+        target_wkt = str(target_wkt)
     for idx, lpc in enumerate(lpc_files):
         reader, in_crs, out_extent = return_local_lpc_reader(
-        lpc,
+        str(lpc),
         output_crs=target_wkt,
         pointcloud_resolution=1.0,
         aoi_bounds=aoi_bounds,

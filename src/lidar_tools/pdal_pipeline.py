@@ -131,7 +131,7 @@ def create_dsm(
         intensity_pipeline_list) = dsm_functions.create_lpc_pipeline(
                                     local_laz_dir=local_laz_dir,
                                     target_wkt=target_wkt,output_prefix=output_prefix,
-                                    aoi_bounds=extent_polygon)
+                                    extent_polygon=extent_polygon,buffer_value=5)
         
     else:
         print("This run will process 3DEP EPT tiles")
