@@ -24,9 +24,8 @@ import warnings
 
 import geopandas as gpd
 from pathlib import Path
-from dask.distributed import LocalCluster,Client,progress
-from joblib import Parallel, delayed
-import dask
+
+
 import requests
 
 
@@ -314,12 +313,7 @@ def create_dsm(
         print("Running overview creation in parallel")
         ovr_list = [dsm_reproj, dtm_no_fill_reproj, dtm_fill_reproj, intensity_reproj]
         ovr_results = []    
-        #for ovr in ovr_list:
-        #    ovr_results.append(dask.delayed(dsm_functions.gdal_add_overview)(ovr))
-        #client = Client(threads_per_worker=2, n_workers=3 )
-        #futures = dask.persist(*ovr_results)
-        #out = dask.compute(*futures)
-        #client.close()
+     
         n_dems = len(ovr_list)
         if n_dems > num_process:
             n_jobs = num_process
