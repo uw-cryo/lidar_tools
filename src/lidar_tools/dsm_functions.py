@@ -1095,7 +1095,7 @@ def create_lpc_pipeline(local_laz_dir: str,
         List of paths to PDAL pipeline configuration files for generating intensity rasters.
     """
     lpc_files = sorted(Path(local_laz_dir).glob("*.laz"))
-    lpc_files += lpc_files = sorted(Path(local_laz_dir).glob("*.las"))
+    lpc_files += sorted(Path(local_laz_dir).glob("*.las"))
     print(f"Number of local laz files: {len(lpc_files)}")
     readers = []
     original_extents = []

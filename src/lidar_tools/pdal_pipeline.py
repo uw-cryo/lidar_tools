@@ -67,7 +67,7 @@ def create_dsm(
     process_all_intersecting_surveys: bool
         If true, process all available EPT surveys which intersect with the input polygon. If false, and process_specific_3dep_survey is not specified, only process the first available 3DEP EPT survey that intersects the input polygon.
     num_process: int, optional
-        Number of processes to use for parallel processing. Default is 1, which means all pdal and gdal processing will be done serial
+        Number of processes to use for parallel processing. Default is 1, which means all pdal and gdal processing will be done serially
     cleanup: bool, optional
         If true, remove the intermediate tif files for the output tiles, leaving only the final mosaicked rasters. Default is True.
     Returns
@@ -337,14 +337,14 @@ def create_dsm(
 
         if ept_3dep:
             for fn in [dsm_mos_fn, dtm_mos_no_fill_fn, dtm_mos_fill_fn, intensity_mos_fn]:
-            try:
-                Path(fn).unlink()
-                aux_xml_fn = fn+".aux.xml"
-                if Path(aux_xml_fn).exists():
-                    Path(aux_xml_fn).unlink()
-            except FileNotFoundError as e:
-                print(f"Error {e} encountered for file {fn}")
-                pass
+                try:
+                    Path(fn).unlink()
+                    aux_xml_fn = fn+".aux.xml"
+                    if Path(aux_xml_fn).exists():
+                        Path(aux_xml_fn).unlink()
+                except FileNotFoundError as e:
+                    print(f"Error {e} encountered for file {fn}")
+                    pass
     print("****Processing complete****")
 
 
