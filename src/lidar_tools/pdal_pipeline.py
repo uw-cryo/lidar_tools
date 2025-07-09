@@ -5,7 +5,6 @@ Generate a DSM from input polygon
 # Needs to happen before importing GDAL/PDAL
 import os,sys
 from dask.distributed import Client, LocalCluster
-import gc
 
 
 os.environ["PROJ_NETWORK"] = (
@@ -41,9 +40,8 @@ def create_dsm(
     ept_tile_size_km: float = 1.0,
     process_specific_3dep_survey: str = None,
     process_all_intersecting_surveys: bool = False,
+    num_process: int = 1,
     cleanup: bool = True,
-    parallel: bool = False,
-
     #output_resolution: float = 1.0, #to be added in a seperate PR
 ) -> None:
     """
@@ -61,17 +59,19 @@ def create_dsm(
         prefix with directory name and filename prefix for the project (e.g., CO_ALS_proc/CO_3DEP_ALS)
     local_utm: bool
         If true, compute the UTM zone from the extent polygon and use it to create the output rasters. If false, use the CRS defined in the target_wkt file.
-    cleanup: bool
-        If true, remove the intermediate tif files for the output tiles
-    reproject: bool
-        If true, perform final reprojection from EPSG:3857 to user sepecified CRS
     local_laz_dir: str
-        If specified, the path to a local directory containing laz files. If not specified, the function will process USGS 3DEP EPT tiles
+        If  the path to a local directory containing laz files is specified, the laz files are processed. If not specified, the function will process USGS 3DEP EPT tiles
+    ept_tile_size_km: float
+        The size of the EPT tiles to be processed. This is only used if local_laz_dir is not specified. The default is 1.0 km, which means that the function
+        will process 1 km x 1 km tiles. If you want to process larger tiles, you can specify a larger value.
     process_specific_3dep_survey: str
-        If specified, only process the given 3DEP survey. This should be a string that matches the survey name in the 3DEP metadata
+        If specified, only process the given 3DEP survey. This should be a string that matches the workunit name in the 3DEP metadata
     process_all_intersecting_surveys: bool
-        If true, process all intersecting surveys. If false, only process the first LiDAR survey that intersects the extent defined in the GeoJSON file.
-
+        If true, process all available EPT surveys which intersect with the input polygon. If false, and process_specific_3dep_survey is not specified, only process the first available 3DEP EPT survey that intersects the input polygon.
+    num_process: int, optional
+        Number of processes to use for parallel processing. Default is 1, which means all pdal and gdal processing will be done serial
+    cleanup: bool, optional
+        If true, remove the intermediate tif files for the output tiles, leaving only the final mosaicked rasters. Default is True.
     Returns
     -------
     None
@@ -125,7 +125,6 @@ def create_dsm(
     extent_polygon = os.path.join(outdir, "judicious_extent_polygon.geojson")
     gdf_out.to_file(extent_polygon, driver='GeoJSON')
 
-    temp_extent_polygon = gpd.read_file(extent_polygon).to_crs(out_crs).buffer(250)
 
     if local_laz_dir:
         print(f"This run will process laz files from {local_laz_dir}")
@@ -147,7 +146,7 @@ def create_dsm(
                 process_specific_3dep_survey=process_specific_3dep_survey,
                 process_all_intersecting_surveys=process_all_intersecting_surveys)
         
-    if not parallel:
+    if num_process == 1:
         print("Running DSM/DTM/intensity pipelines sequentially")
         final_dsm_fn_list = []
         final_dtm_no_fill_fn_list = []
@@ -171,19 +170,24 @@ def create_dsm(
                 final_intensity_fn_list.append(outfn)
     else:
         print("Running DSM/DTM/intensity pipelines in parallel")
-        with Client(threads_per_worker=2, n_workers=5) as client:
+        num_pipelines = len(dsm_pipeline_list)
+        if num_pipelines > num_process:
+            n_jobs = num_process
+        else:
+            n_jobs = num_pipelines
+        with Client(threads_per_worker=2, n_workers=n_jobs) as client:
             futures = client.map(dsm_functions.execute_pdal_pipeline,dsm_pipeline_list)
             final_dsm_fn_list = client.gather(futures)
             final_dsm_fn_list = [outfn for outfn in final_dsm_fn_list if outfn is not None]
-        with Client(threads_per_worker=2, n_workers=5) as client:
+        with Client(threads_per_worker=2, n_workers=n_jobs) as client:
             futures = client.map(dsm_functions.execute_pdal_pipeline,dtm_no_fill_pipeline_list)
             final_dtm_no_fill_fn_list = client.gather(futures)
             final_dtm_no_fill_fn_list = [outfn for outfn in final_dtm_no_fill_fn_list if outfn is not None]
-        with Client(threads_per_worker=2, n_workers=5) as client:
+        with Client(threads_per_worker=2, n_workers=n_jobs) as client:
             futures = client.map(dsm_functions.execute_pdal_pipeline,dtm_fill_pipeline_list)
             final_dtm_fill_fn_list = client.gather(futures)
             final_dtm_fill_fn_list = [outfn for outfn in final_dtm_fill_fn_list if outfn is not None]
-        with Client(threads_per_worker=2, n_workers=5) as client:
+        with Client(threads_per_worker=2, n_workers=n_jobs) as client:
             futures = client.map(dsm_functions.execute_pdal_pipeline,intensity_pipeline_list)
             final_intensity_fn_list = client.gather(futures)
             final_intensity_fn_list = [outfn for outfn in final_intensity_fn_list if outfn is not None]
@@ -207,7 +211,7 @@ def create_dsm(
         else:
             out_extent = final_out_extent
             cog = True
-        if not parallel:
+        if num_process == 1:
             print("Running mosaicking sequentially")
             print(f"Creating DSM mosaic at {dsm_mos_fn}")
             dsm_functions.raster_mosaic(final_dsm_fn_list, dsm_mos_fn,
@@ -226,7 +230,11 @@ def create_dsm(
             output_mos_list = [dsm_mos_fn, dtm_mos_no_fill_fn, dtm_mos_fill_fn, intensity_mos_fn]
             
             dems_list = [final_dsm_fn_list, final_dtm_no_fill_fn_list, final_dtm_fill_fn_list, final_intensity_fn_list]
-            n_jobs = len(dems_list)
+            n_dems = len(dems_list)
+            if n_dems > num_process:
+                n_jobs = num_process
+            else:
+                n_jobs = n_dems
             with Client(n_workers=n_jobs) as client:
                 futures = client.map(dsm_functions.raster_mosaic,
                                      dems_list,output_mos_list,[cog]*n_jobs,[out_extent]*n_jobs)
@@ -256,7 +264,7 @@ def create_dsm(
                 src_srs = "EPSG:3857"
             out_extent = final_out_extent
             print(src_srs)
-            if not parallel:
+            if num_process == 1:
                 print("Running reprojection sequentially")
                 print("Reprojecting DSM raster")
                 dsm_functions.gdal_warp(dsm_mos_fn, dsm_reproj, src_srs, target_wkt,
@@ -274,7 +282,11 @@ def create_dsm(
                 resolution = 1.0 #hardcoded for now, will change tomorrow
                 reproj_fn_list = [dsm_reproj, dtm_no_fill_reproj, dtm_fill_reproj, intensity_reproj]
                 dem_list = [dsm_mos_fn, dtm_mos_no_fill_fn, dtm_mos_fill_fn, intensity_mos_fn]
-                n_jobs = len(dem_list)
+                n_dems = len(dem_list)
+                if n_dems > num_process:
+                    n_jobs = num_process
+                else:
+                    n_jobs = n_dems
                 with Client(n_workers=n_jobs) as client:
                     futures = client.map(dsm_functions.gdal_warp,
                                         dem_list,reproj_fn_list,[src_srs]*n_jobs,
@@ -291,13 +303,14 @@ def create_dsm(
         dsm_functions.rename_rasters(intensity_mos_fn, intensity_reproj)
     
     print("****Building Gaussian overviews for all rasters****") 
-    if not parallel:
+    if num_process == 1:
         print("Running overview creation sequentially")
         dsm_functions.gdal_add_overview(dsm_reproj)
         dsm_functions.gdal_add_overview(dtm_no_fill_reproj)
         dsm_functions.gdal_add_overview(dtm_fill_reproj)
         dsm_functions.gdal_add_overview(intensity_reproj)
     else:
+        
         print("Running overview creation in parallel")
         ovr_list = [dsm_reproj, dtm_no_fill_reproj, dtm_fill_reproj, intensity_reproj]
         ovr_results = []    
@@ -307,7 +320,11 @@ def create_dsm(
         #futures = dask.persist(*ovr_results)
         #out = dask.compute(*futures)
         #client.close()
-        n_jobs = len(ovr_list)
+        n_dems = len(ovr_list)
+        if n_dems > num_process:
+            n_jobs = num_process
+        else:
+            n_jobs = n_dems
         with Client(n_workers=n_jobs) as client:
             futures = client.map(dsm_functions.gdal_add_overview, ovr_list)
             final_mos_list = client.gather(futures)
