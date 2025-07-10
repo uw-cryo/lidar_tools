@@ -1496,7 +1496,7 @@ outfn: str = None) -> str:
     mod_crs = mod_crs.replace('"Longitude of natural origin",-123', 
                           f'"Longitude of natural origin",{center_long}')
     if outfn is None:
-        outfn = f'UTM_{zone}_WGS84_G2139_3D.wkt'
+        outfn = os.path.join(os.path.split(path_to_base_utm10_def)[0], f'UTM_{zone}_WGS84_G2139_3D.wkt')
     print(f"Writing 3D CRS at {outfn}")
     with open(outfn,'w') as f:
         f.write(mod_crs)

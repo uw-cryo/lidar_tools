@@ -60,6 +60,7 @@ platforms = ["osx-arm64", "linux-64"]
 dev = { features = ["dev"], solve-group = "default" }
 
 [tool.pixi.tasks]
+
 example = "pdal_pipeline create-dsm  notebooks/uw-campus.geojson /tmp/dem --local-utm --num-process 5 --no-cleanup"
 
 [tool.pixi.feature.dev.tasks]

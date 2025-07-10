@@ -48,24 +48,24 @@ def create_dsm(
     Parameters
     ----------
     extent_polygon : str
-        Path to the polygon file defining the processing extent.
-    source_wkt : str or None
-        Path to the WKT file defining the source coordinate reference system (CRS). If None, the CRS from the point cloud file is used.
-    target_wkt : str
-        Path to the WKT file defining the target coordinate reference system (CRS).
+        Path to the vector dataset containing a polygon defining the processing extent.
     output_prefix : str
-        prefix with directory name and filename prefix for the project (e.g., CO_ALS_proc/CO_3DEP_ALS)
+        Path for output files, containing directory path and filename prefix (e.g., /tmp/CO_3DEP_ALS).
+    target_wkt : str or None
+        Path to a text file containing WKT2 definition for the output coordinate reference system (CRS). If unspecified, a local UTM CRS will be used.
+    source_wkt : str or None
+        Path to a text file containing WKT2 definition for the coordinate reference system (CRS) of the input point cloud. If unspecified, the CRS defined in the source point cloud metadata will be used.
     local_utm: bool
-        If true, compute the UTM zone from the extent polygon and use it to create the output rasters. If false, use the CRS defined in the target_wkt file.
+        If true, automatically compute the local UTM zone from the extent polygon for final output products. If false, use the CRS defined in the target_wkt file.
     local_laz_dir: str
-        If  the path to a local directory containing laz files is specified, the laz files are processed. If not specified, the function will process USGS 3DEP EPT tiles
+        Path to directory containing source laz point cloud files. If not specified, the program will process USGS 3DEP EPT tiles.
     ept_tile_size_km: float
         The size of the EPT tiles to be processed. This is only used if local_laz_dir is not specified. The default is 1.0 km, which means that the function
         will process 1 km x 1 km tiles. If you want to process larger tiles, you can specify a larger value.
     process_specific_3dep_survey: str
-        If specified, only process the given 3DEP survey. This should be a string that matches the workunit name in the 3DEP metadata
+        Only process the specified 3DEP project name. This should be a string that matches the workunit name in the 3DEP metadata.
     process_all_intersecting_surveys: bool
-        If true, process all available EPT surveys which intersect with the input polygon. If false, and process_specific_3dep_survey is not specified, only process the first available 3DEP EPT survey that intersects the input polygon.
+        If true, process all available 3DEP EPT point clouds which intersect with the input polygon. If false, and process_specific_3dep_survey is not specified, first 3DEP project encountered will be processed.
     num_process: int, optional
         Number of processes to use for parallel processing. Default is 1, which means all pdal and gdal processing will be done serially
     cleanup: bool, optional
@@ -78,7 +78,10 @@ def create_dsm(
     #figure out output projection
     #if user selectes local_utm, then compute the UTM zone from the extent polygon
     #this will supersed the target_wkt option
-    
+   
+    if target_wkt is None:
+        local_utm = True
+
     if local_utm:
         gdf = gpd.read_file(extent_polygon)
         epsg_code = gdf.estimate_utm_crs().to_epsg()
@@ -92,7 +95,7 @@ def create_dsm(
         if not outdir.exists():
             outdir.mkdir(parents=True, exist_ok=True)
         target_wkt =  outdir / f"UTM_{zone}_WGS84_G2139_3D.wkt"
-        path_to_base_utm10_def = 'UTM_10.wkt' 
+        path_to_base_utm10_def =  outdir / 'UTM_10.wkt' 
         url = "https://raw.githubusercontent.com/uw-cryo/lidar_tools/refs/heads/main/notebooks/UTM_10N_WGS84_G2139_3D.wkt"
         response = requests.get(url)
         if response.status_code == 200:
@@ -110,7 +113,7 @@ def create_dsm(
 
     # specify the output CRS of DEMs
     with open(target_wkt, "r") as f:
-            contents = f.read()
+        contents = f.read()
     out_crs = CRS.from_string(contents)
     #print(out_crs)
     out_extent = gdf.to_crs(out_crs).total_bounds
