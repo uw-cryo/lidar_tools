@@ -12,6 +12,7 @@ Tools to process airborne and satellite LiDAR point clouds
 
 ## Datasets Supported
 * [3DEP AWS Public Dataset](https://registry.opendata.aws/usgs-lidar/)
+* Locally available, classified LiDAR point clouds in las/laz format
 
   
 ## Quickstart
@@ -30,7 +31,7 @@ pixi install --frozen
 ```
 
 ### Example workflow
-Run our example workflow to create DSM, DEM, and LiDAR Intensity for 3DEP data over a part of University of Washington Campus in Seattle, WA!
+Run our example workflow to create DSM, DTM without interpolation, DTM with interpolation, and LiDAR Intensity for 3DEP data over a part of University of Washington Campus in Seattle, WA!
 ```
 # NOTE: takes ~5 min to run 
 pixi run example
@@ -49,25 +50,42 @@ pdal_pipeline create-dsm --help
 ```console
 Usage: pdal_pipeline create-dsm [ARGS] [OPTIONS]
 
-Create a Digital Surface Model (DSM), Digital Terrain Model (DTM) and intensity
-raster from a given extent and 3DEP point cloud data.
+Create a Digital Surface Model (DSM), Digital Terrain Model (DTM) and intensity raster from a given extent and 
+3DEP point cloud data.
 
-╭─ Parameters ──────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
-│ *  EXTENT-POLYGON --extent-polygon          Path to the polygon file defining the processing extent. [required]           │
-│ *  TARGET-WKT --target-wkt                  Path to the WKT file defining the target coordinate reference system (CRS).   │
-│                                             [required]                                                                    │
-│ *  OUTPUT-PREFIX --output-prefix            prefix with directory name and filename prefix for the project (e.g.,         │
-│                                             CO_ALS_proc/CO_3DEP_ALS) [required]                                           │
-│    SOURCE-WKT --source-wkt                  Path to the WKT file defining the source coordinate reference system (CRS).   │
-│                                             If None, the CRS from the point cloud file is used.                           │
-│    PROCESS-SPECIFIC-3DEP-SURVEY             If specified, only process the given 3DEP survey. This should be a string     │
-│      --process-specific-3dep-survey         that matches the survey name in the 3DEP metadata                             │
-│    PROCESS-ALL-INTERSECTING-SURVEYS         If true, process all intersecting surveys. If false, only process the first   │
-│      --process-all-intersecting-surveys     LiDAR survey that intersects the extent defined in the GeoJSON file.          │
-│      --no-process-all-intersecting-surveys  [default: False]                                                              │
-│    CLEANUP --cleanup --no-cleanup           If true, remove the intermediate tif files for the output tiles [default:     │
-│                                             True]                                                                         │
-╰───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Parameters ──────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ *  EXTENT-POLYGON --extent-polygon          Path to the polygon file defining the processing extent.          │
+│                                             [required]                                                        │
+│ *  OUTPUT-PREFIX --output-prefix            prefix with directory name and filename prefix for the project    │
+│                                             (e.g., CO_ALS_proc/CO_3DEP_ALS) [required]                        │
+│    TARGET-WKT --target-wkt                  Path to the WKT file defining the target coordinate reference     │
+│                                             system (CRS).                                                     │
+│    LOCAL-UTM --local-utm --no-local-utm     If true, compute the UTM zone from the extent polygon and use it  │
+│                                             to create the output rasters. If false, use the CRS defined in    │
+│                                             the target_wkt file. [default: False]                             │
+│    SOURCE-WKT --source-wkt                  Path to the WKT file defining the source coordinate reference     │
+│                                             system (CRS). If None, the CRS from the point cloud file is used. │
+│    LOCAL-LAZ-DIR --local-laz-dir            If  the path to a local directory containing laz files is         │
+│                                             specified, the laz files are processed. If not specified, the     │
+│                                             function will process USGS 3DEP EPT tiles                         │
+│    EPT-TILE-SIZE-KM --ept-tile-size-km      The size of the EPT tiles to be processed. This is only used if   │
+│                                             local_laz_dir is not specified. The default is 1.0 km, which      │
+│                                             means that the function will process 1 km x 1 km tiles. If you    │
+│                                             want to process larger tiles, you can specify a larger value.     │
+│                                             [default: 1.0]                                                    │
+│    PROCESS-SPECIFIC-3DEP-SURVEY             If specified, only process the given 3DEP survey. This should be  │
+│      --process-specific-3dep-survey         a string that matches the workunit name in the 3DEP metadata      │
+│    PROCESS-ALL-INTERSECTING-SURVEYS         If true, process all available EPT surveys which intersect with   │
+│      --process-all-intersecting-surveys     the input polygon. If false, and process_specific_3dep_survey is  │
+│      --no-process-all-intersecting-surveys  not specified, only process the first available 3DEP EPT survey   │
+│                                             that intersects the input polygon. [default: False]               │
+│    NUM-PROCESS --num-process                Number of processes to use for parallel processing. Default is 1, │
+│                                             which means all pdal and gdal processing will be done serially    │
+│                                             [default: 1]                                                      │
+│    CLEANUP --cleanup --no-cleanup           If true, remove the intermediate tif files for the output tiles,  │
+│                                             leaving only the final mosaicked rasters. Default is True.        │
+│                                             [default: True]                                                   │
+╰───────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
 ```
 
 ## Development

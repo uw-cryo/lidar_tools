@@ -60,13 +60,14 @@ platforms = ["osx-arm64", "linux-64"]
 dev = { features = ["dev"], solve-group = "default" }
 
 [tool.pixi.tasks]
-example = "pdal_pipeline create-dsm notebooks/uw-campus.geojson /tmp/dem notebooks/UTM_10N_WGS84_G2139_3D.wkt"
+
+example = "pdal_pipeline create-dsm  notebooks/uw-campus.geojson /tmp/dem --local-utm --num-process 5 --no-cleanup"
 
 [tool.pixi.feature.dev.tasks]
 test = "pytest"
 typecheck = "mypy src/lidar_tools/"
 lint = "ruff check src/lidar_tools/ --fix ; ruff format"
-test-create-dsm = "time pdal_pipeline create-dsm  notebooks/uw-campus.geojson notebooks/UTM_10N_WGS84_G2139_3D.wkt /tmp/dem --no-cleanup"
+test-create-dsm = "time pdal_pipeline create-dsm  notebooks/uw-campus.geojson /tmp/dem notebooks/UTM_10N_WGS84_G2139_3D.wkt --num-process 5 --no-cleanup"
 
 [tool.pixi.dependencies]
 cyclopts = "*"
