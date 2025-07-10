@@ -53,7 +53,7 @@ def test_return_readers():
     )
 
     assert len(readers) == 12
-    assert {"type", "filename", "resolution", "polygon"} == set(readers[0].keys())
+    assert {"type", "filename", "requests", "resolution", "polygon"} == set(readers[0].keys())
     assert isinstance(crslist[0], pyproj.CRS)
     assert buff_reader_extent_list[0] == (
         -13615921.0,
