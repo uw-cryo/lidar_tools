@@ -131,16 +131,19 @@ def return_readers(
     y_step = tile_size_km * 1000  # convert km to m
     n_cols = int(np.ceil((xmax - xmin) / x_step))
     n_rows = int(np.ceil((ymax - ymin) / y_step))
-
-    crs_4326 = CRS.from_epsg(4326)
+    n_tiles = n_cols * n_rows
 
     readers = []
     pointcloud_input_crs = []
     original_extents = []
     extents = []
 
+    print(f"Preparing PDAL pipelines for each {tile_size_km} x {tile_size_km} km tile: {n_cols} cols x {n_rows} rows, {n_tiles} total tiles\n")
+
     for i in range(n_cols):
         for j in range(n_rows):
+            tilenum = (i*n_rows) + (j+1)
+            print(f"Column {i+1} of {n_cols}, Row {j+1} of {n_rows}, Tile {tilenum} of {n_tiles}")
             aoi = shapely.geometry.Polygon.from_bounds(
                 xmin + i * x_step,
                 ymin + j * y_step,
@@ -1116,6 +1119,10 @@ def create_lpc_pipeline(local_laz_dir: str,
     output_path = Path(output_path)
     output_path.mkdir(exist_ok=True)
     print(f"Number of readers: {len(readers)}")
+
+    #Determine number of digits for unique pipeline id with zero padding
+    ndigits = len(str(len(readers)))
+
     with open(target_wkt, "r") as f:
             contents = f.read()
     out_crs = CRS.from_string(contents)
@@ -1127,11 +1134,11 @@ def create_lpc_pipeline(local_laz_dir: str,
     
     for i, reader in enumerate(readers):
         #print(f"Processing reader #{i}")
-        dsm_file = output_path / f"{prefix}_dsm_tile_aoi_{str(i).zfill(4)}.tif"
-        dtm_file_no_z_fill = output_path / f"{prefix}_dtm_tile_aoi_no_fill{str(i).zfill(4)}.tif"
-        dtm_file_z_fill = output_path / f"{prefix}_dtm_tile_aoi_fill4_{str(i).zfill(4)}.tif"
+        dsm_file = output_path / f"{prefix}_dsm_tile_aoi_{str(i).zfill(ndigits)}.tif"
+        dtm_file_no_z_fill = output_path / f"{prefix}_dtm_tile_aoi_no_fill{str(i).zfill(ndigits)}.tif"
+        dtm_file_z_fill = output_path / f"{prefix}_dtm_tile_aoi_fill4_{str(i).zfill(ndigits)}.tif"
         intensity_file = (
-            output_path / f"{prefix}_intensity_tile_aoi_{str(i).zfill(4)}.tif"
+            output_path / f"{prefix}_intensity_tile_aoi_{str(i).zfill(ndigits)}.tif"
         )
         
         pipeline_dsm = copy.deepcopy(reader)
@@ -1155,7 +1162,7 @@ def create_lpc_pipeline(local_laz_dir: str,
         pipeline_dsm["pipeline"] += pdal_pipeline_dsm
         pipeline_dsm["pipeline"] += dsm_stage
         # Save a copy of each pipeline
-        dsm_pipeline_config_fn = output_path / f"pipeline_dsm_{str(i).zfill(4)}.json"
+        dsm_pipeline_config_fn = output_path / f"pipeline_dsm_{str(i).zfill(ndigits)}.json"
         with open(dsm_pipeline_config_fn, "w") as f:
             f.write(json.dumps(pipeline_dsm))
         dsm_pipeline_list.append(dsm_pipeline_config_fn)
@@ -1186,7 +1193,7 @@ def create_lpc_pipeline(local_laz_dir: str,
         pipeline_dtm_no_z_fill["pipeline"] += dtm_stage
 
         #Save a copy of each pipeline
-        dtm_pipeline_config_fn = output_path / f"pipeline_dtm_no_fill_{str(i).zfill(4)}.json"
+        dtm_pipeline_config_fn = output_path / f"pipeline_dtm_no_fill_{str(i).zfill(ndigits)}.json"
         with open(dtm_pipeline_config_fn, "w") as f:
             f.write(json.dumps(pipeline_dtm_no_z_fill))
         
@@ -1210,7 +1217,7 @@ def create_lpc_pipeline(local_laz_dir: str,
         pipeline_dtm_z_fill["pipeline"] += dtm_stage
 
         #Save a copy of each pipeline
-        dtm_pipeline_config_fn = output_path / f"pipeline_dtm_fill_{str(i).zfill(4)}.json"
+        dtm_pipeline_config_fn = output_path / f"pipeline_dtm_fill_{str(i).zfill(ndigits)}.json"
         with open(dtm_pipeline_config_fn, "w") as f:
             f.write(json.dumps(pipeline_dtm_z_fill))
 
@@ -1239,7 +1246,7 @@ def create_lpc_pipeline(local_laz_dir: str,
 
         # Save a copy of each pipeline
         intensity_pipeline_config_fn = (
-            output_path / f"pipeline_intensity_{str(i).zfill(4)}.json"
+            output_path / f"pipeline_intensity_{str(i).zfill(ndigits)}.json"
         )
         with open(intensity_pipeline_config_fn, "w") as f:
             f.write(json.dumps(pipeline_intensity))
@@ -1320,6 +1327,10 @@ def create_ept_3dep_pipeline(extent_polygon: str,
     output_path.mkdir(exist_ok=True)
     
     print(f"Number of readers: {len(readers)}")
+
+    #Determine number of digits for unique pipeline id with zero padding
+    ndigits = len(str(len(readers)))
+
     dsm_pipeline_list = []
     dtm_pipeline_no_fill_list = []
     dtm_pipeline_fill_list = []
@@ -1327,11 +1338,11 @@ def create_ept_3dep_pipeline(extent_polygon: str,
 
     for i, reader in enumerate(readers):
         #print(f"Processing reader #{i}")
-        dsm_file = output_path / f"{prefix}_dsm_tile_aoi_{str(i).zfill(4)}.tif"
-        dtm_file_no_z_fill = output_path / f"{prefix}_dtm_tile_aoi_no_fill{str(i).zfill(4)}.tif"
-        dtm_file_z_fill = output_path / f"{prefix}_dtm_tile_aoi_fill4_{str(i).zfill(4)}.tif"
+        dsm_file = output_path / f"{prefix}_dsm_tile_aoi_{str(i).zfill(ndigits)}.tif"
+        dtm_file_no_z_fill = output_path / f"{prefix}_dtm_tile_aoi_no_fill{str(i).zfill(ndigits)}.tif"
+        dtm_file_z_fill = output_path / f"{prefix}_dtm_tile_aoi_fill4_{str(i).zfill(ndigits)}.tif"
         intensity_file = (
-            output_path / f"{prefix}_intensity_tile_aoi_{str(i).zfill(4)}.tif"
+            output_path / f"{prefix}_intensity_tile_aoi_{str(i).zfill(ndigits)}.tif"
         )
         ## DSM creation block
         pipeline_dsm = {"pipeline": [reader]}
@@ -1351,7 +1362,7 @@ def create_ept_3dep_pipeline(extent_polygon: str,
         pipeline_dsm["pipeline"] += dsm_stage
 
         # Save a copy of each pipeline
-        dsm_pipeline_config_fn = output_path / f"pipeline_dsm_{str(i).zfill(4)}.json"
+        dsm_pipeline_config_fn = output_path / f"pipeline_dsm_{str(i).zfill(ndigits)}.json"
         with open(dsm_pipeline_config_fn, "w") as f:
             f.write(json.dumps(pipeline_dsm))
         dsm_pipeline_list.append(dsm_pipeline_config_fn)
@@ -1380,10 +1391,8 @@ def create_ept_3dep_pipeline(extent_polygon: str,
         pipeline_dtm_no_z_fill["pipeline"] += pdal_pipeline_dtm_no_z_fill
         pipeline_dtm_no_z_fill["pipeline"] += dtm_stage
         
-
-        
         #Save a copy of each pipeline
-        dtm_pipeline_config_fn = output_path / f"pipeline_dtm_no_fill_{str(i).zfill(4)}.json"
+        dtm_pipeline_config_fn = output_path / f"pipeline_dtm_no_fill_{str(i).zfill(ndigits)}.json"
         with open(dtm_pipeline_config_fn, "w") as f:
             f.write(json.dumps(pipeline_dtm_no_z_fill))
         dtm_pipeline_no_fill_list.append(dtm_pipeline_config_fn)
@@ -1404,7 +1413,7 @@ def create_ept_3dep_pipeline(extent_polygon: str,
         pipeline_dtm_z_fill["pipeline"] += dtm_stage
 
         #Save a copy of each pipeline
-        dtm_pipeline_config_fn = output_path / f"pipeline_dtm_fill_{str(i).zfill(4)}.json"
+        dtm_pipeline_config_fn = output_path / f"pipeline_dtm_fill_{str(i).zfill(ndigits)}.json"
         with open(dtm_pipeline_config_fn, "w") as f:
             f.write(json.dumps(pipeline_dtm_z_fill))
         dtm_pipeline_fill_list.append(dtm_pipeline_config_fn)
@@ -1434,7 +1443,7 @@ def create_ept_3dep_pipeline(extent_polygon: str,
 
         # Save a copy of each pipeline
         intensity_pipeline_config_fn = (
-            output_path / f"pipeline_intensity_{str(i).zfill(4)}.json"
+            output_path / f"pipeline_intensity_{str(i).zfill(ndigits)}.json"
         )
         with open(intensity_pipeline_config_fn, "w") as f:
             f.write(json.dumps(pipeline_intensity))
