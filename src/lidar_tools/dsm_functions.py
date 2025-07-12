@@ -1272,26 +1272,28 @@ def create_ept_3dep_pipeline(extent_polygon: str,
     buffer_value: float = 5.0,
     process_specific_3dep_survey: str = None,
     process_all_intersecting_surveys: bool = False) -> tuple[list, list, list, list]:
+
     """
     Create PDAL pipelines for processing 3DEP EPT point clouds to generate DEM products.
+
     Parameters
     ----------
-    extent_polygon : str        
-        Path to a polygon file defining the area of interest (AOI) for processing.
-    target_wkt : str
-        Path to the target WKT file defining the output coordinate reference system.    
+    extent_polygon : str
+        Path to the vector dataset containing a polygon defining the processing extent.
     output_prefix : str
-        Prefix for the output files, which will be used to create output file names.
+        Path for output files, containing directory path and filename prefix (e.g., /tmp/CO_3DEP_ALS).
+    target_wkt : str or None
+        Path to a text file containing WKT2 definition for the output coordinate reference system (CRS). If unspecified, a local UTM CRS will be used.
     raster_resolution : float, optional
-        Resolution for the output raster files, by default 1.0.
+        Output grid cell size, default 1.0 m.
     tile_size_km : float, optional
-        Size of the tiles in kilometers for processing, by default 1.0.
+        Processing tile dimension (square), default 1.0 km.
     buffer_value : float, optional
-        Buffer value to apply to the AOI bounds when reading points for rasterization, by default 5.0.
-    process_specific_3dep_survey : str, optional
-        Specific 3DEP survey to process. If None, and process_all_intersecting_surveys is False, the first intersecting survey will be processed
-    process_all_intersecting_surveys : bool, optional
-        If True, all intersecting 3DEP surveys will be processed. Default is False.
+        Buffer distance to expand bounds when reading points ensuring sufficient tile collar for window operations, default 5.0 m.
+    process_specific_3dep_survey: str
+        Only process the specified 3DEP project name. This should be a string that matches the workunit name in the 3DEP metadata.
+    process_all_intersecting_surveys: bool
+        If true, process all available 3DEP EPT point clouds which intersect with the input polygon. If false, and process_specific_3dep_survey is not specified, first 3DEP project encountered will be processed.
     Returns
     -------
     dsm_pipeline_list : list
@@ -1515,8 +1517,8 @@ def execute_pdal_pipeline(pdal_pipeline_path:str) -> str:
     #modified by Scott Henderson
     Parameters
     ----------
-    pdal_pipeline_path : json
-        The path to the PDAL pipeline
+    pdal_pipeline_path : str
+        The path to the PDAL pipeline json
     Returns
     -------
     output_fn : str
@@ -1529,6 +1531,7 @@ def execute_pdal_pipeline(pdal_pipeline_path:str) -> str:
             outfile = pipelineDict['pipeline'][-1]['filename']
 
             pipeline = pdal.Pipeline(json.dumps(pipelineDict))
+            print(f"Executing {pdal_pipeline_path}")
             pipeline.execute()
             pipeline = None
         if check_raster_validity(outfile):
