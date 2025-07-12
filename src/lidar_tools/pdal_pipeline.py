@@ -1,32 +1,29 @@
 """
-Generate a DSM from input polygon
+Create and exectute PDAL pipelines
 """
 
-# Needs to happen before importing GDAL/PDAL
-import os,sys
-from dask.distributed import Client, LocalCluster
-
-
-os.environ["PROJ_NETWORK"] = (
-    "ON"  # Ensure this is 'ON' to get shift grids over the internet
-)
-print(f"PROJ_NETWORK is {os.environ['PROJ_NETWORK']}")
-
-from lidar_tools import dsm_functions
-from pyproj import CRS
-from shapely.geometry import Polygon
-from shapely.geometry.polygon import orient as _orient
-import numpy as np
+import os
+import sys
 import json
 from pathlib import Path
 import warnings
-
-import geopandas as gpd
-from pathlib import Path
-
-
 import requests
 
+from dask.distributed import Client, LocalCluster
+
+# Needs to happen before importing GDAL/PDAL
+os.environ["PROJ_NETWORK"] = (
+    "ON"  # Ensure this is 'ON' to get shift grids over the internet
+)
+#print(f"PROJ_NETWORK is {os.environ['PROJ_NETWORK']}")
+
+import numpy as np
+import geopandas as gpd
+from pyproj import CRS
+from shapely.geometry import Polygon
+from shapely.geometry.polygon import orient as _orient
+
+from lidar_tools import dsm_functions
 
 def create_dsm(
     extent_polygon: str,

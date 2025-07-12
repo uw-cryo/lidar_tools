@@ -1,35 +1,32 @@
 """
-Generate DSMs from 3DEP EPT data
+Function library for lidar_tools
 """
+
+import os
+import copy
+import json
+from pathlib import Path
+import glob
+import requests
 
 from rasterio.warp import transform_bounds
 from pyproj import CRS
 import shapely
 from shapely.geometry import Polygon
 import geopandas as gpd
-import requests
 import rasterio
 import xarray as xr
 import rioxarray
 import pystac_client
 import numpy as np
-import json
-from pathlib import Path
-import glob
 # import planetary_computer
 from osgeo import gdal, gdalconst
 import pdal
 import odc.stac
-import os
-import copy
-
 
 gdal.UseExceptions()
 
 odc.stac.configure_rio(cloud_defaults=True)
-
-
-
 
 def nearest_floor(x: int | float, a: int | float) -> int | float:
     """
