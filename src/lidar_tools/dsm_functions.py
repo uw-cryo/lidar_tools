@@ -122,11 +122,11 @@ def return_readers(
     print(f"Identified {len(ept_index_gdf)} 3DEP projects intersecting user AOI:")
     print(ept_index_gdf['name'], end="\n\n")
 
-    # since we will query the USGS 3DEP EPT data which are in EPSG:3857, 
-    # and our logic is to divide in X x X km tile grid, 
-    # we need to convert the input AOI to EPSG:3857 which is in metric units
-    input_aoi = input_aoi.to_crs(CRS.from_epsg(3857))
-    xmin, ymin, xmax, ymax = input_aoi.total_bounds
+    # Reproject input AOI to EPSG:3857 (units of meters)
+    input_aoi_3857 = input_aoi.to_crs(CRS.from_epsg(3857))
+
+    # Prepare grid of tiles for the AOI bbox
+    xmin, ymin, xmax, ymax = input_aoi_3857.total_bounds
     x_step = tile_size_km * 1000  # convert km to m
     y_step = tile_size_km * 1000  # convert km to m
     n_cols = int(np.ceil((xmax - xmin) / x_step))
@@ -143,7 +143,6 @@ def return_readers(
     for i in range(n_cols):
         for j in range(n_rows):
             tilenum = (i*n_rows) + (j+1)
-            print(f"Column {i+1} of {n_cols}, Row {j+1} of {n_rows}, Tile {tilenum} of {n_tiles}")
             aoi = shapely.geometry.Polygon.from_bounds(
                 xmin + i * x_step,
                 ymin + j * y_step,
@@ -156,50 +155,53 @@ def return_readers(
             aoi_3857 = shapely.geometry.Polygon.from_bounds(*src_bounds_transformed_3857)
             #print(aoi.bounds, src_bounds_transformed_3857)
 
-            if buffer_value:
-                #print(f"The tile polygon will be buffered by {buffer_value:.2f} m")
-                # buffer the tile polygon by the buffer value
-                aoi_3857 = aoi_3857.buffer(buffer_value)
-                # now create tap bounds for the buffered tile
-                aoi_3857_bounds = tap_bounds(aoi_3857.bounds, pointcloud_resolution)
-                # now convert the buffered tile to a polygon
-                aoi_3857 = shapely.geometry.Polygon.from_bounds(*aoi_3857_bounds)
-                #print("The buffered tile bound is: ", aoi_3857.bounds)
+            #Check to make sure the tile intersects the original user AOI, not just the bbox envelope
+            if (input_aoi_3857.geometry.intersects(aoi_3857)).any():
+                print(f"Column {i+1} of {n_cols}, Row {j+1} of {n_rows}, Tile {tilenum} of {n_tiles}")
+                if buffer_value:
+                    #print(f"The tile polygon will be buffered by {buffer_value:.2f} m")
+                    # buffer the tile polygon by the buffer value
+                    aoi_3857 = aoi_3857.buffer(buffer_value)
+                    # now create tap bounds for the buffered tile
+                    aoi_3857_bounds = tap_bounds(aoi_3857.bounds, pointcloud_resolution)
+                    # now convert the buffered tile to a polygon
+                    aoi_3857 = shapely.geometry.Polygon.from_bounds(*aoi_3857_bounds)
+                    #print("The buffered tile bound is: ", aoi_3857.bounds)
 
-            if return_specific_3dep_survey is not None:
-                return_all_intersecting_surveys = True
-            #Better to do intersection with the geodataframe first, rather than looping through each polygon
-            for _, row in (ept_index_gdf[ept_index_gdf.intersects(aoi)]).iterrows():
-                usgs_dataset_name = row["name"]
                 if return_specific_3dep_survey is not None:
-                    if usgs_dataset_name == return_specific_3dep_survey:
-                        add_survey = True
+                    return_all_intersecting_surveys = True
+                #Better to do intersection with the geodataframe first, rather than looping through each polygon
+                for _, row in (ept_index_gdf[ept_index_gdf.intersects(aoi)]).iterrows():
+                    usgs_dataset_name = row["name"]
+                    if return_specific_3dep_survey is not None:
+                        if usgs_dataset_name == return_specific_3dep_survey:
+                            add_survey = True
+                        else:
+                            add_survey = False
                     else:
-                        add_survey = False
-                else:
-                    add_survey = True
-                if add_survey:
-                    print(f"3DEP Dataset(s): {usgs_dataset_name}")
-                    url = f"https://s3-us-west-2.amazonaws.com/usgs-lidar-public/{usgs_dataset_name}/ept.json"
-                    reader = {
-                        "type": "readers.ept",
-                        "filename": url,
-                        "requests": 15,
-                        "resolution": pointcloud_resolution,
-                        "polygon": str(aoi_3857.wkt),
-                    }
+                        add_survey = True
+                    if add_survey:
+                        print(f"3DEP Dataset(s): {usgs_dataset_name}")
+                        url = f"https://s3-us-west-2.amazonaws.com/usgs-lidar-public/{usgs_dataset_name}/ept.json"
+                        reader = {
+                            "type": "readers.ept",
+                            "filename": url,
+                            "requests": 15,
+                            "resolution": pointcloud_resolution,
+                            "polygon": str(aoi_3857.wkt),
+                        }
 
-                    # SRS associated with the 3DEP dataset
-                    response = requests.get(url)
-                    data = response.json()
-                    srs_wkt = data["srs"]["wkt"]
+                        # SRS associated with the 3DEP dataset
+                        response = requests.get(url)
+                        data = response.json()
+                        srs_wkt = data["srs"]["wkt"]
 
-                    pointcloud_input_crs.append(CRS.from_wkt(srs_wkt))
-                    readers.append(reader)
-                    extents.append(aoi_3857.bounds)
-                    original_extents.append(src_bounds_transformed_3857)
-                if not return_all_intersecting_surveys:
-                    break
+                        pointcloud_input_crs.append(CRS.from_wkt(srs_wkt))
+                        readers.append(reader)
+                        extents.append(aoi_3857.bounds)
+                        original_extents.append(src_bounds_transformed_3857)
+                    if not return_all_intersecting_surveys:
+                        break
 
     return readers, pointcloud_input_crs, extents, original_extents
 
