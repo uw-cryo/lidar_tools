@@ -109,6 +109,19 @@ def return_readers(
     list of list
         A list of original extents for each reader.
     """
+
+    #Load EPT polygon boundary index for user AOI
+    #Reproject to EPSG:3857 for subsequent intersection operations
+    ept_index_gdf = gpd.read_file(
+        "https://raw.githubusercontent.com/hobuinc/usgs-lidar/master/boundaries/resources.geojson",
+        mask=input_aoi
+    ).to_crs(CRS.from_epsg(3857))
+    # Can read from copy stored in the github repo if necessary 
+    # ept_index_gdf = gpd.read_file('../data/shapefiles/resources.geojson')
+
+    print(f"Identified {len(ept_index_gdf)} 3DEP projects intersecting user AOI:")
+    print(ept_index_gdf['name'], end="\n\n")
+
     # since we will query the USGS 3DEP EPT data which are in EPSG:3857, 
     # and our logic is to divide in X x X km tile grid, 
     # we need to convert the input AOI to EPSG:3857 which is in metric units
@@ -135,21 +148,11 @@ def return_readers(
                 min(ymin + (j + 1) * y_step, ymax),  # Ensure the tile does not exceed AOI bounds
             )
 
-            src_bounds_transformed = transform_bounds(CRS.from_epsg(3857), crs_4326, *aoi.bounds) # convert to epsg:4326 for intersection with EPT bounds check
-            aoi_4326 = shapely.geometry.Polygon.from_bounds(*src_bounds_transformed)
-
-            
-            #src_bounds_transformed_3857 = transform_bounds(
-            #    src_crs, CRS.from_epsg(3857), *aoi.bounds
-            #) # this is not needed, as we already have the aoi bounds in 3857
             # create tap bounds for the tile
-            src_bounds_transformed_3857 = tap_bounds(
-                aoi.bounds, pointcloud_resolution
-            )
-            aoi_3857 = shapely.geometry.Polygon.from_bounds(
-                *src_bounds_transformed_3857
-            )
+            src_bounds_transformed_3857 = tap_bounds(aoi.bounds, pointcloud_resolution)
+            aoi_3857 = shapely.geometry.Polygon.from_bounds(*src_bounds_transformed_3857)
             #print(aoi.bounds, src_bounds_transformed_3857)
+
             if buffer_value:
                 #print(f"The tile polygon will be buffered by {buffer_value:.2f} m")
                 # buffer the tile polygon by the buffer value
@@ -160,45 +163,40 @@ def return_readers(
                 aoi_3857 = shapely.geometry.Polygon.from_bounds(*aoi_3857_bounds)
                 #print("The buffered tile bound is: ", aoi_3857.bounds)
 
-            gdf = gpd.read_file(
-                "https://raw.githubusercontent.com/hobuinc/usgs-lidar/master/boundaries/resources.geojson"
-            ).set_crs(4326)
-            # in the eventuality that the above URL breaks, we store a local copy
-            # gdf = gpd.read_file('../data/shapefiles/resources.geojson').set_crs(4326)
             if return_specific_3dep_survey is not None:
                 return_all_intersecting_surveys = True
-            for _, row in gdf.iterrows():
-                if row.geometry.intersects(aoi_4326):
-                    usgs_dataset_name = row["name"]
-                    if return_specific_3dep_survey is not None:
-                        if usgs_dataset_name == return_specific_3dep_survey:
-                            add_survey = True
-                        else:
-                            add_survey = False
-                    else:
+            #Better to do intersection with the geodataframe first, rather than looping through each polygon
+            for _, row in (ept_index_gdf[ept_index_gdf.intersects(aoi)]).iterrows():
+                usgs_dataset_name = row["name"]
+                if return_specific_3dep_survey is not None:
+                    if usgs_dataset_name == return_specific_3dep_survey:
                         add_survey = True
-                    if add_survey:
-                        print("Dataset being used: ", usgs_dataset_name)
-                        url = f"https://s3-us-west-2.amazonaws.com/usgs-lidar-public/{usgs_dataset_name}/ept.json"
-                        reader = {
-                            "type": "readers.ept",
-                            "filename": url,
-                            "requests": 15,
-                            "resolution": pointcloud_resolution,
-                            "polygon": str(aoi_3857.wkt),
-                        }
+                    else:
+                        add_survey = False
+                else:
+                    add_survey = True
+                if add_survey:
+                    print(f"3DEP Dataset(s): {usgs_dataset_name}")
+                    url = f"https://s3-us-west-2.amazonaws.com/usgs-lidar-public/{usgs_dataset_name}/ept.json"
+                    reader = {
+                        "type": "readers.ept",
+                        "filename": url,
+                        "requests": 15,
+                        "resolution": pointcloud_resolution,
+                        "polygon": str(aoi_3857.wkt),
+                    }
 
-                        # SRS associated with the 3DEP dataset
-                        response = requests.get(url)
-                        data = response.json()
-                        srs_wkt = data["srs"]["wkt"]
+                    # SRS associated with the 3DEP dataset
+                    response = requests.get(url)
+                    data = response.json()
+                    srs_wkt = data["srs"]["wkt"]
 
-                        pointcloud_input_crs.append(CRS.from_wkt(srs_wkt))
-                        readers.append(reader)
-                        extents.append(aoi_3857.bounds)
-                        original_extents.append(src_bounds_transformed_3857)
-                    if not return_all_intersecting_surveys:
-                        break
+                    pointcloud_input_crs.append(CRS.from_wkt(srs_wkt))
+                    readers.append(reader)
+                    extents.append(aoi_3857.bounds)
+                    original_extents.append(src_bounds_transformed_3857)
+                if not return_all_intersecting_surveys:
+                    break
 
     return readers, pointcloud_input_crs, extents, original_extents
 
@@ -1298,6 +1296,9 @@ def create_ept_3dep_pipeline(extent_polygon: str,
     intensity_pipeline_list : list
         List of paths to PDAL pipeline configuration files for generating intensity rasters.
     """ 
+    
+    #Load the user-specified polygon dataset
+    #Should check that this is EPSG:4326 (default for geojson)
     gdf = gpd.read_file(extent_polygon)
     
     # specify the output CRS of DEMs
