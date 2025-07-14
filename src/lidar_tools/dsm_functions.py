@@ -465,8 +465,7 @@ def create_pdal_pipeline(
     else:
         # we apply the percentile filter first as it
         # classifies detected outliers as 'high noise'
-        if group_filter is not None:
-            pipeline.append(stage_group_filter)
+        
         if percentile_filter:
             pipeline.append(stage_percentile_filter)
         if filter_low_noise:
@@ -475,7 +474,8 @@ def create_pdal_pipeline(
             pipeline.append(stage_filter_high_noise)
         if filter_road:
             pipeline.append(stage_filter_road)
-
+        if group_filter is not None:
+            pipeline.append(stage_group_filter)
     # For creating DTMs, we want to process only ground returns
     if return_only_ground:
         pipeline.append(stage_return_ground)
@@ -1066,6 +1066,7 @@ def create_lpc_pipeline(local_laz_dir: str,
     output_prefix: str,
     extent_polygon: str,
     raster_resolution: float = 1.0,
+    filter_high_noise: bool = True,
     buffer_value: float = 5.0) -> tuple[list, list, list, list]:
     """
     Create PDAL pipelines for processing local LiDAR point clouds (LPC) to generate DEM products
@@ -1081,8 +1082,11 @@ def create_lpc_pipeline(local_laz_dir: str,
         Path to a polygon file defining the area of interest (AOI) for processing.
     raster_resolution : float, optional
         Resolution for the output raster files, by default 1.0.
+    filter_high_noise : bool, optional
+        Remove high noise points (classification==18) from the point cloud before DSM and surface intensity processing. Default is True.
     buffer_value : float, optional
         Buffer value to apply to the AOI bounds when reading points for rasterization, by default 5.0.
+    
     Returns
     -------
     dsm_pipeline_list : list
@@ -1149,7 +1153,8 @@ def create_lpc_pipeline(local_laz_dir: str,
             group_filter="first,only",
             reproject=True, # reproject to the output CRS            
             input_crs=input_crs[i],
-            output_crs=out_crs)  
+            output_crs=out_crs
+            filter_high_noise=filter_high_noise)  
         dsm_stage = create_dem_stage(
             dem_filename=str(dsm_file),
             extent=original_extents[i],
@@ -1230,7 +1235,8 @@ def create_lpc_pipeline(local_laz_dir: str,
                 group_filter="first,only",
                 reproject=True, # reproject to the output CRS            
                 input_crs=input_crs[i],
-                output_crs=out_crs)
+                output_crs=out_crs
+                filter_high_noise=filter_high_noise)
 
         intensity_stage = create_dem_stage(
             dem_filename=str(intensity_file),
@@ -1268,6 +1274,7 @@ def create_ept_3dep_pipeline(extent_polygon: str,
     raster_resolution: float = 1.0,
     tile_size_km: float = 1.0,
     buffer_value: float = 5.0,
+    filter_high_noise: bool = True,
     process_specific_3dep_survey: str = None,
     process_all_intersecting_surveys: bool = False) -> tuple[list, list, list, list]:
     """
@@ -1282,6 +1289,8 @@ def create_ept_3dep_pipeline(extent_polygon: str,
         Prefix for the output files, which will be used to create output file names.
     raster_resolution : float, optional
         Resolution for the output raster files, by default 1.0.
+    filter_high_noise: bool, True
+        Remove high noise points (classification==18) from the point cloud before DSM and surface intensity processing. Default is True.
     tile_size_km : float, optional
         Size of the tiles in kilometers for processing, by default 1.0.
     buffer_value : float, optional
@@ -1340,7 +1349,8 @@ def create_ept_3dep_pipeline(extent_polygon: str,
         pdal_pipeline_dsm = create_pdal_pipeline(
                 group_filter="first,only",
                 reproject=False,
-                input_crs=POINTCLOUD_CRS[i])
+                input_crs=POINTCLOUD_CRS[i],
+                filter_high_noise=filter_high_noise)
 
         dsm_stage = create_dem_stage(
             dem_filename=str(dsm_file),
@@ -1421,7 +1431,7 @@ def create_ept_3dep_pipeline(extent_polygon: str,
                 group_filter="first,only",
                 reproject=False,
                 input_crs=POINTCLOUD_CRS[i],
-                )
+                filter_high_noise=filter_high_noise)
 
         intensity_stage = create_dem_stage(
             dem_filename=str(intensity_file),

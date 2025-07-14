@@ -34,6 +34,7 @@ def create_dsm(
     target_wkt: str = None,
     local_utm: bool = False,
     source_wkt: str = None,
+    filter_high_noise: bool = True,
     local_laz_dir: str = None,
     ept_tile_size_km: float = 1.0,
     process_specific_3dep_survey: str = None,
@@ -57,6 +58,8 @@ def create_dsm(
         Path to a text file containing WKT2 definition for the coordinate reference system (CRS) of the input point cloud. If unspecified, the CRS defined in the source point cloud metadata will be used.
     local_utm: bool
         If true, automatically compute the local UTM zone from the extent polygon for final output products. If false, use the CRS defined in the target_wkt file.
+    filter_high_noise: bool
+        Remove high noise points (classification==18) from the point cloud before DSM and surface intensity processing. Default is True.
     local_laz_dir: str
         Path to directory containing source laz point cloud files. If not specified, the program will process USGS 3DEP EPT tiles.
     ept_tile_size_km: float
@@ -134,7 +137,8 @@ def create_dsm(
         intensity_pipeline_list) = dsm_functions.create_lpc_pipeline(
                                     local_laz_dir=local_laz_dir,
                                     target_wkt=target_wkt,output_prefix=output_prefix,
-                                    extent_polygon=extent_polygon,buffer_value=5)
+                                    extent_polygon=extent_polygon,buffer_value=5,
+                                    filter_high_noise=filter_high_noise)
         
     else:
         print("This run will process 3DEP EPT tiles")
@@ -145,7 +149,8 @@ def create_dsm(
                 buffer_value=5,
                 tile_size_km=ept_tile_size_km,
                 process_specific_3dep_survey=process_specific_3dep_survey,
-                process_all_intersecting_surveys=process_all_intersecting_surveys)
+                process_all_intersecting_surveys=process_all_intersecting_surveys
+                filter_high_noise=filter_high_noise)
         
     if num_process == 1:
         print("Running DSM/DTM/intensity pipelines sequentially")
