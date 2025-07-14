@@ -353,6 +353,7 @@ def return_local_lpc_reader(lpc: str,
 def create_pdal_pipeline(
     filter_low_noise: bool = False,
     filter_high_noise: bool = False,
+    hag_nn: float = None,
     filter_road: bool = False,
     reset_classes: bool = False,
     reclassify_ground: bool = False,
@@ -375,6 +376,8 @@ def create_pdal_pipeline(
         Whether to filter low noise points, by default False.
     filter_high_noise : bool, optional
         Whether to filter high noise points, by default False.
+    hag_nn : float, optional
+        If specified, the height above ground (HAG) will be calculated using all nearest ground classified points, and all points greater than this value will be classified as high noise, by default None.
     filter_road : bool, optional
         Whether to filter road points, by default False.
     reset_classes : bool, optional
@@ -470,6 +473,18 @@ def create_pdal_pipeline(
             pipeline.append(stage_percentile_filter)
         if filter_low_noise:
             pipeline.append(stage_filter_low_noise)
+        if hag_nn is not None:
+            # if hag_nn is specified, we classify all points with HAG greater than hag_nn as high noise
+            stage_hag_nn = {
+                "type": "filters.hag_nn"}
+            stage_hag_nn_filter = {
+                "type": "filters.assign",
+                "value": [f"Classification = 18 WHERE HeightAboveGround > {hag_nn}"]
+            }
+            pipeline.append(stage_hag_nn)
+            pipeline.append(stage_hag_nn_filter)
+
+            filter_high_noise = True # ensure that we filter high noise points if hag_nn is specified
         if percentile_filter or filter_high_noise:
             pipeline.append(stage_filter_high_noise)
         if filter_road:
@@ -1067,6 +1082,7 @@ def create_lpc_pipeline(local_laz_dir: str,
     extent_polygon: str,
     raster_resolution: float = 1.0,
     filter_high_noise: bool = True,
+    hag_nn: float = None,
     buffer_value: float = 5.0) -> tuple[list, list, list, list]:
     """
     Create PDAL pipelines for processing local LiDAR point clouds (LPC) to generate DEM products
@@ -1084,6 +1100,8 @@ def create_lpc_pipeline(local_laz_dir: str,
         Resolution for the output raster files, by default 1.0.
     filter_high_noise : bool, optional
         Remove high noise points (classification==18) from the point cloud before DSM and surface intensity processing. Default is True.
+    hag_nn : float, optional
+        If specified, the height above ground (HAG) will be calculated using all nearest ground classied points, and all points greater than this value will be classified as high noise, by default None.
     buffer_value : float, optional
         Buffer value to apply to the AOI bounds when reading points for rasterization, by default 5.0.
     
@@ -1154,7 +1172,8 @@ def create_lpc_pipeline(local_laz_dir: str,
             reproject=True, # reproject to the output CRS            
             input_crs=input_crs[i],
             output_crs=out_crs,
-            filter_high_noise=filter_high_noise)  
+            filter_high_noise=filter_high_noise,
+            hag_nn=hag_nn)  
         dsm_stage = create_dem_stage(
             dem_filename=str(dsm_file),
             extent=original_extents[i],
@@ -1236,7 +1255,8 @@ def create_lpc_pipeline(local_laz_dir: str,
                 reproject=True, # reproject to the output CRS            
                 input_crs=input_crs[i],
                 output_crs=out_crs,
-                filter_high_noise=filter_high_noise)
+                filter_high_noise=filter_high_noise,
+                hag_nn=hag_nn)
 
         intensity_stage = create_dem_stage(
             dem_filename=str(intensity_file),
@@ -1275,6 +1295,7 @@ def create_ept_3dep_pipeline(extent_polygon: str,
     tile_size_km: float = 1.0,
     buffer_value: float = 5.0,
     filter_high_noise: bool = True,
+    hag_nn: float = None,
     process_specific_3dep_survey: str = None,
     process_all_intersecting_surveys: bool = False) -> tuple[list, list, list, list]:
     """
@@ -1291,6 +1312,8 @@ def create_ept_3dep_pipeline(extent_polygon: str,
         Resolution for the output raster files, by default 1.0.
     filter_high_noise: bool, True
         Remove high noise points (classification==18) from the point cloud before DSM and surface intensity processing. Default is True.
+    hag_nn : float, optional
+        If specified, the height above ground (HAG) will be calculated using all nearest ground classified points, and all points greater than this value will be classified as high noise, by default None.
     tile_size_km : float, optional
         Size of the tiles in kilometers for processing, by default 1.0.
     buffer_value : float, optional
@@ -1350,7 +1373,8 @@ def create_ept_3dep_pipeline(extent_polygon: str,
                 group_filter="first,only",
                 reproject=False,
                 input_crs=POINTCLOUD_CRS[i],
-                filter_high_noise=filter_high_noise)
+                filter_high_noise=filter_high_noise,
+                hag_nn=hag_nn)
 
         dsm_stage = create_dem_stage(
             dem_filename=str(dsm_file),
@@ -1431,7 +1455,8 @@ def create_ept_3dep_pipeline(extent_polygon: str,
                 group_filter="first,only",
                 reproject=False,
                 input_crs=POINTCLOUD_CRS[i],
-                filter_high_noise=filter_high_noise)
+                filter_high_noise=filter_high_noise,
+                hag_nn=hag_nn)
 
         intensity_stage = create_dem_stage(
             dem_filename=str(intensity_file),
