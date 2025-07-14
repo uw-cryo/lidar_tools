@@ -1153,7 +1153,7 @@ def create_lpc_pipeline(local_laz_dir: str,
             group_filter="first,only",
             reproject=True, # reproject to the output CRS            
             input_crs=input_crs[i],
-            output_crs=out_crs
+            output_crs=out_crs,
             filter_high_noise=filter_high_noise)  
         dsm_stage = create_dem_stage(
             dem_filename=str(dsm_file),
@@ -1235,7 +1235,7 @@ def create_lpc_pipeline(local_laz_dir: str,
                 group_filter="first,only",
                 reproject=True, # reproject to the output CRS            
                 input_crs=input_crs[i],
-                output_crs=out_crs
+                output_crs=out_crs,
                 filter_high_noise=filter_high_noise)
 
         intensity_stage = create_dem_stage(

@@ -149,7 +149,7 @@ def create_dsm(
                 buffer_value=5,
                 tile_size_km=ept_tile_size_km,
                 process_specific_3dep_survey=process_specific_3dep_survey,
-                process_all_intersecting_surveys=process_all_intersecting_surveys
+                process_all_intersecting_surveys=process_all_intersecting_surveys,
                 filter_high_noise=filter_high_noise)
         
     if num_process == 1:
