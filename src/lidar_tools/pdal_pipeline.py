@@ -6,7 +6,6 @@ Generate a DSM from input polygon
 import os,sys
 from dask.distributed import Client, LocalCluster
 
-
 os.environ["PROJ_NETWORK"] = (
     "ON"  # Ensure this is 'ON' to get shift grids over the internet
 )
@@ -20,56 +19,55 @@ import numpy as np
 import json
 from pathlib import Path
 import warnings
-
+from typing import Literal, Annotated
 import geopandas as gpd
-from pathlib import Path
-
-
 import requests
+import cyclopts
 
-
-def create_dsm(
+def rasterize(
     extent_polygon: str,
-    output_prefix: str,
-    target_wkt: str = None,
-    local_utm: bool = False,
-    source_wkt: str = None,
-    local_laz_dir: str = None,
-    ept_tile_size_km: float = 1.0,
-    process_specific_3dep_survey: str = None,
-    process_all_intersecting_surveys: bool = False,
+    output: str,
+    input: str = None,
+    src_crs: str = None,
+    dst_crs: str = None,
+    posting: float = 1.0,
+    products: Literal["all","dsm","dtm","intensity"] = "all",
+    threedep_projects: Literal["all","latest"] | str = "all",
+    tile_size: float = 1.0,
     num_process: int = 1,
-    cleanup: bool = True,
-    #output_resolution: float = 1.0, #to be added in a seperate PR
+    use_bbox: Annotated[bool, cyclopts.Parameter(negative="")] = False,
+    cleanup: Annotated[bool, cyclopts.Parameter(negative="")] = False,
 ) -> None:
     """
-    Create a Digital Surface Model (DSM), Digital Terrain Model (DTM) and intensity raster from a given extent and 3DEP point cloud data.
+    Create a Digital Surface Model (DSM), Digital Terrain Model (DTM) and/or Intensity raster from point cloud data.
 
     Parameters
     ----------
-    extent_polygon : str
-        Path to the vector dataset containing a polygon defining the processing extent.
-    output_prefix : str
-        Path for output files, containing directory path and filename prefix (e.g., /tmp/CO_3DEP_ALS).
-    target_wkt : str or None
-        Path to a text file containing WKT2 definition for the output coordinate reference system (CRS). If unspecified, a local UTM CRS will be used.
-    source_wkt : str or None
-        Path to a text file containing WKT2 definition for the coordinate reference system (CRS) of the input point cloud. If unspecified, the CRS defined in the source point cloud metadata will be used.
-    local_utm: bool
-        If true, automatically compute the local UTM zone from the extent polygon for final output products. If false, use the CRS defined in the target_wkt file.
-    local_laz_dir: str
-        Path to directory containing source laz point cloud files. If not specified, the program will process USGS 3DEP EPT tiles.
-    ept_tile_size_km: float
-        The size of the EPT tiles to be processed. This is only used if local_laz_dir is not specified. The default is 1.0 km, which means that the function
-        will process 1 km x 1 km tiles. If you want to process larger tiles, you can specify a larger value.
-    process_specific_3dep_survey: str
-        Only process the specified 3DEP project name. This should be a string that matches the workunit name in the 3DEP metadata.
-    process_all_intersecting_surveys: bool
-        If true, process all available 3DEP EPT point clouds which intersect with the input polygon. If false, and process_specific_3dep_survey is not specified, first 3DEP project encountered will be processed.
-    num_process: int, optional
+    extent_polygon :
+        Path to the vector dataset containing a single polygon that defines the processing extent.
+    output :
+        Path to output directory (e.g., /tmp/CO_3DEP_ALS/).
+    input:
+        Path to directory containing laz point cloud files. If unspecified, the program will use USGS 3DEP EPT data on AWS.
+    dst_crs :
+        Path to file with PROJ-supported CRS definition for the output. If unspecified, a local UTM CRS will be used.
+    src_crs :
+        Path to file with PROJ-supported CRS definition for the coordinate reference system (CRS) of the input point cloud. If unspecified, the CRS defined in the source point cloud metadata will be used.
+    posting :
+        Output raster resolution in units of `dst_crs`.
+    products :
+        Which output products to generate: all products, digital surface model, digital terrain model, or intensity raster.
+    threedep_projects :
+        "all" processes all available 3DEP EPT point clouds which intersect with the input polygon. "first" 3DEP project encountered will be processed. "specific" should be a string that matches the "project" name in the 3DEP metadata.
+    tile_size:
+        The size of rasterized tiles processed from input EPT point clouds in units of `dst_crs`.
+    num_process:
         Number of processes to use for parallel processing. Default is 1, which means all pdal and gdal processing will be done serially
-    cleanup: bool, optional
-        If true, remove the intermediate tif files for the output tiles, leaving only the final mosaicked rasters. Default is True.
+    use_bbox :
+        Use the bounding box of the input polygon for processing instead of the polygon itself.
+    cleanup:
+        Remove the intermediate tif files for the output tiles, leaving only the final mosaicked rasters.
+
     Returns
     -------
     None
@@ -78,7 +76,6 @@ def create_dsm(
     #figure out output projection
     #if user selectes local_utm, then compute the UTM zone from the extent polygon
     #this will supersed the target_wkt option
-   
     if target_wkt is None:
         local_utm = True
 
@@ -89,13 +86,13 @@ def create_dsm(
         identifier_zone = str(epsg_code)[3:]
         if identifier_ns == '326':
             zone = identifier_zone+'N'
-        else:   
+        else:
             zone = identifier_zone+'S'
         outdir = Path(output_prefix).parent
         if not outdir.exists():
             outdir.mkdir(parents=True, exist_ok=True)
         target_wkt =  outdir / f"UTM_{zone}_WGS84_G2139_3D.wkt"
-        path_to_base_utm10_def =  outdir / 'UTM_10.wkt' 
+        path_to_base_utm10_def =  outdir / 'UTM_10.wkt'
         url = "https://raw.githubusercontent.com/uw-cryo/lidar_tools/refs/heads/main/notebooks/UTM_10N_WGS84_G2139_3D.wkt"
         response = requests.get(url)
         if response.status_code == 200:
@@ -106,7 +103,7 @@ def create_dsm(
     # bounds for which pointcloud is created
     gdf = gpd.read_file(extent_polygon)
     _check_polygon_area(gdf)
-    
+
     xmin, ymin, xmax, ymax = gdf.total_bounds
     input_aoi = Polygon.from_bounds(xmin, ymin, xmax, ymax)
     input_crs = gdf.crs.to_wkt()
@@ -122,7 +119,7 @@ def create_dsm(
     print(f"Output extent in target CRS is {final_out_extent}")
     gdf_out = gdf.to_crs(out_crs)
     gdf_out['geometry'] = gdf_out['geometry'].buffer(250) #buffer by 250m
-    gdf_out = gdf_out.to_crs(input_crs) 
+    gdf_out = gdf_out.to_crs(input_crs)
     extent_polygon = extent_polygon = outdir / "judicious_extent_polygon.geojson"
     gdf_out.to_file(extent_polygon, driver='GeoJSON')
 
@@ -135,7 +132,7 @@ def create_dsm(
                                     local_laz_dir=local_laz_dir,
                                     target_wkt=target_wkt,output_prefix=output_prefix,
                                     extent_polygon=extent_polygon,buffer_value=5)
-        
+
     else:
         print("This run will process 3DEP EPT tiles")
         ept_3dep = True
@@ -146,7 +143,7 @@ def create_dsm(
                 tile_size_km=ept_tile_size_km,
                 process_specific_3dep_survey=process_specific_3dep_survey,
                 process_all_intersecting_surveys=process_all_intersecting_surveys)
-        
+
     if num_process == 1:
         print("Running DSM/DTM/intensity pipelines sequentially")
         final_dsm_fn_list = []
@@ -192,9 +189,9 @@ def create_dsm(
             futures = client.map(dsm_functions.execute_pdal_pipeline,intensity_pipeline_list)
             final_intensity_fn_list = client.gather(futures)
             final_intensity_fn_list = [outfn for outfn in final_intensity_fn_list if outfn is not None]
-        
+
     print("****Processing complete for all tiles****")
-    
+
 
     #mosaicking step
     dsm_mos_fn = f"{output_prefix}-DSM_mos-temp.tif"
@@ -229,7 +226,7 @@ def create_dsm(
         else:
             #final_mos_list = []
             output_mos_list = [dsm_mos_fn, dtm_mos_no_fill_fn, dtm_mos_fill_fn, intensity_mos_fn]
-            
+
             dems_list = [final_dsm_fn_list, final_dtm_no_fill_fn_list, final_dtm_fill_fn_list, final_intensity_fn_list]
             n_dems = len(dems_list)
             if n_dems > num_process:
@@ -294,7 +291,7 @@ def create_dsm(
                                         [target_wkt]*n_jobs, [resolution]*n_jobs,
                                         ["bilinear"]*n_jobs,[out_extent]*n_jobs)
                     reproj_results = client.gather(futures)
-    
+
     else:
         print("No reprojection required")
         # rename the temp files to the final output names
@@ -302,8 +299,8 @@ def create_dsm(
         dsm_functions.rename_rasters(dtm_mos_no_fill_fn, dtm_no_fill_reproj)
         dsm_functions.rename_rasters(dtm_mos_fill_fn, dtm_fill_reproj)
         dsm_functions.rename_rasters(intensity_mos_fn, intensity_reproj)
-    
-    print("****Building Gaussian overviews for all rasters****") 
+
+    print("****Building Gaussian overviews for all rasters****")
     if num_process == 1:
         print("Running overview creation sequentially")
         dsm_functions.gdal_add_overview(dsm_reproj)
@@ -311,11 +308,11 @@ def create_dsm(
         dsm_functions.gdal_add_overview(dtm_fill_reproj)
         dsm_functions.gdal_add_overview(intensity_reproj)
     else:
-        
+
         print("Running overview creation in parallel")
         ovr_list = [dsm_reproj, dtm_no_fill_reproj, dtm_fill_reproj, intensity_reproj]
-        ovr_results = []    
-     
+        ovr_results = []
+
         n_dems = len(ovr_list)
         if n_dems > num_process:
             n_jobs = num_process
