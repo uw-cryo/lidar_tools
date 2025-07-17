@@ -43,20 +43,20 @@ def nearest_ceil(x: int | float, a: int | float) -> int | float:
     return np.ceil(x / a) * a
 
 
-def tap_bounds(site_bounds: tuple | list | np.ndarray, res: int | float) -> list:
+def tap_bounds(site_bounds: tuple | list | np.ndarray, res: int | float) -> list[float]:
     """
     calculate target aligned pixel bounds for a given site bounds and resolution.
 
     Parameters
     ----------
-    site_bounds:
+    site_bounds
         array of bounds with the following order [minx, miny, maxx, maxy]
-    res:
+    res
         resolution in same units of site_bounds
 
     Returns
     -------
-    target_aligned_bounds: list[float]
+    target_aligned_bounds
         Adjusted bounds such that extent is a multiple of resolution
 
     Notes
@@ -86,17 +86,17 @@ def return_readers(
 
     Parameters
     ----------
-    input_aoi :
+    input_aoi
         The area of interest as a polygon.
-    pointcloud_resolution :
+    pointcloud_resolution
         The resolution of the point cloud data, by default 1.
-    tile_size_km :
+    tile_size_km
         The size of the EPT processing tiles in kilometers, by default 1.0.
-    buffer_value :
+    buffer_value
         The buffer value in meters to apply to each tile for querying sorrounding tiles, by default 5.
-    return_specific_3dep_survey :
+    return_specific_3dep_survey
         A specific 3DEP survey to return, by default first intersecting survey is returned
-    return_all_interescting_surveys :
+    return_all_intersecting_surveys
         If True, return all intersecting surveys, by default False.
 
     Returns
@@ -207,12 +207,12 @@ def return_crs_local_lpc(lpc: str)  -> CRS:
 
     Parameters
     ----------
-    lpc :
+    lpc
         Path to the local laz file.
 
     Returns
     -------
-    crs :
+    crs
         The coordinate reference system of the point cloud.
     """
     pipeline = pdal.Reader(lpc).pipeline()
@@ -222,6 +222,7 @@ def return_crs_local_lpc(lpc: str)  -> CRS:
     pipeline = None
     return crs
 
+
 def return_lpc_bounds(lpc:str,
                 output_crs: CRS = None) -> list:
     """
@@ -229,9 +230,9 @@ def return_lpc_bounds(lpc:str,
 
     Parameters
     ----------
-    lpc :
+    lpc
         Path to the local laz file.
-    output_crs :
+    output_crs
         The coordinate reference system to transform the bounds to, by default None.
 
     Returns
@@ -280,11 +281,11 @@ def return_local_lpc_reader(lpc: str,
 
     Returns
     -------
-    reader :
+    reader
         The PDAL reader for the point cloud.
-    in_crs :
+    in_crs
         The coordinate reference system of the point cloud.
-    output_bounds :
+    output_bounds
         The bounds of the point cloud in the format [xmin, ymin, xmax, ymax] for DEM gridding.
     """
     #first attempt is that we just use the bounds of the laz file and grid everything within it
@@ -374,40 +375,40 @@ def create_pdal_pipeline(
 
     Parameters
     ----------
-    filter_low_noise :
+    filter_low_noise
         Whether to filter low noise points, by default False.
-    filter_high_noise :
+    filter_high_noise
         Whether to filter high noise points, by default False.
-    filter_road :
+    filter_road
         Whether to filter road points, by default False.
-    reset_classes :
+    reset_classes
         Whether to reset point classifications, by default False.
-    reclassify_ground :
+    reclassify_ground
         Whether to reclassify ground points, by default False.
-    return_only_ground :
+    return_only_ground
         Whether to return only ground points, by default False.
-    percentile_filter :
+    percentile_filter
         Whether to apply a percentile filter, by default False.
-    percentile_threshold :
+    percentile_threshold
         The percentile threshold for the filter, by default 0.95.
-    group_filter :
+    group_filter
         The group filter to apply, by default "first,only" for generating DSM.
-    reproject :
+    reproject
         Whether to reproject the point cloud, by default True.
-    save_pointcloud :
+    save_pointcloud
         Whether to save the point cloud to a file, by default False.
-    pointcloud_file :
+    pointcloud_file
         The filename for the output point cloud, by default 'pointcloud'.
-    input_crs :
+    input_crs
         The input coordinate reference system, by default None.
-    output_crs :
+    output_crs
         The output coordinate reference system, by default None.
-    output_type :
+    output_type
         The output type, either 'las' or 'laz', by default 'laz' if save_pointcloud is True.
 
     Returns
     -------
-    dict :
+    dict
         A PDAL pipeline for processing point clouds.
     """
     # this is probably not needed, revisit

@@ -29,7 +29,7 @@ def rasterize(
     dst_crs: str = None,
     posting: float = 1.0,
     products: Literal["all","dsm","dtm","intensity"] = "all",
-    threedep_projects: Literal["all","latest"] | str = "all",
+    threedep_project: Literal["all","latest"] | str = "latest",
     tile_size: float = 1.0,
     num_process: int = 1,
     cleanup: Annotated[bool, cyclopts.Parameter(negative="")] = False,
@@ -51,7 +51,7 @@ def rasterize(
         Output raster resolution in units of `dst_crs`.
     products
         Which output products to generate: all products, digital surface model, digital terrain model, or intensity raster.
-    threedep_projects :
+    threedep_project :
         "all" processes all available 3DEP EPT point clouds which intersect with the input polygon. "first" 3DEP project encountered will be processed. "specific" should be a string that matches the "project" name in the 3DEP metadata.
     tile_size
         The size of rasterized tiles processed from input EPT point clouds in units of `dst_crs`.
@@ -112,11 +112,22 @@ def rasterize(
     extent_polygon = extent_polygon = outdir / "judicious_extent_polygon.geojson"
     gdf_out.to_file(extent_polygon, driver='GeoJSON')
 
+    # How to handle AOIs intersecting multiple 3DEP projects
+    if threedep_project == 'all':
+        process_all_intersecting_surveys = True
+        process_specific_3dep_survey = None
+    elif threedep_project == 'latest':
+        process_all_intersecting_surveys = False
+        process_specific_3dep_survey = None
+    else:
+        process_all_intersecting_surveys = False
+        process_specific_3dep_survey = threedep_project
+
     # TODO: create EPT for local laz? https://github.com/uw-cryo/lidar_tools/issues/14#issuecomment-3076045321
     if input is None:
         print("Processing 3DEP EPT tiles from AWS")
         ept_3dep = True
-        # TODO: handle new positional arges
+        # TODO: handle new positional args, skip products not requested
         (dsm_pipeline_list, dtm_no_fill_pipeline_list, dtm_fill_pipeline_list,
         intensity_pipeline_list) = dsm_functions.create_ept_3dep_pipeline(
                 extent_polygon,
@@ -141,26 +152,34 @@ def rasterize(
     # TODO: refactor into function
     if num_process == 1:
         print("Running DSM/DTM/intensity pipelines sequentially")
-        final_dsm_fn_list = []
-        final_dtm_no_fill_fn_list = []
-        final_dtm_fill_fn_list = []
-        final_intensity_fn_list = []
-        for i, pipeline in enumerate(dsm_pipeline_list):
-            outfn = dsm_functions.execute_pdal_pipeline(pipeline)
-            if outfn is not None:
-                final_dsm_fn_list.append(outfn)
-        for i, pipeline in enumerate(dtm_no_fill_pipeline_list):
-            outfn = dsm_functions.execute_pdal_pipeline(pipeline)
-            if outfn is not None:
-                final_dtm_no_fill_fn_list.append(outfn)
-        for i, pipeline in enumerate(dtm_fill_pipeline_list):
-            outfn = dsm_functions.execute_pdal_pipeline(pipeline)
-            if outfn is not None:
-                final_dtm_fill_fn_list.append(outfn)
-        for i, pipeline in enumerate(intensity_pipeline_list):
-            outfn = dsm_functions.execute_pdal_pipeline(pipeline)
-            if outfn is not None:
-                final_intensity_fn_list.append(outfn)
+
+        if products == 'all' or products == 'dsm':
+            final_dsm_fn_list = []
+            for i, pipeline in enumerate(dsm_pipeline_list):
+                outfn = dsm_functions.execute_pdal_pipeline(pipeline)
+                if outfn is not None:
+                    final_dsm_fn_list.append(outfn)
+
+        if products == 'all' or products == 'dtm':
+            final_dtm_no_fill_fn_list = []
+            for i, pipeline in enumerate(dtm_no_fill_pipeline_list):
+                outfn = dsm_functions.execute_pdal_pipeline(pipeline)
+                if outfn is not None:
+                    final_dtm_no_fill_fn_list.append(outfn)
+
+            final_dtm_fill_fn_list = []
+            for i, pipeline in enumerate(dtm_fill_pipeline_list):
+                outfn = dsm_functions.execute_pdal_pipeline(pipeline)
+                if outfn is not None:
+                    final_dtm_fill_fn_list.append(outfn)
+
+        if products == 'all' or products == 'intensity':
+            final_intensity_fn_list = []
+            for i, pipeline in enumerate(intensity_pipeline_list):
+                outfn = dsm_functions.execute_pdal_pipeline(pipeline)
+                if outfn is not None:
+                    final_intensity_fn_list.append(outfn)
+
     else:
         print("Running DSM/DTM/intensity pipelines in parallel")
         num_pipelines = len(dsm_pipeline_list)
@@ -168,22 +187,29 @@ def rasterize(
             n_jobs = num_process
         else:
             n_jobs = num_pipelines
-        with Client(threads_per_worker=2, n_workers=n_jobs) as client:
-            futures = client.map(dsm_functions.execute_pdal_pipeline,dsm_pipeline_list)
-            final_dsm_fn_list = client.gather(futures)
-            final_dsm_fn_list = [outfn for outfn in final_dsm_fn_list if outfn is not None]
-        with Client(threads_per_worker=2, n_workers=n_jobs) as client:
-            futures = client.map(dsm_functions.execute_pdal_pipeline,dtm_no_fill_pipeline_list)
-            final_dtm_no_fill_fn_list = client.gather(futures)
-            final_dtm_no_fill_fn_list = [outfn for outfn in final_dtm_no_fill_fn_list if outfn is not None]
-        with Client(threads_per_worker=2, n_workers=n_jobs) as client:
-            futures = client.map(dsm_functions.execute_pdal_pipeline,dtm_fill_pipeline_list)
-            final_dtm_fill_fn_list = client.gather(futures)
-            final_dtm_fill_fn_list = [outfn for outfn in final_dtm_fill_fn_list if outfn is not None]
-        with Client(threads_per_worker=2, n_workers=n_jobs) as client:
-            futures = client.map(dsm_functions.execute_pdal_pipeline,intensity_pipeline_list)
-            final_intensity_fn_list = client.gather(futures)
-            final_intensity_fn_list = [outfn for outfn in final_intensity_fn_list if outfn is not None]
+
+        if products == 'all' or products == 'dsm':
+            with Client(threads_per_worker=2, n_workers=n_jobs) as client:
+                futures = client.map(dsm_functions.execute_pdal_pipeline,dsm_pipeline_list)
+                final_dsm_fn_list = client.gather(futures)
+                final_dsm_fn_list = [outfn for outfn in final_dsm_fn_list if outfn is not None]
+
+        if products == 'all' or products == 'dtm':
+            with Client(threads_per_worker=2, n_workers=n_jobs) as client:
+                futures = client.map(dsm_functions.execute_pdal_pipeline,dtm_no_fill_pipeline_list)
+                final_dtm_no_fill_fn_list = client.gather(futures)
+                final_dtm_no_fill_fn_list = [outfn for outfn in final_dtm_no_fill_fn_list if outfn is not None]
+
+            with Client(threads_per_worker=2, n_workers=n_jobs) as client:
+                futures = client.map(dsm_functions.execute_pdal_pipeline,dtm_fill_pipeline_list)
+                final_dtm_fill_fn_list = client.gather(futures)
+                final_dtm_fill_fn_list = [outfn for outfn in final_dtm_fill_fn_list if outfn is not None]
+
+        if products == 'all' or products == 'intensity':
+            with Client(threads_per_worker=2, n_workers=n_jobs) as client:
+                futures = client.map(dsm_functions.execute_pdal_pipeline,intensity_pipeline_list)
+                final_intensity_fn_list = client.gather(futures)
+                final_intensity_fn_list = [outfn for outfn in final_intensity_fn_list if outfn is not None]
 
     print("****Processing complete for all tiles****")
 
@@ -193,6 +219,7 @@ def rasterize(
     dtm_mos_no_fill_fn = f"{output_prefix}-DTM_no_fill_mos-temp.tif"
     dtm_mos_fill_fn = f"{output_prefix}-DTM_fill_window_size_4_mos-temp.tif"
     intensity_mos_fn = f"{output_prefix}-intensity_mos-temp.tif"
+
     if len(final_dsm_fn_list) > 1:
         print(
             f"Multiple DSM tiles created: {len(final_dsm_fn_list)}. Mosaicking required to create final DSM"
