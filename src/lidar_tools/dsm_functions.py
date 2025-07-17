@@ -961,7 +961,7 @@ def confirm_3dep_vertical(raster_fn: str, bare_diff_tolerance: float = 3.0) -> b
     if np.abs(median_diff) <= bare_diff_tolerance:
         # this means that both COP30 and 3DEP LiDAR DSM are with respect to geoid
         print(
-            "Looks like the 3DEP height estimates are with respect to geiod, will apply vertical datum shift to return heights with respect to ellipsoid"
+            "Looks like the 3DEP height estimates are with respect to geoid, will apply vertical datum shift to return heights with respect to ellipsoid"
         )
         out = True
     else:

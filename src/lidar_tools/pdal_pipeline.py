@@ -151,9 +151,10 @@ def rasterize(
 
     # TODO: refactor into function
     if num_process == 1:
-        print("Running DSM/DTM/intensity pipelines sequentially")
+        print(f"Executing PDAL in serial for products={products}")
 
         if products == 'all' or products == 'dsm':
+            print('Generating DSM tiles')
             final_dsm_fn_list = []
             for i, pipeline in enumerate(dsm_pipeline_list):
                 outfn = dsm_functions.execute_pdal_pipeline(pipeline)
@@ -161,6 +162,7 @@ def rasterize(
                     final_dsm_fn_list.append(outfn)
 
         if products == 'all' or products == 'dtm':
+            print('Generating DTM tiles')
             final_dtm_no_fill_fn_list = []
             for i, pipeline in enumerate(dtm_no_fill_pipeline_list):
                 outfn = dsm_functions.execute_pdal_pipeline(pipeline)
@@ -174,6 +176,7 @@ def rasterize(
                     final_dtm_fill_fn_list.append(outfn)
 
         if products == 'all' or products == 'intensity':
+            print('Generating Intensity tiles')
             final_intensity_fn_list = []
             for i, pipeline in enumerate(intensity_pipeline_list):
                 outfn = dsm_functions.execute_pdal_pipeline(pipeline)
@@ -181,7 +184,7 @@ def rasterize(
                     final_intensity_fn_list.append(outfn)
 
     else:
-        print("Running DSM/DTM/intensity pipelines in parallel")
+        print(f"Executing PDAL in parallel for products={products}")
         num_pipelines = len(dsm_pipeline_list)
         if num_pipelines > num_process:
             n_jobs = num_process
@@ -189,12 +192,14 @@ def rasterize(
             n_jobs = num_pipelines
 
         if products == 'all' or products == 'dsm':
+            print('Generating DSM tiles')
             with Client(threads_per_worker=2, n_workers=n_jobs) as client:
                 futures = client.map(dsm_functions.execute_pdal_pipeline,dsm_pipeline_list)
                 final_dsm_fn_list = client.gather(futures)
                 final_dsm_fn_list = [outfn for outfn in final_dsm_fn_list if outfn is not None]
 
         if products == 'all' or products == 'dtm':
+            print('Generating DTM tiles')
             with Client(threads_per_worker=2, n_workers=n_jobs) as client:
                 futures = client.map(dsm_functions.execute_pdal_pipeline,dtm_no_fill_pipeline_list)
                 final_dtm_no_fill_fn_list = client.gather(futures)
@@ -206,6 +211,7 @@ def rasterize(
                 final_dtm_fill_fn_list = [outfn for outfn in final_dtm_fill_fn_list if outfn is not None]
 
         if products == 'all' or products == 'intensity':
+            print('Generating Intensity tiles')
             with Client(threads_per_worker=2, n_workers=n_jobs) as client:
                 futures = client.map(dsm_functions.execute_pdal_pipeline,intensity_pipeline_list)
                 final_intensity_fn_list = client.gather(futures)
