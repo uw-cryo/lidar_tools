@@ -1,11 +1,10 @@
 """
-Generate a DSM from input polygon
+Generate a DSM,DTM,Intensity rasters from input point clouds
 """
 
 # Needs to happen before importing GDAL/PDAL
-import os,sys
-from dask.distributed import Client, LocalCluster
-
+import os
+from dask.distributed import Client
 
 os.environ["PROJ_NETWORK"] = (
     "ON"  # Ensure this is 'ON' to get shift grids over the internet
@@ -14,193 +13,219 @@ print(f"PROJ_NETWORK is {os.environ['PROJ_NETWORK']}")
 
 from lidar_tools import dsm_functions
 from pyproj import CRS
-from shapely.geometry import Polygon
 from shapely.geometry.polygon import orient as _orient
 import numpy as np
-import json
 from pathlib import Path
 import warnings
-
+from typing import Literal, Annotated
 import geopandas as gpd
-from pathlib import Path
-
-
 import requests
+import cyclopts
 
-
-def create_dsm(
+def rasterize(
     extent_polygon: str,
-    output_prefix: str,
-    target_wkt: str = None,
-    local_utm: bool = False,
-    source_wkt: str = None,
-    local_laz_dir: str = None,
-    ept_tile_size_km: float = 1.0,
-    process_specific_3dep_survey: str = None,
-    process_all_intersecting_surveys: bool = False,
+    output: str,
+    input: str = None,
+    dst_crs: str = None,
+    posting: float = 1.0,
+    products: Literal["all","dsm","dtm","intensity"] = "all",
+    threedep_project: Literal["all","latest"] | str = "latest",
+    tile_size: float = 1.0,
     num_process: int = 1,
-    cleanup: bool = True,
-    #output_resolution: float = 1.0, #to be added in a seperate PR
+    cleanup: Annotated[bool, cyclopts.Parameter(negative="")] = False,
 ) -> None:
     """
-    Create a Digital Surface Model (DSM), Digital Terrain Model (DTM) and intensity raster from a given extent and 3DEP point cloud data.
+    Create a Digital Surface Model (DSM), Digital Terrain Model (DTM) and/or Intensity raster from point cloud data.
 
     Parameters
     ----------
-    extent_polygon : str
-        Path to the vector dataset containing a polygon defining the processing extent.
-    output_prefix : str
-        Path for output files, containing directory path and filename prefix (e.g., /tmp/CO_3DEP_ALS).
-    target_wkt : str or None
-        Path to a text file containing WKT2 definition for the output coordinate reference system (CRS). If unspecified, a local UTM CRS will be used.
-    source_wkt : str or None
-        Path to a text file containing WKT2 definition for the coordinate reference system (CRS) of the input point cloud. If unspecified, the CRS defined in the source point cloud metadata will be used.
-    local_utm: bool
-        If true, automatically compute the local UTM zone from the extent polygon for final output products. If false, use the CRS defined in the target_wkt file.
-    local_laz_dir: str
-        Path to directory containing source laz point cloud files. If not specified, the program will process USGS 3DEP EPT tiles.
-    ept_tile_size_km: float
-        The size of the EPT tiles to be processed. This is only used if local_laz_dir is not specified. The default is 1.0 km, which means that the function
-        will process 1 km x 1 km tiles. If you want to process larger tiles, you can specify a larger value.
-    process_specific_3dep_survey: str
-        Only process the specified 3DEP project name. This should be a string that matches the workunit name in the 3DEP metadata.
-    process_all_intersecting_surveys: bool
-        If true, process all available 3DEP EPT point clouds which intersect with the input polygon. If false, and process_specific_3dep_survey is not specified, first 3DEP project encountered will be processed.
-    num_process: int, optional
-        Number of processes to use for parallel processing. Default is 1, which means all pdal and gdal processing will be done serially
-    cleanup: bool, optional
-        If true, remove the intermediate tif files for the output tiles, leaving only the final mosaicked rasters. Default is True.
+    extent_polygon
+        Path to the vector dataset containing a single polygon that defines the processing extent.
+    output
+        Path to output directory (e.g., /tmp/CO_3DEP_ALS/).
+    input
+        Path to directory containing laz point cloud files. If unspecified, the program will use USGS 3DEP EPT data on AWS.
+    dst_crs
+        Path to file with PROJ-supported CRS definition for the output. If unspecified, a local UTM CRS will be used.
+    posting
+        Output raster resolution in units of `dst_crs`.
+    products
+        Which output products to generate: all products, digital surface model, digital terrain model, or intensity raster.
+    threedep_project :
+        "all" processes all available 3DEP EPT point clouds which intersect with the input polygon. "first" 3DEP project encountered will be processed. "specific" should be a string that matches the "project" name in the 3DEP metadata.
+    tile_size
+        The size of rasterized tiles processed from input EPT point clouds in units of `dst_crs`.
+    num_process
+        Number of processes to use for parallel processing. Default is 1, which means all PDAL and GDAL processing will be done serially
+    cleanup
+        Remove the intermediate tif files for the output tiles, leaving only the final mosaicked rasters.
+
     Returns
     -------
     None
 
     """
-    #figure out output projection
-    #if user selectes local_utm, then compute the UTM zone from the extent polygon
-    #this will supersed the target_wkt option
-   
-    if target_wkt is None:
-        local_utm = True
+    # Parse input polygon CRS and check that area isn't too large
+    gdf = gpd.read_file(extent_polygon)
+    _check_polygon_area(gdf)
+    input_crs = gdf.crs.to_wkt()
 
-    if local_utm:
+    # TODO: raise if output directory already exists?
+    outdir = Path(output)
+    if not outdir.is_dir():
+        outdir.mkdir(parents=True, exist_ok=True)
+    # Set output filename prefix based on input polygon name
+    output_prefix = outdir / Path(extent_polygon).stem
+
+    # Create custom 3D CRS UTM WKT2 with WGS84 G2139 datum realization
+    if dst_crs is None:
         gdf = gpd.read_file(extent_polygon)
         epsg_code = gdf.estimate_utm_crs().to_epsg()
         identifier_ns = str(epsg_code)[:3]
         identifier_zone = str(epsg_code)[3:]
         if identifier_ns == '326':
             zone = identifier_zone+'N'
-        else:   
+        else:
             zone = identifier_zone+'S'
-        outdir = Path(output_prefix).parent
-        if not outdir.exists():
-            outdir.mkdir(parents=True, exist_ok=True)
         target_wkt =  outdir / f"UTM_{zone}_WGS84_G2139_3D.wkt"
-        path_to_base_utm10_def =  outdir / 'UTM_10.wkt' 
+        path_to_base_utm10_def =  outdir / 'UTM_10.wkt'
+        # TODO: replace with local copy of file
         url = "https://raw.githubusercontent.com/uw-cryo/lidar_tools/refs/heads/main/notebooks/UTM_10N_WGS84_G2139_3D.wkt"
         response = requests.get(url)
         if response.status_code == 200:
             with open(path_to_base_utm10_def, "w") as f:
                 f.write(response.text)
-        target_wkt = dsm_functions.write_local_utm_3DCRS_G2139(path_to_base_utm10_def,zone=zone,outfn=target_wkt)
+        dst_crs = dsm_functions.write_local_utm_3DCRS_G2139(path_to_base_utm10_def, zone=zone, outfn=target_wkt)
 
-    # bounds for which pointcloud is created
-    gdf = gpd.read_file(extent_polygon)
-    _check_polygon_area(gdf)
-    
-    xmin, ymin, xmax, ymax = gdf.total_bounds
-    input_aoi = Polygon.from_bounds(xmin, ymin, xmax, ymax)
-    input_crs = gdf.crs.to_wkt()
-
-    # specify the output CRS of DEMs
-    with open(target_wkt, "r") as f:
+    # Configure output raster extents and posting based on input polygon
+    with open(dst_crs, "r") as f:
         contents = f.read()
-    out_crs = CRS.from_string(contents)
-    #print(out_crs)
+        out_crs = CRS.from_string(contents)
     out_extent = gdf.to_crs(out_crs).total_bounds
-    final_out_extent = dsm_functions.tap_bounds(out_extent,res=1) #this will change soon
-    #print(f"Output extent in target CRS {out_crs} is {out_extent}")
+    final_out_extent = dsm_functions.tap_bounds(out_extent, res=posting)
+    # TODO: simplify and use tempfile (https://github.com/uw-cryo/lidar_tools/pull/25#discussion_r2177660328)
+    # TODO: here and elsewhere use logging instead of prints
     print(f"Output extent in target CRS is {final_out_extent}")
     gdf_out = gdf.to_crs(out_crs)
-    gdf_out['geometry'] = gdf_out['geometry'].buffer(250) #buffer by 250m
-    gdf_out = gdf_out.to_crs(input_crs) 
+    gdf_out['geometry'] = gdf_out['geometry'].buffer(250) # NOTE: assumes meters
+    gdf_out = gdf_out.to_crs(input_crs)
     extent_polygon = extent_polygon = outdir / "judicious_extent_polygon.geojson"
     gdf_out.to_file(extent_polygon, driver='GeoJSON')
 
+    # How to handle AOIs intersecting multiple 3DEP projects
+    if threedep_project == 'all':
+        process_all_intersecting_surveys = True
+        process_specific_3dep_survey = None
+    elif threedep_project == 'latest':
+        process_all_intersecting_surveys = False
+        process_specific_3dep_survey = None
+    else:
+        process_all_intersecting_surveys = False
+        process_specific_3dep_survey = threedep_project
 
-    if local_laz_dir:
-        print(f"This run will process laz files from {local_laz_dir}")
+    # TODO: create EPT for local laz? https://github.com/uw-cryo/lidar_tools/issues/14#issuecomment-3076045321
+    if input is None:
+        print("Processing 3DEP EPT tiles from AWS")
+        ept_3dep = True
+        # TODO: handle new positional args, skip products not requested
+        (dsm_pipeline_list, dtm_no_fill_pipeline_list, dtm_fill_pipeline_list,
+        intensity_pipeline_list) = dsm_functions.create_ept_3dep_pipeline(
+                extent_polygon,
+                dst_crs,
+                output_prefix,
+                buffer_value=5,
+                tile_size_km=tile_size,
+                # TODO: handle new 3dep project keyword here
+                process_specific_3dep_survey=process_specific_3dep_survey,
+                process_all_intersecting_surveys=process_all_intersecting_surveys)
+    else:
+        print(f"Processing local laz files from {input}")
         ept_3dep = False
         (dsm_pipeline_list, dtm_no_fill_pipeline_list, dtm_fill_pipeline_list,
         intensity_pipeline_list) = dsm_functions.create_lpc_pipeline(
-                                    local_laz_dir=local_laz_dir,
-                                    target_wkt=target_wkt,output_prefix=output_prefix,
-                                    extent_polygon=extent_polygon,buffer_value=5)
-        
-    else:
-        print("This run will process 3DEP EPT tiles")
-        ept_3dep = True
-        (dsm_pipeline_list, dtm_no_fill_pipeline_list, dtm_fill_pipeline_list,
-        intensity_pipeline_list) = dsm_functions.create_ept_3dep_pipeline(
-                extent_polygon, target_wkt, output_prefix,
-                buffer_value=5,
-                tile_size_km=ept_tile_size_km,
-                process_specific_3dep_survey=process_specific_3dep_survey,
-                process_all_intersecting_surveys=process_all_intersecting_surveys)
-        
+                                    local_laz_dir=input,
+                                    target_wkt=dst_crs,
+                                    output_prefix=output_prefix,
+                                    extent_polygon=extent_polygon,
+                                    buffer_value=5)
+
+    # TODO: refactor into function
     if num_process == 1:
-        print("Running DSM/DTM/intensity pipelines sequentially")
-        final_dsm_fn_list = []
-        final_dtm_no_fill_fn_list = []
-        final_dtm_fill_fn_list = []
-        final_intensity_fn_list = []
-        for i, pipeline in enumerate(dsm_pipeline_list):
-            outfn = dsm_functions.execute_pdal_pipeline(pipeline)
-            if outfn is not None:
-                final_dsm_fn_list.append(outfn)
-        for i, pipeline in enumerate(dtm_no_fill_pipeline_list):
-            outfn = dsm_functions.execute_pdal_pipeline(pipeline)
-            if outfn is not None:
-                final_dtm_no_fill_fn_list.append(outfn)
-        for i, pipeline in enumerate(dtm_fill_pipeline_list):
-            outfn = dsm_functions.execute_pdal_pipeline(pipeline)
-            if outfn is not None:
-                final_dtm_fill_fn_list.append(outfn)
-        for i, pipeline in enumerate(intensity_pipeline_list):
-            outfn = dsm_functions.execute_pdal_pipeline(pipeline)
-            if outfn is not None:
-                final_intensity_fn_list.append(outfn)
+        print(f"Executing PDAL in serial for products={products}")
+
+        if products == 'all' or products == 'dsm':
+            print('Generating DSM tiles')
+            final_dsm_fn_list = []
+            for i, pipeline in enumerate(dsm_pipeline_list):
+                outfn = dsm_functions.execute_pdal_pipeline(pipeline)
+                if outfn is not None:
+                    final_dsm_fn_list.append(outfn)
+
+        if products == 'all' or products == 'dtm':
+            print('Generating DTM tiles')
+            final_dtm_no_fill_fn_list = []
+            for i, pipeline in enumerate(dtm_no_fill_pipeline_list):
+                outfn = dsm_functions.execute_pdal_pipeline(pipeline)
+                if outfn is not None:
+                    final_dtm_no_fill_fn_list.append(outfn)
+
+            final_dtm_fill_fn_list = []
+            for i, pipeline in enumerate(dtm_fill_pipeline_list):
+                outfn = dsm_functions.execute_pdal_pipeline(pipeline)
+                if outfn is not None:
+                    final_dtm_fill_fn_list.append(outfn)
+
+        if products == 'all' or products == 'intensity':
+            print('Generating Intensity tiles')
+            final_intensity_fn_list = []
+            for i, pipeline in enumerate(intensity_pipeline_list):
+                outfn = dsm_functions.execute_pdal_pipeline(pipeline)
+                if outfn is not None:
+                    final_intensity_fn_list.append(outfn)
+
     else:
-        print("Running DSM/DTM/intensity pipelines in parallel")
+        print(f"Executing PDAL in parallel for products={products}")
         num_pipelines = len(dsm_pipeline_list)
         if num_pipelines > num_process:
             n_jobs = num_process
         else:
             n_jobs = num_pipelines
-        with Client(threads_per_worker=2, n_workers=n_jobs) as client:
-            futures = client.map(dsm_functions.execute_pdal_pipeline,dsm_pipeline_list)
-            final_dsm_fn_list = client.gather(futures)
-            final_dsm_fn_list = [outfn for outfn in final_dsm_fn_list if outfn is not None]
-        with Client(threads_per_worker=2, n_workers=n_jobs) as client:
-            futures = client.map(dsm_functions.execute_pdal_pipeline,dtm_no_fill_pipeline_list)
-            final_dtm_no_fill_fn_list = client.gather(futures)
-            final_dtm_no_fill_fn_list = [outfn for outfn in final_dtm_no_fill_fn_list if outfn is not None]
-        with Client(threads_per_worker=2, n_workers=n_jobs) as client:
-            futures = client.map(dsm_functions.execute_pdal_pipeline,dtm_fill_pipeline_list)
-            final_dtm_fill_fn_list = client.gather(futures)
-            final_dtm_fill_fn_list = [outfn for outfn in final_dtm_fill_fn_list if outfn is not None]
-        with Client(threads_per_worker=2, n_workers=n_jobs) as client:
-            futures = client.map(dsm_functions.execute_pdal_pipeline,intensity_pipeline_list)
-            final_intensity_fn_list = client.gather(futures)
-            final_intensity_fn_list = [outfn for outfn in final_intensity_fn_list if outfn is not None]
-        
+
+        if products == 'all' or products == 'dsm':
+            print('Generating DSM tiles')
+            with Client(threads_per_worker=2, n_workers=n_jobs) as client:
+                futures = client.map(dsm_functions.execute_pdal_pipeline,dsm_pipeline_list)
+                final_dsm_fn_list = client.gather(futures)
+                final_dsm_fn_list = [outfn for outfn in final_dsm_fn_list if outfn is not None]
+
+        if products == 'all' or products == 'dtm':
+            print('Generating DTM tiles')
+            with Client(threads_per_worker=2, n_workers=n_jobs) as client:
+                futures = client.map(dsm_functions.execute_pdal_pipeline,dtm_no_fill_pipeline_list)
+                final_dtm_no_fill_fn_list = client.gather(futures)
+                final_dtm_no_fill_fn_list = [outfn for outfn in final_dtm_no_fill_fn_list if outfn is not None]
+
+            with Client(threads_per_worker=2, n_workers=n_jobs) as client:
+                futures = client.map(dsm_functions.execute_pdal_pipeline,dtm_fill_pipeline_list)
+                final_dtm_fill_fn_list = client.gather(futures)
+                final_dtm_fill_fn_list = [outfn for outfn in final_dtm_fill_fn_list if outfn is not None]
+
+        if products == 'all' or products == 'intensity':
+            print('Generating Intensity tiles')
+            with Client(threads_per_worker=2, n_workers=n_jobs) as client:
+                futures = client.map(dsm_functions.execute_pdal_pipeline,intensity_pipeline_list)
+                final_intensity_fn_list = client.gather(futures)
+                final_intensity_fn_list = [outfn for outfn in final_intensity_fn_list if outfn is not None]
+
     print("****Processing complete for all tiles****")
-    
+
 
     #mosaicking step
     dsm_mos_fn = f"{output_prefix}-DSM_mos-temp.tif"
     dtm_mos_no_fill_fn = f"{output_prefix}-DTM_no_fill_mos-temp.tif"
     dtm_mos_fill_fn = f"{output_prefix}-DTM_fill_window_size_4_mos-temp.tif"
     intensity_mos_fn = f"{output_prefix}-intensity_mos-temp.tif"
+
     if len(final_dsm_fn_list) > 1:
         print(
             f"Multiple DSM tiles created: {len(final_dsm_fn_list)}. Mosaicking required to create final DSM"
@@ -229,7 +254,7 @@ def create_dsm(
         else:
             #final_mos_list = []
             output_mos_list = [dsm_mos_fn, dtm_mos_no_fill_fn, dtm_mos_fill_fn, intensity_mos_fn]
-            
+
             dems_list = [final_dsm_fn_list, final_dtm_no_fill_fn_list, final_dtm_fill_fn_list, final_intensity_fn_list]
             n_dems = len(dems_list)
             if n_dems > num_process:
@@ -280,7 +305,6 @@ def create_dsm(
                                         resampling_alogrithm="bilinear" , out_extent=out_extent)
             else:
                 print("Running reprojection in parallel")
-                resolution = 1.0 #hardcoded for now, will change tomorrow
                 reproj_fn_list = [dsm_reproj, dtm_no_fill_reproj, dtm_fill_reproj, intensity_reproj]
                 dem_list = [dsm_mos_fn, dtm_mos_no_fill_fn, dtm_mos_fill_fn, intensity_mos_fn]
                 n_dems = len(dem_list)
@@ -291,10 +315,10 @@ def create_dsm(
                 with Client(n_workers=n_jobs) as client:
                     futures = client.map(dsm_functions.gdal_warp,
                                         dem_list,reproj_fn_list,[src_srs]*n_jobs,
-                                        [target_wkt]*n_jobs, [resolution]*n_jobs,
+                                        [target_wkt]*n_jobs, [posting]*n_jobs,
                                         ["bilinear"]*n_jobs,[out_extent]*n_jobs)
                     reproj_results = client.gather(futures)
-    
+
     else:
         print("No reprojection required")
         # rename the temp files to the final output names
@@ -302,8 +326,8 @@ def create_dsm(
         dsm_functions.rename_rasters(dtm_mos_no_fill_fn, dtm_no_fill_reproj)
         dsm_functions.rename_rasters(dtm_mos_fill_fn, dtm_fill_reproj)
         dsm_functions.rename_rasters(intensity_mos_fn, intensity_reproj)
-    
-    print("****Building Gaussian overviews for all rasters****") 
+
+    print("****Building Gaussian overviews for all rasters****")
     if num_process == 1:
         print("Running overview creation sequentially")
         dsm_functions.gdal_add_overview(dsm_reproj)
@@ -311,11 +335,11 @@ def create_dsm(
         dsm_functions.gdal_add_overview(dtm_fill_reproj)
         dsm_functions.gdal_add_overview(intensity_reproj)
     else:
-        
+
         print("Running overview creation in parallel")
         ovr_list = [dsm_reproj, dtm_no_fill_reproj, dtm_fill_reproj, intensity_reproj]
-        ovr_results = []    
-     
+        ovr_results = []
+
         n_dems = len(ovr_list)
         if n_dems > num_process:
             n_jobs = num_process
@@ -357,7 +381,7 @@ def geographic_area(gf: gpd.GeoDataFrame) -> gpd.pd.Series:
 
     Parameters
     ----------
-    gf : gpd.GeoDataFrame
+    gf
         A GeoDataFrame containing the geometries for which the area needs to be calculated. The GeoDataFrame
         must have a geographic coordinate system (latitude and longitude).
 
@@ -372,7 +396,7 @@ def geographic_area(gf: gpd.GeoDataFrame) -> gpd.pd.Series:
         If the GeoDataFrame does not have a geographic coordinate system.
 
     Notes
-    ----------
+    -----
     - Only works for areas up to 1/2 of globe (https://github.com/pyproj4/pyproj/issues/1401)
     """
     if gf.crs is None or not gf.crs.is_geographic:
@@ -399,6 +423,16 @@ def geographic_area(gf: gpd.GeoDataFrame) -> gpd.pd.Series:
 def _check_polygon_area(gf: gpd.GeoDataFrame) -> None:
     """
     Issue a warning if area is bigger than threshold
+
+    Parameters
+    ----------
+    gf
+        A GeoDataFrame containing a polygon
+
+    Returns
+    -------
+    None
+        Just prints a warning if area is too large
     """
     warn_if_larger_than = 100_000  # km^2
 
