@@ -1,9 +1,12 @@
 # lidar_tools
 
 [![Actions Status][actions-badge]][actions-link]
+[![DOI][zenodo-badge]][zenodo-link]
 
 [actions-badge]:            https://github.com/uw-cryo/lidar_tools/workflows/Tests/badge.svg
 [actions-link]:             https://github.com/uw-cryo/lidar_tools/actions
+[zenodo-badge]:             https://zenodo.org/badge/916689740.svg
+[zenodo-link]:              https://doi.org/10.5281/zenodo.15970111
 
 Tools to process airborne and satellite LiDAR point clouds
 
@@ -14,12 +17,12 @@ Tools to process airborne and satellite LiDAR point clouds
 * [3DEP AWS Public Dataset](https://registry.opendata.aws/usgs-lidar/)
 * Locally available, classified LiDAR point clouds in las/laz format
 
-  
+
 ## Quickstart
 
-`lidar_tools` is a collection of CLI scripts to process LiDAR data. It should be installed into a stand-alone environment to ensure that scripts execute as intended. We recommend using [pixi](https://pixi.sh/latest/) to install a locked software environment. 
+`lidar_tools` is a collection of CLI scripts to process LiDAR data. It should be installed into a stand-alone environment to ensure that scripts execute as intended. We recommend using [pixi](https://pixi.sh/latest/) to install a locked software environment.
 
-We recommend using [pixi](https://pixi.sh/latest/) package manager to install a locked software environment for executing code in this repository. 
+We recommend using [pixi](https://pixi.sh/latest/) package manager to install a locked software environment for executing code in this repository.
 
 Pixi can be installed following instructions from [here](https://pixi.sh/latest/#installation). For Linux and Mac OSX machines, pixi can be installed from the terminal by running the below command:
 
@@ -33,7 +36,7 @@ pixi install --frozen
 ### Example workflow
 Run our example workflow to create DSM, DTM without interpolation, DTM with interpolation, and LiDAR Intensity for 3DEP data over a part of University of Washington Campus in Seattle, WA!
 ```
-# NOTE: takes ~5 min to run 
+# NOTE: takes ~5 min to run
 pixi run example
 ```
 
@@ -50,7 +53,7 @@ pdal_pipeline create-dsm --help
 ```console
 Usage: pdal_pipeline create-dsm [ARGS] [OPTIONS]
 
-Create a Digital Surface Model (DSM), Digital Terrain Model (DTM) and intensity raster from a given extent and 
+Create a Digital Surface Model (DSM), Digital Terrain Model (DTM) and intensity raster from a given extent and
 3DEP point cloud data.
 
 ╭─ Parameters ──────────────────────────────────────────────────────────────────────────────────────────────────╮
@@ -101,7 +104,7 @@ Or run the test sweet
 pixi run test
 ```
 
-Run linting and formatting 
+Run linting and formatting
 ```
 pixi run lint
 pixi run typecheck
