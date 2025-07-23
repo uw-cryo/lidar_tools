@@ -53,8 +53,8 @@ example = "lidar-tools rasterize --extent-polygon notebooks/uw-campus.geojson --
 test = "pytest"
 typecheck = "mypy src/lidar_tools/"
 lint = "ruff check src/lidar_tools/ --fix ; ruff format"
-test-example-parallel = "time lidar-tools --extent-polygon notebooks/uw-campus.geojson --output /tmp/test/uwcampus-parallel --dst-crs notebooks/UTM_10N_WGS84_G2139_3D.wkt --num-process 5"
-test-example-cleanup = "time lidar-tools --extent-polygon notebooks/uw-campus.geojson --output /tmp/test/uwcampus-cleanup --num-process 5"
+test-example-parallel = "time lidar-tools rasterize --num-process 5 --extent-polygon notebooks/uw-campus.geojson --output /tmp/test/uwcampus-parallel --dst-crs notebooks/UTM_10N_WGS84_G2139_3D.wkt"
+test-example-cleanup = "time lidar-tools rasterize --cleanup --extent-polygon notebooks/uw-campus.geojson --output /tmp/test/uwcampus-cleanup --num-process 5"
 
 
 [tool.pixi.dependencies]

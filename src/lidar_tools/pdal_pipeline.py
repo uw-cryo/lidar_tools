@@ -9,7 +9,7 @@ from dask.distributed import Client
 os.environ["PROJ_NETWORK"] = (
     "ON"  # Ensure this is 'ON' to get shift grids over the internet
 )
-print(f"PROJ_NETWORK is {os.environ['PROJ_NETWORK']}")
+#print(f"PROJ_NETWORK is {os.environ['PROJ_NETWORK']}")
 
 from lidar_tools import dsm_functions
 from pyproj import CRS
@@ -293,15 +293,15 @@ def rasterize(
             if num_process == 1:
                 print("Running reprojection sequentially")
                 print("Reprojecting DSM raster")
-                dsm_functions.gdal_warp(dsm_mos_fn, dsm_reproj, src_srs, target_wkt,
+                dsm_functions.gdal_warp(dsm_mos_fn, dsm_reproj, src_srs, dst_crs,
                                         resampling_alogrithm="bilinear",out_extent=out_extent)
                 print("Reprojectiong DTM raster")
-                dsm_functions.gdal_warp(dtm_mos_no_fill_fn, dtm_no_fill_reproj, src_srs, target_wkt,
+                dsm_functions.gdal_warp(dtm_mos_no_fill_fn, dtm_no_fill_reproj, src_srs, dst_crs,
                                         resampling_alogrithm="bilinear", out_extent=out_extent)
-                dsm_functions.gdal_warp(dtm_mos_fill_fn, dtm_fill_reproj, src_srs, target_wkt,
+                dsm_functions.gdal_warp(dtm_mos_fill_fn, dtm_fill_reproj, src_srs, dst_crs,
                                         resampling_alogrithm="bilinear", out_extent=out_extent)
                 print("Reprojecting intensity raster")
-                dsm_functions.gdal_warp(intensity_mos_fn, intensity_reproj, src_srs, target_wkt,
+                dsm_functions.gdal_warp(intensity_mos_fn, intensity_reproj, src_srs, dst_crs,
                                         resampling_alogrithm="bilinear" , out_extent=out_extent)
             else:
                 print("Running reprojection in parallel")
@@ -315,7 +315,7 @@ def rasterize(
                 with Client(n_workers=n_jobs) as client:
                     futures = client.map(dsm_functions.gdal_warp,
                                         dem_list,reproj_fn_list,[src_srs]*n_jobs,
-                                        [target_wkt]*n_jobs, [posting]*n_jobs,
+                                        [dst_crs]*n_jobs, [posting]*n_jobs,
                                         ["bilinear"]*n_jobs,[out_extent]*n_jobs)
                     reproj_results = client.gather(futures)
 
