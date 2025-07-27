@@ -1,35 +1,32 @@
 """
-Generate DSMs from 3DEP EPT data
+Function library for lidar_tools
 """
+
+import os
+import copy
+import json
+from pathlib import Path
+import glob
+import requests
 
 from rasterio.warp import transform_bounds
 from pyproj import CRS
 import shapely
 from shapely.geometry import Polygon
 import geopandas as gpd
-import requests
 import rasterio
 import xarray as xr
 import rioxarray
 import pystac_client
 import numpy as np
-import json
-from pathlib import Path
-import glob
 # import planetary_computer
 from osgeo import gdal, gdalconst
 import pdal
 import odc.stac
-import os
-import copy
-
 
 gdal.UseExceptions()
 
 odc.stac.configure_rio(cloud_defaults=True)
-
-
-
 
 def nearest_floor(x: int | float, a: int | float) -> int | float:
     """
@@ -112,25 +109,40 @@ def return_readers(
     list of list
         A list of original extents for each reader.
     """
-    # since we will query the USGS 3DEP EPT data which are in EPSG:3857, 
-    # and our logic is to divide in X x X km tile grid, 
-    # we need to convert the input AOI to EPSG:3857 which is in metric units
-    input_aoi = input_aoi.to_crs(CRS.from_epsg(3857))
-    xmin, ymin, xmax, ymax = input_aoi.total_bounds
+
+    #Load EPT polygon boundary index for user AOI
+    #Reproject to EPSG:3857 for subsequent intersection operations
+    ept_index_gdf = gpd.read_file(
+        "https://raw.githubusercontent.com/hobuinc/usgs-lidar/master/boundaries/resources.geojson",
+        mask=input_aoi
+    ).to_crs(CRS.from_epsg(3857))
+    # Can read from copy stored in the github repo if necessary 
+    # ept_index_gdf = gpd.read_file('../data/shapefiles/resources.geojson')
+
+    print(f"Identified {len(ept_index_gdf)} 3DEP projects intersecting user AOI:")
+    print(ept_index_gdf['name'], end="\n\n")
+
+    # Reproject input AOI to EPSG:3857 (units of meters)
+    input_aoi_3857 = input_aoi.to_crs(CRS.from_epsg(3857))
+
+    # Prepare grid of tiles for the AOI bbox
+    xmin, ymin, xmax, ymax = input_aoi_3857.total_bounds
     x_step = tile_size_km * 1000  # convert km to m
     y_step = tile_size_km * 1000  # convert km to m
     n_cols = int(np.ceil((xmax - xmin) / x_step))
     n_rows = int(np.ceil((ymax - ymin) / y_step))
-
-    crs_4326 = CRS.from_epsg(4326)
+    n_tiles = n_cols * n_rows
 
     readers = []
     pointcloud_input_crs = []
     original_extents = []
     extents = []
 
+    print(f"Preparing PDAL pipelines for each {tile_size_km} x {tile_size_km} km tile: {n_cols} cols x {n_rows} rows, {n_tiles} total tiles\n")
+
     for i in range(n_cols):
         for j in range(n_rows):
+            tilenum = (i*n_rows) + (j+1)
             aoi = shapely.geometry.Polygon.from_bounds(
                 xmin + i * x_step,
                 ymin + j * y_step,
@@ -138,40 +150,28 @@ def return_readers(
                 min(ymin + (j + 1) * y_step, ymax),  # Ensure the tile does not exceed AOI bounds
             )
 
-            src_bounds_transformed = transform_bounds(CRS.from_epsg(3857), crs_4326, *aoi.bounds) # convert to epsg:4326 for intersection with EPT bounds check
-            aoi_4326 = shapely.geometry.Polygon.from_bounds(*src_bounds_transformed)
-
-            
-            #src_bounds_transformed_3857 = transform_bounds(
-            #    src_crs, CRS.from_epsg(3857), *aoi.bounds
-            #) # this is not needed, as we already have the aoi bounds in 3857
             # create tap bounds for the tile
-            src_bounds_transformed_3857 = tap_bounds(
-                aoi.bounds, pointcloud_resolution
-            )
-            aoi_3857 = shapely.geometry.Polygon.from_bounds(
-                *src_bounds_transformed_3857
-            )
+            src_bounds_transformed_3857 = tap_bounds(aoi.bounds, pointcloud_resolution)
+            aoi_3857 = shapely.geometry.Polygon.from_bounds(*src_bounds_transformed_3857)
             #print(aoi.bounds, src_bounds_transformed_3857)
-            if buffer_value:
-                #print(f"The tile polygon will be buffered by {buffer_value:.2f} m")
-                # buffer the tile polygon by the buffer value
-                aoi_3857 = aoi_3857.buffer(buffer_value)
-                # now create tap bounds for the buffered tile
-                aoi_3857_bounds = tap_bounds(aoi_3857.bounds, pointcloud_resolution)
-                # now convert the buffered tile to a polygon
-                aoi_3857 = shapely.geometry.Polygon.from_bounds(*aoi_3857_bounds)
-                #print("The buffered tile bound is: ", aoi_3857.bounds)
 
-            gdf = gpd.read_file(
-                "https://raw.githubusercontent.com/hobuinc/usgs-lidar/master/boundaries/resources.geojson"
-            ).set_crs(4326)
-            # in the eventuality that the above URL breaks, we store a local copy
-            # gdf = gpd.read_file('../data/shapefiles/resources.geojson').set_crs(4326)
-            if return_specific_3dep_survey is not None:
-                return_all_intersecting_surveys = True
-            for _, row in gdf.iterrows():
-                if row.geometry.intersects(aoi_4326):
+            #Check to make sure the tile intersects the original user AOI, not just the bbox envelope
+            if (input_aoi_3857.geometry.intersects(aoi_3857)).any():
+                print(f"Column {i+1} of {n_cols}, Row {j+1} of {n_rows}, Tile {tilenum} of {n_tiles}")
+                if buffer_value:
+                    #print(f"The tile polygon will be buffered by {buffer_value:.2f} m")
+                    # buffer the tile polygon by the buffer value
+                    aoi_3857 = aoi_3857.buffer(buffer_value)
+                    # now create tap bounds for the buffered tile
+                    aoi_3857_bounds = tap_bounds(aoi_3857.bounds, pointcloud_resolution)
+                    # now convert the buffered tile to a polygon
+                    aoi_3857 = shapely.geometry.Polygon.from_bounds(*aoi_3857_bounds)
+                    #print("The buffered tile bound is: ", aoi_3857.bounds)
+
+                if return_specific_3dep_survey is not None:
+                    return_all_intersecting_surveys = True
+                #Better to do intersection with the geodataframe first, rather than looping through each polygon
+                for _, row in (ept_index_gdf[ept_index_gdf.intersects(aoi)]).iterrows():
                     usgs_dataset_name = row["name"]
                     if return_specific_3dep_survey is not None:
                         if usgs_dataset_name == return_specific_3dep_survey:
@@ -181,7 +181,7 @@ def return_readers(
                     else:
                         add_survey = True
                     if add_survey:
-                        print("Dataset being used: ", usgs_dataset_name)
+                        print(f"3DEP Dataset(s): {usgs_dataset_name}")
                         url = f"https://s3-us-west-2.amazonaws.com/usgs-lidar-public/{usgs_dataset_name}/ept.json"
                         reader = {
                             "type": "readers.ept",
@@ -1121,6 +1121,10 @@ def create_lpc_pipeline(local_laz_dir: str,
     output_path = Path(output_path)
     output_path.mkdir(exist_ok=True)
     print(f"Number of readers: {len(readers)}")
+
+    #Determine number of digits for unique pipeline id with zero padding
+    ndigits = len(str(len(readers)))
+
     with open(target_wkt, "r") as f:
             contents = f.read()
     out_crs = CRS.from_string(contents)
@@ -1132,11 +1136,11 @@ def create_lpc_pipeline(local_laz_dir: str,
     
     for i, reader in enumerate(readers):
         #print(f"Processing reader #{i}")
-        dsm_file = output_path / f"{prefix}_dsm_tile_aoi_{str(i).zfill(4)}.tif"
-        dtm_file_no_z_fill = output_path / f"{prefix}_dtm_tile_aoi_no_fill{str(i).zfill(4)}.tif"
-        dtm_file_z_fill = output_path / f"{prefix}_dtm_tile_aoi_fill4_{str(i).zfill(4)}.tif"
+        dsm_file = output_path / f"{prefix}_dsm_tile_aoi_{str(i).zfill(ndigits)}.tif"
+        dtm_file_no_z_fill = output_path / f"{prefix}_dtm_tile_aoi_no_fill{str(i).zfill(ndigits)}.tif"
+        dtm_file_z_fill = output_path / f"{prefix}_dtm_tile_aoi_fill4_{str(i).zfill(ndigits)}.tif"
         intensity_file = (
-            output_path / f"{prefix}_intensity_tile_aoi_{str(i).zfill(4)}.tif"
+            output_path / f"{prefix}_intensity_tile_aoi_{str(i).zfill(ndigits)}.tif"
         )
         
         pipeline_dsm = copy.deepcopy(reader)
@@ -1160,7 +1164,7 @@ def create_lpc_pipeline(local_laz_dir: str,
         pipeline_dsm["pipeline"] += pdal_pipeline_dsm
         pipeline_dsm["pipeline"] += dsm_stage
         # Save a copy of each pipeline
-        dsm_pipeline_config_fn = output_path / f"pipeline_dsm_{str(i).zfill(4)}.json"
+        dsm_pipeline_config_fn = output_path / f"pipeline_dsm_{str(i).zfill(ndigits)}.json"
         with open(dsm_pipeline_config_fn, "w") as f:
             f.write(json.dumps(pipeline_dsm))
         dsm_pipeline_list.append(dsm_pipeline_config_fn)
@@ -1191,7 +1195,7 @@ def create_lpc_pipeline(local_laz_dir: str,
         pipeline_dtm_no_z_fill["pipeline"] += dtm_stage
 
         #Save a copy of each pipeline
-        dtm_pipeline_config_fn = output_path / f"pipeline_dtm_no_fill_{str(i).zfill(4)}.json"
+        dtm_pipeline_config_fn = output_path / f"pipeline_dtm_no_fill_{str(i).zfill(ndigits)}.json"
         with open(dtm_pipeline_config_fn, "w") as f:
             f.write(json.dumps(pipeline_dtm_no_z_fill))
         
@@ -1215,7 +1219,7 @@ def create_lpc_pipeline(local_laz_dir: str,
         pipeline_dtm_z_fill["pipeline"] += dtm_stage
 
         #Save a copy of each pipeline
-        dtm_pipeline_config_fn = output_path / f"pipeline_dtm_fill_{str(i).zfill(4)}.json"
+        dtm_pipeline_config_fn = output_path / f"pipeline_dtm_fill_{str(i).zfill(ndigits)}.json"
         with open(dtm_pipeline_config_fn, "w") as f:
             f.write(json.dumps(pipeline_dtm_z_fill))
 
@@ -1244,7 +1248,7 @@ def create_lpc_pipeline(local_laz_dir: str,
 
         # Save a copy of each pipeline
         intensity_pipeline_config_fn = (
-            output_path / f"pipeline_intensity_{str(i).zfill(4)}.json"
+            output_path / f"pipeline_intensity_{str(i).zfill(ndigits)}.json"
         )
         with open(intensity_pipeline_config_fn, "w") as f:
             f.write(json.dumps(pipeline_intensity))
@@ -1270,26 +1274,28 @@ def create_ept_3dep_pipeline(extent_polygon: str,
     buffer_value: float = 5.0,
     process_specific_3dep_survey: str = None,
     process_all_intersecting_surveys: bool = False) -> tuple[list, list, list, list]:
+
     """
     Create PDAL pipelines for processing 3DEP EPT point clouds to generate DEM products.
+
     Parameters
     ----------
-    extent_polygon : str        
-        Path to a polygon file defining the area of interest (AOI) for processing.
-    target_wkt : str
-        Path to the target WKT file defining the output coordinate reference system.    
+    extent_polygon : str
+        Path to the vector dataset containing a polygon defining the processing extent.
     output_prefix : str
-        Prefix for the output files, which will be used to create output file names.
+        Path for output files, containing directory path and filename prefix (e.g., /tmp/CO_3DEP_ALS).
+    target_wkt : str or None
+        Path to a text file containing WKT2 definition for the output coordinate reference system (CRS). If unspecified, a local UTM CRS will be used.
     raster_resolution : float, optional
-        Resolution for the output raster files, by default 1.0.
+        Output grid cell size, default 1.0 m.
     tile_size_km : float, optional
-        Size of the tiles in kilometers for processing, by default 1.0.
+        Processing tile dimension (square), default 1.0 km.
     buffer_value : float, optional
-        Buffer value to apply to the AOI bounds when reading points for rasterization, by default 5.0.
-    process_specific_3dep_survey : str, optional
-        Specific 3DEP survey to process. If None, and process_all_intersecting_surveys is False, the first intersecting survey will be processed
-    process_all_intersecting_surveys : bool, optional
-        If True, all intersecting 3DEP surveys will be processed. Default is False.
+        Buffer distance to expand bounds when reading points ensuring sufficient tile collar for window operations, default 5.0 m.
+    process_specific_3dep_survey: str
+        Only process the specified 3DEP project name. This should be a string that matches the workunit name in the 3DEP metadata.
+    process_all_intersecting_surveys: bool
+        If true, process all available 3DEP EPT point clouds which intersect with the input polygon. If false, and process_specific_3dep_survey is not specified, first 3DEP project encountered will be processed.
     Returns
     -------
     dsm_pipeline_list : list
@@ -1301,6 +1307,9 @@ def create_ept_3dep_pipeline(extent_polygon: str,
     intensity_pipeline_list : list
         List of paths to PDAL pipeline configuration files for generating intensity rasters.
     """ 
+    
+    #Load the user-specified polygon dataset
+    #Should check that this is EPSG:4326 (default for geojson)
     gdf = gpd.read_file(extent_polygon)
     
     # specify the output CRS of DEMs
@@ -1322,6 +1331,10 @@ def create_ept_3dep_pipeline(extent_polygon: str,
     output_path.mkdir(exist_ok=True)
     
     print(f"Number of readers: {len(readers)}")
+
+    #Determine number of digits for unique pipeline id with zero padding
+    ndigits = len(str(len(readers)))
+
     dsm_pipeline_list = []
     dtm_pipeline_no_fill_list = []
     dtm_pipeline_fill_list = []
@@ -1329,11 +1342,11 @@ def create_ept_3dep_pipeline(extent_polygon: str,
 
     for i, reader in enumerate(readers):
         #print(f"Processing reader #{i}")
-        dsm_file = output_path / f"{prefix}_dsm_tile_aoi_{str(i).zfill(4)}.tif"
-        dtm_file_no_z_fill = output_path / f"{prefix}_dtm_tile_aoi_no_fill{str(i).zfill(4)}.tif"
-        dtm_file_z_fill = output_path / f"{prefix}_dtm_tile_aoi_fill4_{str(i).zfill(4)}.tif"
+        dsm_file = output_path / f"{prefix}_dsm_tile_aoi_{str(i).zfill(ndigits)}.tif"
+        dtm_file_no_z_fill = output_path / f"{prefix}_dtm_tile_aoi_no_fill{str(i).zfill(ndigits)}.tif"
+        dtm_file_z_fill = output_path / f"{prefix}_dtm_tile_aoi_fill4_{str(i).zfill(ndigits)}.tif"
         intensity_file = (
-            output_path / f"{prefix}_intensity_tile_aoi_{str(i).zfill(4)}.tif"
+            output_path / f"{prefix}_intensity_tile_aoi_{str(i).zfill(ndigits)}.tif"
         )
         ## DSM creation block
         pipeline_dsm = {"pipeline": [reader]}
@@ -1353,7 +1366,7 @@ def create_ept_3dep_pipeline(extent_polygon: str,
         pipeline_dsm["pipeline"] += dsm_stage
 
         # Save a copy of each pipeline
-        dsm_pipeline_config_fn = output_path / f"pipeline_dsm_{str(i).zfill(4)}.json"
+        dsm_pipeline_config_fn = output_path / f"pipeline_dsm_{str(i).zfill(ndigits)}.json"
         with open(dsm_pipeline_config_fn, "w") as f:
             f.write(json.dumps(pipeline_dsm))
         dsm_pipeline_list.append(dsm_pipeline_config_fn)
@@ -1382,10 +1395,8 @@ def create_ept_3dep_pipeline(extent_polygon: str,
         pipeline_dtm_no_z_fill["pipeline"] += pdal_pipeline_dtm_no_z_fill
         pipeline_dtm_no_z_fill["pipeline"] += dtm_stage
         
-
-        
         #Save a copy of each pipeline
-        dtm_pipeline_config_fn = output_path / f"pipeline_dtm_no_fill_{str(i).zfill(4)}.json"
+        dtm_pipeline_config_fn = output_path / f"pipeline_dtm_no_fill_{str(i).zfill(ndigits)}.json"
         with open(dtm_pipeline_config_fn, "w") as f:
             f.write(json.dumps(pipeline_dtm_no_z_fill))
         dtm_pipeline_no_fill_list.append(dtm_pipeline_config_fn)
@@ -1406,7 +1417,7 @@ def create_ept_3dep_pipeline(extent_polygon: str,
         pipeline_dtm_z_fill["pipeline"] += dtm_stage
 
         #Save a copy of each pipeline
-        dtm_pipeline_config_fn = output_path / f"pipeline_dtm_fill_{str(i).zfill(4)}.json"
+        dtm_pipeline_config_fn = output_path / f"pipeline_dtm_fill_{str(i).zfill(ndigits)}.json"
         with open(dtm_pipeline_config_fn, "w") as f:
             f.write(json.dumps(pipeline_dtm_z_fill))
         dtm_pipeline_fill_list.append(dtm_pipeline_config_fn)
@@ -1436,7 +1447,7 @@ def create_ept_3dep_pipeline(extent_polygon: str,
 
         # Save a copy of each pipeline
         intensity_pipeline_config_fn = (
-            output_path / f"pipeline_intensity_{str(i).zfill(4)}.json"
+            output_path / f"pipeline_intensity_{str(i).zfill(ndigits)}.json"
         )
         with open(intensity_pipeline_config_fn, "w") as f:
             f.write(json.dumps(pipeline_intensity))
@@ -1508,8 +1519,8 @@ def execute_pdal_pipeline(pdal_pipeline_path:str) -> str:
     #modified by Scott Henderson
     Parameters
     ----------
-    pdal_pipeline_path : json
-        The path to the PDAL pipeline
+    pdal_pipeline_path : str
+        The path to the PDAL pipeline json
     Returns
     -------
     output_fn : str
@@ -1522,6 +1533,7 @@ def execute_pdal_pipeline(pdal_pipeline_path:str) -> str:
             outfile = pipelineDict['pipeline'][-1]['filename']
 
             pipeline = pdal.Pipeline(json.dumps(pipelineDict))
+            print(f"Executing {pdal_pipeline_path}")
             pipeline.execute()
             pipeline = None
         if check_raster_validity(outfile):

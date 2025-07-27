@@ -1,32 +1,29 @@
 """
-Generate a DSM from input polygon
+Create and exectute PDAL pipelines
 """
 
-# Needs to happen before importing GDAL/PDAL
-import os,sys
-from dask.distributed import Client, LocalCluster
-
-
-os.environ["PROJ_NETWORK"] = (
-    "ON"  # Ensure this is 'ON' to get shift grids over the internet
-)
-print(f"PROJ_NETWORK is {os.environ['PROJ_NETWORK']}")
-
-from lidar_tools import dsm_functions
-from pyproj import CRS
-from shapely.geometry import Polygon
-from shapely.geometry.polygon import orient as _orient
-import numpy as np
+import os
+import sys
 import json
 from pathlib import Path
 import warnings
-
-import geopandas as gpd
-from pathlib import Path
-
-
 import requests
 
+from dask.distributed import Client, LocalCluster
+
+# Needs to happen before importing GDAL/PDAL
+os.environ["PROJ_NETWORK"] = (
+    "ON"  # Ensure this is 'ON' to get shift grids over the internet
+)
+#print(f"PROJ_NETWORK is {os.environ['PROJ_NETWORK']}")
+
+import numpy as np
+import geopandas as gpd
+from pyproj import CRS
+from shapely.geometry import Polygon
+from shapely.geometry.polygon import orient as _orient
+
+from lidar_tools import dsm_functions
 
 def create_dsm(
     extent_polygon: str,
@@ -119,8 +116,10 @@ def create_dsm(
     out_extent = gdf.to_crs(out_crs).total_bounds
     final_out_extent = dsm_functions.tap_bounds(out_extent,res=1) #this will change soon
     #print(f"Output extent in target CRS {out_crs} is {out_extent}")
-    print(f"Output extent in target CRS is {final_out_extent}")
+    #print(f"Output extent in target CRS is {final_out_extent}")
+
     gdf_out = gdf.to_crs(out_crs)
+    #This is problematic if output CRS is units of decimal degrees, instead of meters
     gdf_out['geometry'] = gdf_out['geometry'].buffer(250) #buffer by 250m
     gdf_out = gdf_out.to_crs(input_crs) 
     extent_polygon = extent_polygon = outdir / "judicious_extent_polygon.geojson"
@@ -128,7 +127,7 @@ def create_dsm(
 
 
     if local_laz_dir:
-        print(f"This run will process laz files from {local_laz_dir}")
+        print(f"Processing local las/laz files from {local_laz_dir}")
         ept_3dep = False
         (dsm_pipeline_list, dtm_no_fill_pipeline_list, dtm_fill_pipeline_list,
         intensity_pipeline_list) = dsm_functions.create_lpc_pipeline(
@@ -137,7 +136,7 @@ def create_dsm(
                                     extent_polygon=extent_polygon,buffer_value=5)
         
     else:
-        print("This run will process 3DEP EPT tiles")
+        print("Processing 3DEP EPT tiles")
         ept_3dep = True
         (dsm_pipeline_list, dtm_no_fill_pipeline_list, dtm_fill_pipeline_list,
         intensity_pipeline_list) = dsm_functions.create_ept_3dep_pipeline(
@@ -400,7 +399,7 @@ def _check_polygon_area(gf: gpd.GeoDataFrame) -> None:
     """
     Issue a warning if area is bigger than threshold
     """
-    warn_if_larger_than = 100_000  # km^2
+    warn_if_larger_than = 10000  # km^2
 
     # Fast track if projected and units are meters:
     if gf.crs.is_projected and gf.crs.axis_info[0].unit_name == "metre":
@@ -408,10 +407,9 @@ def _check_polygon_area(gf: gpd.GeoDataFrame) -> None:
     else:
         area = geographic_area(gf.to_crs("EPSG:4326")) * 1e-6
 
-    print(area.values[0])
     if area.to_numpy() >= warn_if_larger_than:
-        msg = f"Very large AOI ({area.values[0]:e} km^2) requested, processing may be slow or crash. Recommended AOI size is <{warn_if_larger_than:e} km^2"
+        msg = f"Very large AOI area ({area.values[0]:.2f} km^2). Recommended using an area of less than {warn_if_larger_than} km^2"
         warnings.warn(msg)
     else:
-        print(f"Starting Processing of {area.values[0]:e} km^2 AOI")
+        print(f"Starting Processing of {area.values[0]:.2f} km^2 AOI")
 
