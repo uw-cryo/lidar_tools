@@ -1049,7 +1049,7 @@ def gdal_warp(
         targetAlignedPixels=True,
         # use directly output format as COG when gaussian overview resampling is implemented upstream in GDAL
         outputBounds=out_extent,
-        creationOptions=["COMPRESS=LZW", "TILED=YES", "COPY_SRC_OVERVIEWS=YES","BIGTIFF=IF_NEEDED"],
+        creationOptions=["COMPRESS=LZW", "TILED=YES", "COPY_SRC_OVERVIEWS=YES","BIGTIFF=IF_SAFER"],
         callback=gdal.TermProgress_nocb,
     )
     ds.Close()
