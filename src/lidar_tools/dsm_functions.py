@@ -259,6 +259,7 @@ def return_lpc_bounds(lpc:str,
     return output_bounds
 
 def return_local_lpc_reader(lpc: str,
+                input_crs: CRS = None,
                 output_crs: CRS = None,
                 pointcloud_resolution: float = 1.0,
                 aoi_bounds: gpd.GeoDataFrame  = None,
@@ -270,6 +271,9 @@ def return_local_lpc_reader(lpc: str,
     ----------
     lpc : str   
         Path to the local laz file.
+    input_crs : pyproj.CRS, optional
+        The coordinate reference system of the input point cloud, by default None.
+        If not provided, we will try to read the CRS from the input point cloud.
     output_crs : pyproj.CRS, optional
         The coordinate reference system to transform the bounds to, by default None.
     aoi_bounds : gpd.GeoDataFrame, optional
@@ -290,7 +294,10 @@ def return_local_lpc_reader(lpc: str,
 
     #get the bounds of the laz file
     bounds = return_lpc_bounds(lpc)
-    in_crs = return_crs_local_lpc(lpc)
+    if input_crs is not None:
+        in_crs = input_crs
+    else:
+        in_crs = return_crs_local_lpc(lpc)
     
     #adding function to utilize
     #if the bounds are not in the output crs, transform them
@@ -301,6 +308,7 @@ def return_local_lpc_reader(lpc: str,
         geometry=[lpc_polygon], crs=in_crs, index=[0]
     )
     aoi_bounds_in_crs = aoi_bounds.to_crs(in_crs)
+
     
     reader = {
         "type": "readers.las",
@@ -362,6 +370,7 @@ def create_pdal_pipeline(
     percentile_threshold: float = 0.95,
     group_filter: str = "first,only",
     reproject: bool = True,
+    proj_pipeline: str = None,
     save_pointcloud: bool = False,
     pointcloud_file: str = "pointcloud",
     input_crs: CRS = None,
@@ -394,6 +403,8 @@ def create_pdal_pipeline(
         The group filter to apply, by default "first,only" for generating DSM.
     reproject : bool, optional
         Whether to reproject the point cloud, by default True.
+    proj_pipeline : str, optional
+        A PROJ pipeline string to be used for reprojection of the point cloud. If specified, this will be used in combination with the input_crs and output_crs options.
     save_pointcloud : bool, optional
         Whether to save the point cloud to a file, by default False.
     pointcloud_file : str, optional
@@ -496,8 +507,12 @@ def create_pdal_pipeline(
         pipeline.append(stage_return_ground)
     
     if (output_crs is not None) & (input_crs is not None) and (reproject is True):
-        stage_reprojection = {"type": "filters.reprojection", "out_srs": str(output_crs)}
-        stage_reprojection["in_srs"] = str(input_crs)
+        if proj_pipeline is not None:
+            stage_reprojection = {"type": "filters.projpipeline", "out_srs": str(output_crs)}
+            stage_reprojection["coord_op"] = proj_pipeline
+        else:
+            stage_reprojection = {"type": "filters.reprojection", "out_srs": str(output_crs)}
+            stage_reprojection["in_srs"] = str(input_crs)
         pipeline.append(stage_reprojection)
 
         
@@ -1080,6 +1095,8 @@ def create_lpc_pipeline(local_laz_dir: str,
     target_wkt: str,
     output_prefix: str,
     extent_polygon: str,
+    input_crs: str = None,
+    proj_pipeline: str = None,
     raster_resolution: float = 1.0,
     filter_high_noise: bool = True,
     hag_nn: float = None,
@@ -1096,6 +1113,12 @@ def create_lpc_pipeline(local_laz_dir: str,
         Prefix for the output files, which will be used to create output file names.
     extent_polygon : str
         Path to a polygon file defining the area of interest (AOI) for processing.
+    input_crs : str, optional
+        The input coordinate reference system in WKT format, by default None.
+        If None, the CRS will be read from the point cloud files.
+    proj_pipeline : str, optional
+        PROJ pipeline string for reprojection, by default None.
+        If None, the reprojection will be handled by GDAL using the input and output CRS.
     raster_resolution : float, optional
         Resolution for the output raster files, by default 1.0.
     filter_high_noise : bool, optional
@@ -1121,7 +1144,7 @@ def create_lpc_pipeline(local_laz_dir: str,
     print(f"Number of local laz files: {len(lpc_files)}")
     readers = []
     original_extents = []
-    input_crs = []
+    input_crs_list = []
     aoi_bounds = gpd.read_file(extent_polygon)
     if isinstance(target_wkt,Path):
         target_wkt = str(target_wkt)
@@ -1131,12 +1154,13 @@ def create_lpc_pipeline(local_laz_dir: str,
         output_crs=target_wkt,
         pointcloud_resolution=1.0,
         aoi_bounds=aoi_bounds,
-        buffer_value=buffer_value)
+        buffer_value=buffer_value,
+        input_crs=input_crs)
         #print(reader)
         if reader is not None:
             readers.append(reader)
             original_extents.append(out_extent)
-            input_crs.append(in_crs)
+            input_crs_list.append(in_crs)
     
     output_path = Path(output_prefix).parent
     prefix = Path(output_prefix).name
@@ -1169,8 +1193,9 @@ def create_lpc_pipeline(local_laz_dir: str,
         pipeline_dsm = reader 
         pdal_pipeline_dsm = create_pdal_pipeline(
             group_filter="first,only",
-            reproject=True, # reproject to the output CRS            
-            input_crs=input_crs[i],
+            reproject=True, # reproject to the output CRS 
+            proj_pipeline=proj_pipeline,           
+            input_crs=input_crs_list[i],
             output_crs=out_crs,
             filter_high_noise=filter_high_noise,
             hag_nn=hag_nn)  
@@ -1198,8 +1223,9 @@ def create_lpc_pipeline(local_laz_dir: str,
         pdal_pipeline_dtm_no_z_fill = create_pdal_pipeline(
                 return_only_ground=True,
                 group_filter=None,
-                reproject=True, # reproject to the output CRS            
-                input_crs=input_crs[i],
+                reproject=True, # reproject to the output CRS 
+                proj_pipeline=proj_pipeline,           
+                input_crs=input_crs_list[i],
                 output_crs=out_crs)  
         
         pdal_pipeline_dtm_z_fill = pdal_pipeline_dtm_no_z_fill.copy() #for later
@@ -1253,8 +1279,9 @@ def create_lpc_pipeline(local_laz_dir: str,
         pdal_pipeline_surface_intensity = create_pdal_pipeline(
                 group_filter="first,only",
                 reproject=True, # reproject to the output CRS            
-                input_crs=input_crs[i],
+                input_crs=input_crs_list[i],
                 output_crs=out_crs,
+                proj_pipeline=proj_pipeline,
                 filter_high_noise=filter_high_noise,
                 hag_nn=hag_nn)
 

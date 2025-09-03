@@ -34,6 +34,7 @@ def create_dsm(
     target_wkt: str = None,
     local_utm: bool = False,
     source_wkt: str = None,
+    proj_pipeline: str = None,
     filter_high_noise: bool = True,
     hag_nn: float = None,
     local_laz_dir: str = None,
@@ -57,6 +58,8 @@ def create_dsm(
         Path to a text file containing WKT2 definition for the output coordinate reference system (CRS). If unspecified, a local UTM CRS will be used.
     source_wkt : str or None
         Path to a text file containing WKT2 definition for the coordinate reference system (CRS) of the input point cloud. If unspecified, the CRS defined in the source point cloud metadata will be used.
+    proj_pipeline: str or None
+        A PROJ pipeline string to be used for reprojection of the point cloud. If specified, this will be used in combination with the target_wkt option.
     local_utm: bool
         If true, automatically compute the local UTM zone from the extent polygon for final output products. If false, use the CRS defined in the target_wkt file.
     filter_high_noise: bool
@@ -139,6 +142,7 @@ def create_dsm(
         (dsm_pipeline_list, dtm_no_fill_pipeline_list, dtm_fill_pipeline_list,
         intensity_pipeline_list) = dsm_functions.create_lpc_pipeline(
                                     local_laz_dir=local_laz_dir,
+                                    proj_pipeline = proj_pipeline,
                                     target_wkt=target_wkt,output_prefix=output_prefix,
                                     extent_polygon=extent_polygon,buffer_value=5,
                                     filter_high_noise=filter_high_noise,hag_nn=hag_nn)
