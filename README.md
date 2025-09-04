@@ -1,6 +1,7 @@
 # lidar_tools
 
 [![Actions Status][actions-badge]][actions-link]
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.15970112.svg)](https://doi.org/10.5281/zenodo.15970112)
 
 [actions-badge]:            https://github.com/uw-cryo/lidar_tools/workflows/Tests/badge.svg
 [actions-link]:             https://github.com/uw-cryo/lidar_tools/actions
