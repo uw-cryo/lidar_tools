@@ -6,10 +6,12 @@
 [actions-badge]:            https://github.com/uw-cryo/lidar_tools/workflows/Tests/badge.svg
 [actions-link]:             https://github.com/uw-cryo/lidar_tools/actions
 
-Tools to process airborne and satellite LiDAR point clouds
+Tools to process airborne and satellite LiDAR point clouds.
+
+![UW Campus preview](https://github.com/user-attachments/assets/08798588-17d3-4e4b-b2c4-ee70a1ec0a7b)
+*Sample of standard products created with lidar_tools `pdal_pipeline` utility for University of Washington Campus AOI, using publicly-available USGS 3DEP lidar point clouds ([WA_KingCounty_2021_B21](https://prd-tnm.s3.amazonaws.com/StagedProducts/Elevation/metadata/WA_KingCounty_2021_B21/WA_KingCo_1_2021/reports/WA_KingCounty_2021_B21_Lidar_Delivery_1_Technical_Data_Report.pdf))*
 
 **Warning!** This package is under active development and may change rapidly!
-
 
 ## Datasets Supported
 * [3DEP AWS Public Dataset](https://registry.opendata.aws/usgs-lidar/)
