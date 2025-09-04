@@ -334,7 +334,8 @@ def create_dsm(
         else:
             n_jobs = n_dems
         with Client(n_workers=n_jobs) as client:
-            futures = client.map(dsm_functions.gdal_add_overview, ovr_list)
+            cog_compliance = [True]*n_jobs
+            futures = client.map(dsm_functions.gdal_add_overview, ovr_list,cog_compliance)
             final_mos_list = client.gather(futures)
     if cleanup:
         print("User selected to remove intermediate tile outputs")

@@ -1071,14 +1071,18 @@ def gdal_warp(
 
 
 
-def gdal_add_overview(raster_fn: str) -> None:
+def gdal_add_overview(raster_fn: str,ensure_cog=True) -> None:
     """
-    Add overviews to a raster file using GDAL.
+    Add Gaussian overviews to a raster file using GDAL.
+    Converts the raster to a COG, 
+        as adding Gaussian overviews added to tiled and compressed rasters does not automatically ensure COG compliance
 
     Parameters
     ----------
     raster_fn : str
         Path to the raster file.
+    ensure_cog : bool, optional
+        Whether to ensure the output raster is a COG, by default True.
     """
     print(f"Adding Gaussian overviews to {raster_fn}")
     with gdal.OpenEx(raster_fn, 1, open_options=["IGNORE_COG_LAYOUT_BREAK=YES"]) as ds:
@@ -1086,6 +1090,17 @@ def gdal_add_overview(raster_fn: str) -> None:
         ds.BuildOverviews(
             "GAUSS", [2, 4, 8, 16, 32, 64], callback=gdal.TermProgress_nocb
         )
+    
+    if ensure_cog:
+        temp_fn =Path(raster_fn).parent / f"{Path(raster_fn).stem}-cop-temp.tif"
+        gdal.Translate(
+            str(temp_fn),
+            raster_fn,
+            format="COG",
+            creationOptions=["OVERVIEWS=FORCE_USE_EXISTING"],
+            callback=gdal.TermProgress_nocb,
+        )
+        rename_rasters(str(temp_fn), raster_fn)
 
 
 
@@ -1615,3 +1630,4 @@ def rename_rasters(raster_fn,out_fn) -> None:
     if Path(xml_fn).exists():
         out_fn_xml = out_fn + ".aux.xml"
         Path(xml_fn).rename(out_fn_xml)
+
