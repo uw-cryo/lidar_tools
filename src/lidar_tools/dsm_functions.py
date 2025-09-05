@@ -1097,7 +1097,7 @@ def gdal_add_overview(raster_fn: str,ensure_cog=True) -> None:
             str(temp_fn),
             raster_fn,
             format="COG",
-            creationOptions=["OVERVIEWS=FORCE_USE_EXISTING"],
+            creationOptions=["OVERVIEWS=FORCE_USE_EXISTING","BIGTIFF=IF_SAFER"],
             callback=gdal.TermProgress_nocb,
         )
         rename_rasters(str(temp_fn), raster_fn)
