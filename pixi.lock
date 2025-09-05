@@ -9087,27 +9087,7 @@ packages:
 - pypi: ./
   name: lidar-tools
   version: 0.1.0
-  sha256: 89888623a916a16d48417d47f698821517c3ef53ae50e3cdc9c767d56b11b3dd
-  requires_dist:
-  - cyclopts
-  - gdal
-  - geopandas
-  - ipykernel
-  - planetary-computer
-  - pdal
-  - pystac-client
-  - rioxarray
-  - requests
-  - scipy
-  - odc-stac
-  - mypy>=1.15.0,<2 ; extra == 'dev'
-  - pytest>=8.3.5,<9 ; extra == 'dev'
-  - ruff>=0.11.10,<0.13 ; extra == 'dev'
-  requires_python: '>=3.10'
-- pypi: ./
-  name: lidar-tools
-  version: 0.1.0
-  sha256: 89888623a916a16d48417d47f698821517c3ef53ae50e3cdc9c767d56b11b3dd
+  sha256: 1756e23169251e400cc303ededa50413281072be678076c06db32e8398356f4e
   requires_dist:
   - cyclopts
   - gdal

@@ -73,12 +73,9 @@ dask = ">=2025.7.0,<2026"
 distributed = ">=2025.7.0,<2026"
 
 [tool.pixi.pypi-dependencies]
-lidar_tools = { path = ".", editable = false }
+lidar_tools = { path = ".", editable = true }
 
 [tool.pixi.feature.dev.dependencies]
 mypy = "*"
 pytest = "*"
 ruff = "*"
-
-[tool.pixi.feature.dev.pypi-dependencies]
-lidar_tools = { path = ".", editable = true }
