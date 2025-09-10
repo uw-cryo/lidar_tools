@@ -1041,6 +1041,7 @@ def gdal_warp(
     }
     resampling_alg = resampling_mapping[resampling_alogrithm]
 
+    gdal.SetConfigOption("GDAL_NUM_THREADS", "ALL_CPUS")
     ds = gdal.Warp(
         dst_fn,
         src_fn,
@@ -1054,8 +1055,10 @@ def gdal_warp(
         # use directly output format as COG when gaussian overview resampling is implemented upstream in GDAL
         outputBounds=out_extent,
         creationOptions=["COMPRESS=LZW", "TILED=YES", "COPY_SRC_OVERVIEWS=YES","BIGTIFF=IF_NEEDED"],
+        multithread=True,
         callback=gdal.TermProgress_nocb,
     )
+    gdal.SetConfigOption("GDAL_NUM_THREADS", None)
     ds.Close()
 
 
@@ -1078,7 +1081,7 @@ def gdal_add_overview(raster_fn: str) -> None:
     with gdal.OpenEx(raster_fn, 1, open_options=["IGNORE_COG_LAYOUT_BREAK=YES"]) as ds:
         gdal.SetConfigOption("COMPRESS_OVERVIEW", "DEFLATE")
         ds.BuildOverviews(
-            "GAUSS", [2, 4, 8, 16, 32, 64], callback=gdal.TermProgress_nocb
+            "GAUSS", [2, 4, 8, 16],callback=gdal.TermProgress_nocb
         )
 
 
@@ -1583,7 +1586,6 @@ def rename_rasters(raster_fn,out_fn) -> None:
     None
     This function does not return anything, it renames the raster file and its associated XML file
     """
-    raster_path = Path(raster_fn)
     xml_fn = raster_fn + ".aux.xml"
     Path(raster_fn).rename(out_fn)
     if Path(xml_fn).exists():
