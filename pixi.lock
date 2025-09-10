@@ -9087,7 +9087,7 @@ packages:
 - pypi: ./
   name: lidar-tools
   version: 0.1.0
-  sha256: 1756e23169251e400cc303ededa50413281072be678076c06db32e8398356f4e
+  sha256: b5365dcf8becf5daf733bec4426d060d0d0833a7cc1c827025f729258eb5e584
   requires_dist:
   - cyclopts
   - gdal

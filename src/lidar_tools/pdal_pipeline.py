@@ -23,14 +23,15 @@ import requests
 import cyclopts
 
 def rasterize(
-    extent_polygon: str,
-    output: str,
-    input: str = None,
+    geometry: str,
+    input: str = 'EPT_AWS',
+    output: str = '/tmp/lidar-tools-output',
+    #src_crs: str = None, # TODO: add override of source CRS
     dst_crs: str = None,
-    posting: float = 1.0,
+    resolution: float = 1.0,
     products: Literal["all","dsm","dtm","intensity"] = "all",
     threedep_project: Literal["all","latest"] | str = "latest",
-    tile_size: float = 1.0,
+    output_tile_size: float = 1.0,
     num_process: int = 1,
     cleanup: Annotated[bool, cyclopts.Parameter(negative="")] = False,
 ) -> None:
@@ -39,22 +40,24 @@ def rasterize(
 
     Parameters
     ----------
-    extent_polygon
+    geometry
         Path to the vector dataset containing a single polygon that defines the processing extent.
-    output
-        Path to output directory (e.g., /tmp/CO_3DEP_ALS/).
     input
-        Path to directory containing laz point cloud files. If unspecified, the program will use USGS 3DEP EPT data on AWS.
+        Path to directory containing laz point cloud files. Default 'EPT_AWS' uses USGS 3DEP EPT data on AWS.
+    output
+        Path to output directory. Default = '/tmp/lidar-tools-output/'
     dst_crs
         Path to file with PROJ-supported CRS definition for the output. If unspecified, a local UTM CRS will be used.
-    posting
-        Output raster resolution in units of `dst_crs`.
+    resolution
+        Square output raster posting in units of `dst_crs`.
     products
         Which output products to generate: all products, digital surface model, digital terrain model, or intensity raster.
-    threedep_project :
-        "all" processes all available 3DEP EPT point clouds which intersect with the input polygon. "first" 3DEP project encountered will be processed. "specific" should be a string that matches the "project" name in the 3DEP metadata.
-    tile_size
-        The size of rasterized tiles processed from input EPT point clouds in units of `dst_crs`.
+    threedep_project
+        "all" processes all available 3DEP EPT point clouds which intersect with the input polygon.
+        "first" 3DEP project encountered will be processed.
+        "specific" should be a string that matches the "project" name in the 3DEP metadata.
+    output_tile_size
+        The size of rasterized tiles processed from input EPT point clouds in units of `dst_crs`. Default is 1x1km.
     num_process
         Number of processes to use for parallel processing. Default is 1, which means all PDAL and GDAL processing will be done serially
     cleanup
@@ -66,7 +69,7 @@ def rasterize(
 
     """
     # Parse input polygon CRS and check that area isn't too large
-    gdf = gpd.read_file(extent_polygon)
+    gdf = gpd.read_file(geometry)
     _check_polygon_area(gdf)
     input_crs = gdf.crs.to_wkt()
 
@@ -75,11 +78,11 @@ def rasterize(
     if not outdir.is_dir():
         outdir.mkdir(parents=True, exist_ok=True)
     # Set output filename prefix based on input polygon name
-    output_prefix = outdir / Path(extent_polygon).stem
+    output_prefix = outdir / Path(geometry).stem
 
     # Create custom 3D CRS UTM WKT2 with WGS84 G2139 datum realization
     if dst_crs is None:
-        gdf = gpd.read_file(extent_polygon)
+        gdf = gpd.read_file(geometry)
         epsg_code = gdf.estimate_utm_crs().to_epsg()
         identifier_ns = str(epsg_code)[:3]
         identifier_zone = str(epsg_code)[3:]
@@ -102,17 +105,17 @@ def rasterize(
         contents = f.read()
         out_crs = CRS.from_string(contents)
     out_extent = gdf.to_crs(out_crs).total_bounds
-    final_out_extent = dsm_functions.tap_bounds(out_extent, res=posting)
+    final_out_extent = dsm_functions.tap_bounds(out_extent, res=resolution)
     # TODO: simplify and use tempfile (https://github.com/uw-cryo/lidar_tools/pull/25#discussion_r2177660328)
     # TODO: here and elsewhere use logging instead of prints
     print(f"Output extent in target CRS is {final_out_extent}")
     gdf_out = gdf.to_crs(out_crs)
     gdf_out['geometry'] = gdf_out['geometry'].buffer(250) # NOTE: assumes meters
     gdf_out = gdf_out.to_crs(input_crs)
-    extent_polygon = extent_polygon = outdir / "judicious_extent_polygon.geojson"
+    extent_polygon = outdir / "judicious_extent_polygon.geojson"
     gdf_out.to_file(extent_polygon, driver='GeoJSON')
 
-    # How to handle AOIs intersecting multiple 3DEP projects
+    # How to handle AOIs intersecting multiple 3DEP projects?
     if threedep_project == 'all':
         process_all_intersecting_surveys = True
         process_specific_3dep_survey = None
@@ -123,8 +126,8 @@ def rasterize(
         process_all_intersecting_surveys = False
         process_specific_3dep_survey = threedep_project
 
-    # TODO: create EPT for local laz? https://github.com/uw-cryo/lidar_tools/issues/14#issuecomment-3076045321
-    if input is None:
+    # TODO: create EPT for local laz for common workflow? https://github.com/uw-cryo/lidar_tools/issues/14#issuecomment-3076045321
+    if input is 'EPT_AWS':
         print("Processing 3DEP EPT tiles from AWS")
         ept_3dep = True
         # TODO: handle new positional args, skip products not requested
@@ -134,7 +137,7 @@ def rasterize(
                 dst_crs,
                 output_prefix,
                 buffer_value=5,
-                tile_size_km=tile_size,
+                tile_size_km=output_tile_size, #TODO: ensure we can do non-km units
                 # TODO: handle new 3dep project keyword here
                 process_specific_3dep_survey=process_specific_3dep_survey,
                 process_all_intersecting_surveys=process_all_intersecting_surveys)
@@ -315,7 +318,7 @@ def rasterize(
                 with Client(n_workers=n_jobs) as client:
                     futures = client.map(dsm_functions.gdal_warp,
                                         dem_list,reproj_fn_list,[src_srs]*n_jobs,
-                                        [dst_crs]*n_jobs, [posting]*n_jobs,
+                                        [dst_crs]*n_jobs, [resolution]*n_jobs,
                                         ["bilinear"]*n_jobs,[out_extent]*n_jobs)
                     reproj_results = client.gather(futures)
 
