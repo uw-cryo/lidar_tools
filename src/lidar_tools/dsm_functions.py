@@ -326,7 +326,7 @@ def return_local_lpc_reader(lpc: str,
             output_bounds = intersection.total_bounds
             #crop to extent of intersection area
             if buffer_value is not None:
-                intesection = intersection.buffer(buffer_value) 
+                intersection = intersection.buffer(buffer_value) 
             intersection_bounds = intersection.total_bounds
             
             crop_filter = {
