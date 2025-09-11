@@ -50,49 +50,31 @@ Once installed, you can run processing scripts from a terminal:
 ```bash
 export PIXI_FROZEN=true # NOTE: set this to always use locked environment
 pixi shell # NOTE: 'exit' deactivates the environment
-pdal_pipeline create-dsm --help
+lidar-tools rasterize --help
 ```
 
 ```console
-Usage: pdal_pipeline create-dsm [ARGS] [OPTIONS]
+Usage: lidar-tools rasterize [ARGS] [OPTIONS]
 
-Create a Digital Surface Model (DSM), Digital Terrain Model (DTM) and intensity raster from a given extent and
-3DEP point cloud data.
+Create a Digital Surface Model (DSM), Digital Terrain Model (DTM) and/or Intensity raster from point cloud data.
 
-╭─ Parameters ──────────────────────────────────────────────────────────────────────────────────────────────────╮
-│ *  EXTENT-POLYGON --extent-polygon          Path to the vector dataset containing a polygon defining the      │
-│                                             processing extent. [required]                                     │
-│ *  OUTPUT-PREFIX --output-prefix            Path for output files, containing directory path and filename     │
-│                                             prefix (e.g., /tmp/CO_3DEP_ALS). [required]                       │
-│    TARGET-WKT --target-wkt                  Path to a text file containing WKT2 definition for the output     │
-│                                             coordinate reference system (CRS). If unspecified, a local UTM    │
-│                                             CRS will be used.                                                 │
-│    LOCAL-UTM --local-utm --no-local-utm     If true, automatically compute the local UTM zone from the extent │
-│                                             polygon for final output products. If false, use the CRS defined  │
-│                                             in the target_wkt file. [default: False]                          │
-│    SOURCE-WKT --source-wkt                  Path to a text file containing WKT2 definition for the coordinate │
-│                                             reference system (CRS) of the input point cloud. If unspecified,  │
-│                                             the CRS defined in the source point cloud metadata will be used.  │
-│    LOCAL-LAZ-DIR --local-laz-dir            Path to directory containing source laz point cloud files. If not │
-│                                             specified, the program will process USGS 3DEP EPT tiles.          │
-│    EPT-TILE-SIZE-KM --ept-tile-size-km      The size of the EPT tiles to be processed. This is only used if   │
-│                                             local_laz_dir is not specified. The default is 1.0 km, which      │
-│                                             means that the function will process 1 km x 1 km tiles. If you    │
-│                                             want to process larger tiles, you can specify a larger value.     │
-│                                             [default: 1.0]                                                    │
-│    PROCESS-SPECIFIC-3DEP-SURVEY             Only process the specified 3DEP project name. This should be a    │
-│      --process-specific-3dep-survey         string that matches the workunit name in the 3DEP metadata.       │
-│    PROCESS-ALL-INTERSECTING-SURVEYS         If true, process all available 3DEP EPT point clouds which        │
-│      --process-all-intersecting-surveys     intersect with the input polygon. If false, and                   │
-│      --no-process-all-intersecting-surveys  process_specific_3dep_survey is not specified, first 3DEP project │
-│                                             encountered will be processed. [default: False]                   │
-│    NUM-PROCESS --num-process                Number of processes to use for parallel processing. Default is 1, │
-│                                             which means all pdal and gdal processing will be done serially    │
-│                                             [default: 1]                                                      │
-│    CLEANUP --cleanup --no-cleanup           If true, remove the intermediate tif files for the output tiles,  │
-│                                             leaving only the final mosaicked rasters. Default is True.        │
-│                                             [default: True]                                                   │
-╰───────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Parameters ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ *  GEOMETRY --geometry                  Path to the vector dataset containing a single polygon that defines the processing extent. [required]                     │
+│    INPUT --input                        Path to directory containing input LAS/LAZ files, otherwise uses USGS 3DEP EPT data on AWS. [default: EPT_AWS]            │
+│    OUTPUT --output                      Path to output directory. [default: /tmp/lidar-tools-output]                                                              │
+│    SRC-CRS --src-crs                    Path to file with PROJ-supported CRS definition to override CRS of input files.                                           │
+│    DST-CRS --dst-crs                    Path to file with PROJ-supported CRS definition for the output. If unspecified, a local UTM CRS will be used.             │
+│    RESOLUTION --resolution              Square output raster posting in units of dst_crs. [default: 1.0]                                                          │
+│    PRODUCTS --products                  Which output products to generate: all products, digital surface model, digital terrain model, or intensity raster.       │
+│                                         [choices: all, dsm, dtm, intensity] [default: all]                                                                        │
+│    THREEDEP-PROJECT --threedep-project  "all" processes all available 3DEP EPT point clouds which intersect with the input polygon. "first" 3DEP project          │
+│                                         encountered will be processed. "specific" should be a string that matches the "project" name in the 3DEP metadata.        │
+│                                         [choices: all, latest] [default: latest]                                                                                  │
+│    TILE-SIZE --tile-size                The size of rasterized tiles processed from input EPT point clouds in units of dst_crs. [default: 1.0]                    │
+│    NUM-PROCESS --num-process            [default: 1]                                                                                                              │
+│    OVERWRITE --overwrite                Overwrite output files if they already exist. [default: False]                                                            │
+│    CLEANUP --cleanup                    Remove the intermediate tif files, keep only final mosaiced rasters. [default: False]                                     │
+╰───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
 ```
 
 ## Development

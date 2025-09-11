@@ -21,18 +21,20 @@ from typing import Literal, Annotated
 import geopandas as gpd
 import requests
 import cyclopts
+import shutil
 
 def rasterize(
     geometry: str,
     input: str = 'EPT_AWS',
     output: str = '/tmp/lidar-tools-output',
-    #src_crs: str = None, # TODO: add override of source CRS
+    src_crs: str = None,
     dst_crs: str = None,
     resolution: float = 1.0,
     products: Literal["all","dsm","dtm","intensity"] = "all",
     threedep_project: Literal["all","latest"] | str = "latest",
-    output_tile_size: float = 1.0,
+    tile_size: float = 1.0,
     num_process: int = 1,
+    overwrite: Annotated[bool, cyclopts.Parameter(negative="")] = False,
     cleanup: Annotated[bool, cyclopts.Parameter(negative="")] = False,
 ) -> None:
     """
@@ -43,9 +45,11 @@ def rasterize(
     geometry
         Path to the vector dataset containing a single polygon that defines the processing extent.
     input
-        Path to directory containing laz point cloud files. Default 'EPT_AWS' uses USGS 3DEP EPT data on AWS.
+        Path to directory containing input LAS/LAZ files, otherwise uses USGS 3DEP EPT data on AWS.
     output
-        Path to output directory. Default = '/tmp/lidar-tools-output/'
+        Path to output directory.
+    src_crs
+        Path to file with PROJ-supported CRS definition to override CRS of input files.
     dst_crs
         Path to file with PROJ-supported CRS definition for the output. If unspecified, a local UTM CRS will be used.
     resolution
@@ -56,28 +60,37 @@ def rasterize(
         "all" processes all available 3DEP EPT point clouds which intersect with the input polygon.
         "first" 3DEP project encountered will be processed.
         "specific" should be a string that matches the "project" name in the 3DEP metadata.
-    output_tile_size
-        The size of rasterized tiles processed from input EPT point clouds in units of `dst_crs`. Default is 1x1km.
-    num_process
-        Number of processes to use for parallel processing. Default is 1, which means all PDAL and GDAL processing will be done serially
+    tile_size
+        The size of rasterized tiles processed from input EPT point clouds in units of `dst_crs`.
+    num_processes
+        Number of processes to run PDAL pipelines in parallel.
+    overwrite
+        Overwrite output files if they already exist.
     cleanup
-        Remove the intermediate tif files for the output tiles, leaving only the final mosaicked rasters.
+        Remove the intermediate tif files, keep only final mosaiced rasters.
 
     Returns
     -------
     None
-
     """
     # Parse input polygon CRS and check that area isn't too large
     gdf = gpd.read_file(geometry)
     _check_polygon_area(gdf)
     input_crs = gdf.crs.to_wkt()
 
-    # TODO: raise if output directory already exists?
     outdir = Path(output)
-    if not outdir.is_dir():
-        outdir.mkdir(parents=True, exist_ok=True)
+    if outdir.exists():
+        if overwrite:
+            print(f"Overwriting existing output path: {outdir}")
+            if outdir.is_file():
+                outdir.unlink()
+            elif outdir.is_dir():
+                shutil.rmtree(outdir)
+        else:
+            raise FileExistsError(f"Output directory {outdir} already exists. Use --overwrite to allow overwriting.")
+
     # Set output filename prefix based on input polygon name
+    outdir.mkdir(parents=True)
     output_prefix = outdir / Path(geometry).stem
 
     # Create custom 3D CRS UTM WKT2 with WGS84 G2139 datum realization
@@ -136,15 +149,23 @@ def rasterize(
                 dst_crs,
                 output_prefix,
                 buffer_value=5,
-                tile_size_km=output_tile_size, #TODO: ensure we can do non-km units
+                tile_size_km=tile_size, #TODO: ensure we can do non-km units
                 # TODO: handle new 3dep project keyword here
                 process_specific_3dep_survey=process_specific_3dep_survey,
                 process_all_intersecting_surveys=process_all_intersecting_surveys)
     else:
         print(f"Processing local laz files from {input}")
+        if src_crs:
+            with open(src_crs, "r") as f:
+                contents = f.read()
+                src_projcrs = CRS.from_string(contents)
+        else:
+            src_projcrs = None
+        print(src_projcrs)
         (dsm_pipeline_list, dtm_no_fill_pipeline_list, dtm_fill_pipeline_list,
         intensity_pipeline_list) = dsm_functions.create_lpc_pipeline(
                                     local_laz_dir=input,
+                                    input_crs=src_projcrs,
                                     target_wkt=dst_crs,
                                     output_prefix=output_prefix,
                                     extent_polygon=extent_polygon,
@@ -210,7 +231,7 @@ def rasterize(
 
     print("****Processing complete for all tiles****")
 
-    # Mosaicking
+    # Mosaicing
     # ===========
     dsm_mos_fn = f"{output_prefix}-DSM_mos-temp.tif"
     dtm_mos_no_fill_fn = f"{output_prefix}-DTM_no_fill_mos-temp.tif"
@@ -219,7 +240,7 @@ def rasterize(
 
     if num_pipelines > 1:
         print(
-            f"Multiple tiles created: {num_pipelines}. Mosaicking required to create final rasters"
+            f"Multiple tiles created: {num_pipelines}. Mosaicing required to create final rasters"
         )
         print("*** Now creating raster composites ***")
         if input == 'EPT_AWS':
@@ -228,7 +249,7 @@ def rasterize(
         else:
             out_extent = final_out_extent
             cog = True
-        print("Running mosaicking sequentially")
+        print("Running ing sequentially")
         if products == 'all' or products == 'dsm':
             print(f"Creating DSM mosaic at {dsm_mos_fn}")
             dsm_functions.raster_mosaic(final_dsm_fn_list, dsm_mos_fn,
@@ -249,7 +270,7 @@ def rasterize(
                 cog=cog,out_extent=out_extent)
 
     else:
-        print("Only one tile created, no mosaicking required")
+        print("Only one tile created, no mosaicing required")
         if products == 'all' or products == 'dsm':
             dsm_functions.rename_rasters(final_dsm_fn_list[0], dsm_mos_fn)
         if products == 'all' or products == 'dtm':

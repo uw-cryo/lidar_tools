@@ -260,6 +260,7 @@ def return_lpc_bounds(lpc:str,
     return output_bounds
 
 def return_local_lpc_reader(lpc: str,
+                input_crs: CRS = None,
                 output_crs: CRS = None,
                 pointcloud_resolution: float = 1.0,
                 aoi_bounds: gpd.GeoDataFrame  = None,
@@ -272,12 +273,14 @@ def return_local_lpc_reader(lpc: str,
     ----------
     lpc
         Path to the local laz file.
+    input_crs
+        Override CRS of the input point cloud.
     output_crs
-        The coordinate reference system to transform the bounds to, by default None.
+        The CRS to transform the bounds to
     aoi_bounds
-        The area of interest bounds to intersect with the point cloud bounds, by default None.
+        The area of interest bounds to intersect with the point cloud bounds
     buffer_value
-        The buffer value in meters to apply to the bounds, by default 5.
+        The buffer value in meters to apply to the bounds
 
     Returns
     -------
@@ -293,7 +296,8 @@ def return_local_lpc_reader(lpc: str,
 
     #get the bounds of the laz file
     bounds = return_lpc_bounds(lpc)
-    in_crs = return_crs_local_lpc(lpc)
+    if input_crs is None:
+        input_crs = return_crs_local_lpc(lpc)
 
     #adding function to utilize
     #if the bounds are not in the output crs, transform them
@@ -301,9 +305,9 @@ def return_local_lpc_reader(lpc: str,
 
     lpc_polygon = shapely.geometry.Polygon.from_bounds(*bounds)
     lpc_gdf = gpd.GeoDataFrame(
-        geometry=[lpc_polygon], crs=in_crs, index=[0]
+        geometry=[lpc_polygon], crs=input_crs, index=[0]
     )
-    aoi_bounds_in_crs = aoi_bounds.to_crs(in_crs)
+    aoi_bounds_in_crs = aoi_bounds.to_crs(input_crs)
 
     reader = {
         "type": "readers.las",
@@ -339,12 +343,12 @@ def return_local_lpc_reader(lpc: str,
     if return_reader:
         if output_crs is not None:
 
-            if in_crs != output_crs:
-                output_bounds = transform_bounds(in_crs, output_crs, *output_bounds)
+            if input_crs != output_crs:
+                output_bounds = transform_bounds(input_crs, output_crs, *output_bounds)
 
         tapped_bounds = tap_bounds(output_bounds, pointcloud_resolution)
 
-        return pipeline, in_crs, tapped_bounds
+        return pipeline, input_crs, tapped_bounds
     else:
 
         return None, None, None
@@ -568,7 +572,7 @@ def raster_mosaic(img_list: list,
     img_list
         List of input images to be mosaiced
     outfn
-        Path to output mosaicked image
+        Path to output mosaiced image
     cog
         Whether to create a COG-complaint raster (compressed and tiled)
     out_extent
@@ -1089,6 +1093,7 @@ def gdal_add_overview(raster_fn: str) -> None:
 ###### Provider specific functions to return appropriate pipelines for raster creation
 
 def create_lpc_pipeline(local_laz_dir: str,
+    input_crs: str,
     target_wkt: str,
     output_prefix: str,
     extent_polygon: str,
@@ -1101,6 +1106,8 @@ def create_lpc_pipeline(local_laz_dir: str,
     ----------
     local_laz_dir
         Directory containing local LiDAR point cloud files in LAZ or LAS format.
+    input_crs
+        Override input file CRS.
     target_wkt
         Path to the target WKT file defining the output coordinate reference system.
     output_prefix
@@ -1108,9 +1115,9 @@ def create_lpc_pipeline(local_laz_dir: str,
     extent_polygon
         Path to a polygon file defining the area of interest (AOI) for processing.
     raster_resolution
-        Resolution for the output raster files, by default 1.0.
+        Resolution for the output raster files.
     buffer_value
-        Buffer value to apply to the AOI bounds when reading points for rasterization, by default 5.0.
+        Buffer value to apply to the AOI bounds when reading points for rasterization.
 
     Returns
     -------
@@ -1128,13 +1135,14 @@ def create_lpc_pipeline(local_laz_dir: str,
     print(f"Number of local laz files: {len(lpc_files)}")
     readers = []
     original_extents = []
-    input_crs = []
+    input_crs_list = []
     aoi_bounds = gpd.read_file(extent_polygon)
     if isinstance(target_wkt,Path):
         target_wkt = str(target_wkt)
     for idx, lpc in enumerate(lpc_files):
         reader, in_crs, out_extent = return_local_lpc_reader(
         str(lpc),
+        input_crs=input_crs,
         output_crs=target_wkt,
         pointcloud_resolution=1.0,
         aoi_bounds=aoi_bounds,
@@ -1143,7 +1151,7 @@ def create_lpc_pipeline(local_laz_dir: str,
         if reader is not None:
             readers.append(reader)
             original_extents.append(out_extent)
-            input_crs.append(in_crs)
+            input_crs_list.append(in_crs)
 
     output_path = Path(output_prefix).parent
     prefix = Path(output_prefix).name
@@ -1177,7 +1185,7 @@ def create_lpc_pipeline(local_laz_dir: str,
         pdal_pipeline_dsm = create_pdal_pipeline(
             group_filter="first,only",
             reproject=True, # reproject to the output CRS
-            input_crs=input_crs[i],
+            input_crs=input_crs_list[i],
             output_crs=out_crs)
         dsm_stage = create_dem_stage(
             dem_filename=str(dsm_file),
@@ -1204,7 +1212,7 @@ def create_lpc_pipeline(local_laz_dir: str,
                 return_only_ground=True,
                 group_filter=None,
                 reproject=True, # reproject to the output CRS
-                input_crs=input_crs[i],
+                input_crs=input_crs_list[i],
                 output_crs=out_crs)
 
         pdal_pipeline_dtm_z_fill = pdal_pipeline_dtm_no_z_fill.copy() #for later
@@ -1258,7 +1266,7 @@ def create_lpc_pipeline(local_laz_dir: str,
         pdal_pipeline_surface_intensity = create_pdal_pipeline(
                 group_filter="first,only",
                 reproject=True, # reproject to the output CRS
-                input_crs=input_crs[i],
+                input_crs=input_crs_list[i],
                 output_crs=out_crs)
 
         intensity_stage = create_dem_stage(
