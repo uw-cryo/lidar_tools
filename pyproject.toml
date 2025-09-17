@@ -77,8 +77,8 @@ test-example-cleanup = "time lidar-tools rasterize --cleanup --geometry notebook
 
 [tool.pixi.dependencies]
 cyclopts = "*"
-dask = "*",
-distributed "*",
+dask = "*"
+distributed = "*"
 gdal = "*"
 geopandas = "*"
 ipykernel = "*"
@@ -106,7 +106,7 @@ ruff = "*"
 name = "lidar_tools"
 version = "0.2.0"
 
-[tool.pixi.package.build]
+[tool.pixi.package.build.backend]
 name = "pixi-build-python"
 version = "==0.3.2"
 
