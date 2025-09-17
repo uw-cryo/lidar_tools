@@ -9086,20 +9086,22 @@ packages:
   timestamp: 1727963202283
 - pypi: ./
   name: lidar-tools
-  version: 0.1.0
-  sha256: 04166385ea484487d11852794a099e7fed5738d3daa2f5e6714cb09c21f1b2cc
+  version: 0.2.0
+  sha256: 5cbfaf8f04bb8880ec04c269e499154ac0868087b7cb5fddc078a6805729b851
   requires_dist:
-  - cyclopts
-  - gdal
-  - geopandas
-  - ipykernel
-  - planetary-computer
-  - pdal
-  - pystac-client
-  - rioxarray
-  - requests
-  - scipy
-  - odc-stac
+  - cyclopts>=3.16.1,<4
+  - dask>=2025.7.0,<2026
+  - distributed>=2025.7.0,<2026
+  - gdal>=3.10.3,<4
+  - geopandas>=1.0.1,<2
+  - ipykernel>=6.29.5,<7
+  - planetary-computer>=1.0.0,<2
+  - pdal>=3.4.5,<4
+  - pystac-client>=0.8.6,<0.9
+  - rioxarray>=0.19.0,<0.20
+  - requests>=2.32.3,<3
+  - scipy>=1.15.2,<2
+  - odc-stac>=0.4.0,<0.5
   - mypy>=1.15.0,<2 ; extra == 'dev'
   - pytest>=8.3.5,<9 ; extra == 'dev'
   - ruff>=0.11.10,<0.13 ; extra == 'dev'

@@ -95,3 +95,20 @@ Run linting and formatting
 pixi run lint
 pixi run typecheck
 ```
+
+### Packaging
+
+To create a `conda` package that can be installed into any conda environment:
+
+```
+pixi build
+```
+
+This will output a `.conda` file named something like `lidar_tools-0.1.0-pyhbf21a9e_0.conda`
+
+To actually install the package it needs to put in a conda "registry" or "channel" like conda-forge. For now we are using a public channel at https://prefix.dev/channels for development:
+
+```
+conda install -c https://repo.prefix.dev/uw-cryo lidar_tools
+```
+

@@ -9,7 +9,7 @@ from dask.distributed import Client, progress
 os.environ["PROJ_NETWORK"] = (
     "ON"  # Ensure this is 'ON' to get shift grids over the internet
 )
-#print(f"PROJ_NETWORK is {os.environ['PROJ_NETWORK']}")
+# print(f"PROJ_NETWORK is {os.environ['PROJ_NETWORK']}")
 
 from lidar_tools import dsm_functions
 from pyproj import CRS
@@ -23,15 +23,16 @@ import requests
 import cyclopts
 import shutil
 
+
 def rasterize(
     geometry: str,
-    input: str = 'EPT_AWS',
-    output: str = '/tmp/lidar-tools-output',
+    input: str = "EPT_AWS",
+    output: str = "/tmp/lidar-tools-output",
     src_crs: str = None,
     dst_crs: str = None,
     resolution: float = 1.0,
-    products: Literal["all","dsm","dtm","intensity"] = "all",
-    threedep_project: Literal["all","latest"] | str = "latest",
+    products: Literal["all", "dsm", "dtm", "intensity"] = "all",
+    threedep_project: Literal["all", "latest"] | str = "latest",
     tile_size: float = 1.0,
     num_process: int = 1,
     overwrite: Annotated[bool, cyclopts.Parameter(negative="")] = False,
@@ -87,7 +88,9 @@ def rasterize(
             elif outdir.is_dir():
                 shutil.rmtree(outdir)
         else:
-            raise FileExistsError(f"Output directory {outdir} already exists. Use --overwrite to allow overwriting.")
+            raise FileExistsError(
+                f"Output directory {outdir} already exists. Use --overwrite to allow overwriting."
+            )
 
     # Set output filename prefix based on input polygon name
     outdir.mkdir(parents=True)
@@ -99,19 +102,21 @@ def rasterize(
         epsg_code = gdf.estimate_utm_crs().to_epsg()
         identifier_ns = str(epsg_code)[:3]
         identifier_zone = str(epsg_code)[3:]
-        if identifier_ns == '326':
-            zone = identifier_zone+'N'
+        if identifier_ns == "326":
+            zone = identifier_zone + "N"
         else:
-            zone = identifier_zone+'S'
-        target_wkt =  outdir / f"UTM_{zone}_WGS84_G2139_3D.wkt"
-        path_to_base_utm10_def =  outdir / 'UTM_10.wkt'
+            zone = identifier_zone + "S"
+        target_wkt = outdir / f"UTM_{zone}_WGS84_G2139_3D.wkt"
+        path_to_base_utm10_def = outdir / "UTM_10.wkt"
         # TODO: replace with local copy of file
         url = "https://raw.githubusercontent.com/uw-cryo/lidar_tools/refs/heads/main/notebooks/UTM_10N_WGS84_G2139_3D.wkt"
         response = requests.get(url)
         if response.status_code == 200:
             with open(path_to_base_utm10_def, "w") as f:
                 f.write(response.text)
-        dst_crs = dsm_functions.write_local_utm_3DCRS_G2139(path_to_base_utm10_def, zone=zone, outfn=target_wkt)
+        dst_crs = dsm_functions.write_local_utm_3DCRS_G2139(
+            path_to_base_utm10_def, zone=zone, outfn=target_wkt
+        )
 
     # Configure output raster extents and posting based on input polygon
     with open(dst_crs, "r") as f:
@@ -123,16 +128,16 @@ def rasterize(
     # TODO: here and elsewhere use logging instead of prints
     print(f"Output extent in target CRS is {final_out_extent}")
     gdf_out = gdf.to_crs(out_crs)
-    gdf_out['geometry'] = gdf_out['geometry'].buffer(250) # NOTE: assumes meters
+    gdf_out["geometry"] = gdf_out["geometry"].buffer(250)  # NOTE: assumes meters
     gdf_out = gdf_out.to_crs(input_crs)
     extent_polygon = outdir / "judicious_extent_polygon.geojson"
-    gdf_out.to_file(extent_polygon, driver='GeoJSON')
+    gdf_out.to_file(extent_polygon, driver="GeoJSON")
 
     # How to handle AOIs intersecting multiple 3DEP projects?
-    if threedep_project == 'all':
+    if threedep_project == "all":
         process_all_intersecting_surveys = True
         process_specific_3dep_survey = None
-    elif threedep_project == 'latest':
+    elif threedep_project == "latest":
         process_all_intersecting_surveys = False
         process_specific_3dep_survey = None
     else:
@@ -140,19 +145,24 @@ def rasterize(
         process_specific_3dep_survey = threedep_project
 
     # TODO: create EPT for local laz for common workflow? https://github.com/uw-cryo/lidar_tools/issues/14#issuecomment-3076045321
-    if input == 'EPT_AWS':
+    if input == "EPT_AWS":
         print("Processing 3DEP EPT tiles from AWS")
         # TODO: handle new positional args, skip products not requested
-        (dsm_pipeline_list, dtm_no_fill_pipeline_list, dtm_fill_pipeline_list,
-        intensity_pipeline_list) = dsm_functions.create_ept_3dep_pipeline(
-                extent_polygon,
-                dst_crs,
-                output_prefix,
-                buffer_value=5,
-                tile_size_km=tile_size, #TODO: ensure we can do non-km units
-                # TODO: handle new 3dep project keyword here
-                process_specific_3dep_survey=process_specific_3dep_survey,
-                process_all_intersecting_surveys=process_all_intersecting_surveys)
+        (
+            dsm_pipeline_list,
+            dtm_no_fill_pipeline_list,
+            dtm_fill_pipeline_list,
+            intensity_pipeline_list,
+        ) = dsm_functions.create_ept_3dep_pipeline(
+            extent_polygon,
+            dst_crs,
+            output_prefix,
+            buffer_value=5,
+            tile_size_km=tile_size,  # TODO: ensure we can do non-km units
+            # TODO: handle new 3dep project keyword here
+            process_specific_3dep_survey=process_specific_3dep_survey,
+            process_all_intersecting_surveys=process_all_intersecting_surveys,
+        )
     else:
         print(f"Processing local laz files from {input}")
         if src_crs:
@@ -162,30 +172,35 @@ def rasterize(
         else:
             src_projcrs = None
         print(src_projcrs)
-        (dsm_pipeline_list, dtm_no_fill_pipeline_list, dtm_fill_pipeline_list,
-        intensity_pipeline_list) = dsm_functions.create_lpc_pipeline(
-                                    local_laz_dir=input,
-                                    input_crs=src_projcrs,
-                                    target_wkt=dst_crs,
-                                    output_prefix=output_prefix,
-                                    extent_polygon=extent_polygon,
-                                    buffer_value=5)
+        (
+            dsm_pipeline_list,
+            dtm_no_fill_pipeline_list,
+            dtm_fill_pipeline_list,
+            intensity_pipeline_list,
+        ) = dsm_functions.create_lpc_pipeline(
+            local_laz_dir=input,
+            input_crs=src_projcrs,
+            target_wkt=dst_crs,
+            output_prefix=output_prefix,
+            extent_polygon=extent_polygon,
+            buffer_value=5,
+        )
 
     # TODO: refactor into function
     num_pipelines = len(dsm_pipeline_list)
     if num_process == 1:
         print(f"Executing PDAL in serial for products={products}")
 
-        if products == 'all' or products == 'dsm':
-            print('Generating DSM tiles')
+        if products == "all" or products == "dsm":
+            print("Generating DSM tiles")
             final_dsm_fn_list = []
             for pipeline in dsm_pipeline_list:
                 outfn = dsm_functions.execute_pdal_pipeline(pipeline)
                 if outfn is not None:
                     final_dsm_fn_list.append(outfn)
 
-        if products == 'all' or products == 'dtm':
-            print('Generating DTM tiles')
+        if products == "all" or products == "dtm":
+            print("Generating DTM tiles")
             final_dtm_no_fill_fn_list = []
             for pipeline in dtm_no_fill_pipeline_list:
                 outfn = dsm_functions.execute_pdal_pipeline(pipeline)
@@ -198,8 +213,8 @@ def rasterize(
                 if outfn is not None:
                     final_dtm_fill_fn_list.append(outfn)
 
-        if products == 'all' or products == 'intensity':
-            print('Generating Intensity tiles')
+        if products == "all" or products == "intensity":
+            print("Generating Intensity tiles")
             final_intensity_fn_list = []
             for pipeline in intensity_pipeline_list:
                 outfn = dsm_functions.execute_pdal_pipeline(pipeline)
@@ -208,6 +223,7 @@ def rasterize(
 
     else:
         n_jobs = num_process if num_pipelines > num_process else num_pipelines
+
         def run_parallel(pipeline_list):
             with Client(threads_per_worker=2, n_workers=n_jobs) as client:
                 futures = client.map(dsm_functions.execute_pdal_pipeline, pipeline_list)
@@ -215,18 +231,20 @@ def rasterize(
                 results = client.gather(futures)
                 return [outfn for outfn in results if outfn is not None]
 
-        print(f"Executing PDAL in parallel with dask n_workers={n_jobs} for products={products}")
-        if products == 'all' or products == 'dsm':
-            print('Generating DSM tiles')
+        print(
+            f"Executing PDAL in parallel with dask n_workers={n_jobs} for products={products}"
+        )
+        if products == "all" or products == "dsm":
+            print("Generating DSM tiles")
             final_dsm_fn_list = run_parallel(dsm_pipeline_list)
 
-        if products == 'all' or products == 'dtm':
-            print('Generating DTM tiles')
+        if products == "all" or products == "dtm":
+            print("Generating DTM tiles")
             final_dtm_no_fill_fn_list = run_parallel(dtm_no_fill_pipeline_list)
             final_dtm_fill_fn_list = run_parallel(dtm_fill_pipeline_list)
 
-        if products == 'all' or products == 'intensity':
-            print('Generating Intensity tiles')
+        if products == "all" or products == "intensity":
+            print("Generating Intensity tiles")
             final_intensity_fn_list = run_parallel(intensity_pipeline_list)
 
     print("****Processing complete for all tiles****")
@@ -243,42 +261,53 @@ def rasterize(
             f"Multiple tiles created: {num_pipelines}. Mosaicing required to create final rasters"
         )
         print("*** Now creating raster composites ***")
-        if input == 'EPT_AWS':
+        if input == "EPT_AWS":
             cog = False
             out_extent = None
         else:
             out_extent = final_out_extent
             cog = True
         print("Running ing sequentially")
-        if products == 'all' or products == 'dsm':
+        if products == "all" or products == "dsm":
             print(f"Creating DSM mosaic at {dsm_mos_fn}")
-            dsm_functions.raster_mosaic(final_dsm_fn_list, dsm_mos_fn,
-                cog=cog,out_extent=out_extent)
+            dsm_functions.raster_mosaic(
+                final_dsm_fn_list, dsm_mos_fn, cog=cog, out_extent=out_extent
+            )
 
-        if products == 'all' or products == 'dtm':
+        if products == "all" or products == "dtm":
             print(f"Creating DTM mosaic at {dtm_mos_no_fill_fn}")
-            dsm_functions.raster_mosaic(final_dtm_no_fill_fn_list, dtm_mos_no_fill_fn,
-                cog=cog,out_extent=out_extent)
+            dsm_functions.raster_mosaic(
+                final_dtm_no_fill_fn_list,
+                dtm_mos_no_fill_fn,
+                cog=cog,
+                out_extent=out_extent,
+            )
 
             print(f"Creating DTM mosaic with window size 4 at {dtm_mos_fill_fn}")
-            dsm_functions.raster_mosaic(final_dtm_fill_fn_list, dtm_mos_fill_fn,
-                cog=cog,out_extent=out_extent)
+            dsm_functions.raster_mosaic(
+                final_dtm_fill_fn_list, dtm_mos_fill_fn, cog=cog, out_extent=out_extent
+            )
 
-        if products == 'all' or products == 'intensity':
+        if products == "all" or products == "intensity":
             print(f"Creating intensity raster mosaic at {intensity_mos_fn}")
-            dsm_functions.raster_mosaic(final_intensity_fn_list, intensity_mos_fn,
-                cog=cog,out_extent=out_extent)
+            dsm_functions.raster_mosaic(
+                final_intensity_fn_list,
+                intensity_mos_fn,
+                cog=cog,
+                out_extent=out_extent,
+            )
 
     else:
         print("Only one tile created, no mosaicing required")
-        if products == 'all' or products == 'dsm':
+        if products == "all" or products == "dsm":
             dsm_functions.rename_rasters(final_dsm_fn_list[0], dsm_mos_fn)
-        if products == 'all' or products == 'dtm':
-            dsm_functions.rename_rasters(final_dtm_no_fill_fn_list[0], dtm_mos_no_fill_fn)
+        if products == "all" or products == "dtm":
+            dsm_functions.rename_rasters(
+                final_dtm_no_fill_fn_list[0], dtm_mos_no_fill_fn
+            )
             dsm_functions.rename_rasters(final_dtm_fill_fn_list[0], dtm_mos_fill_fn)
-        if products == 'all' or products == 'intensity':
+        if products == "all" or products == "intensity":
             dsm_functions.rename_rasters(final_intensity_fn_list[0], intensity_mos_fn)
-
 
     # Reprojection
     # ============
@@ -287,7 +316,7 @@ def rasterize(
     dtm_fill_reproj = dtm_mos_fill_fn.split("-temp.tif")[0] + ".tif"
     intensity_reproj = intensity_mos_fn.split("-temp.tif")[0] + ".tif"
 
-    if input == 'EPT_AWS':
+    if input == "EPT_AWS":
         if out_crs != CRS.from_epsg(3857):
             print("*********Reprojecting DSM, DTM and intensity rasters****")
             reproject_truth_val = dsm_functions.confirm_3dep_vertical(dsm_mos_fn)
@@ -300,40 +329,64 @@ def rasterize(
             out_extent = final_out_extent
             print(src_srs)
             print("Running reprojection sequentially")
-            if products == 'all' or products == 'dsm':
+            if products == "all" or products == "dsm":
                 print("Reprojecting DSM raster")
-                dsm_functions.gdal_warp(dsm_mos_fn, dsm_reproj, src_srs, dst_crs,
-                                        resampling_alogrithm="bilinear",out_extent=out_extent)
-            if products == 'all' or products == 'dtm':
+                dsm_functions.gdal_warp(
+                    dsm_mos_fn,
+                    dsm_reproj,
+                    src_srs,
+                    dst_crs,
+                    resampling_alogrithm="bilinear",
+                    out_extent=out_extent,
+                )
+            if products == "all" or products == "dtm":
                 print("Reprojecting DTM raster")
-                dsm_functions.gdal_warp(dtm_mos_no_fill_fn, dtm_no_fill_reproj, src_srs, dst_crs,
-                                    resampling_alogrithm="bilinear", out_extent=out_extent)
-                dsm_functions.gdal_warp(dtm_mos_fill_fn, dtm_fill_reproj, src_srs, dst_crs,
-                                    resampling_alogrithm="bilinear", out_extent=out_extent)
-            if products == 'all' or products == 'intensity':
+                dsm_functions.gdal_warp(
+                    dtm_mos_no_fill_fn,
+                    dtm_no_fill_reproj,
+                    src_srs,
+                    dst_crs,
+                    resampling_alogrithm="bilinear",
+                    out_extent=out_extent,
+                )
+                dsm_functions.gdal_warp(
+                    dtm_mos_fill_fn,
+                    dtm_fill_reproj,
+                    src_srs,
+                    dst_crs,
+                    resampling_alogrithm="bilinear",
+                    out_extent=out_extent,
+                )
+            if products == "all" or products == "intensity":
                 print("Reprojecting intensity raster")
-                dsm_functions.gdal_warp(intensity_mos_fn, intensity_reproj, src_srs, dst_crs,
-                                    resampling_alogrithm="bilinear" , out_extent=out_extent)
+                dsm_functions.gdal_warp(
+                    intensity_mos_fn,
+                    intensity_reproj,
+                    src_srs,
+                    dst_crs,
+                    resampling_alogrithm="bilinear",
+                    out_extent=out_extent,
+                )
 
     else:
         print("No reprojection required")
         # rename the temp files to the final output names
-        if products == 'all' or products == 'dsm':
+        if products == "all" or products == "dsm":
             dsm_functions.rename_rasters(dsm_mos_fn, dsm_reproj)
-        if products == 'all' or products == 'dtm':
+        if products == "all" or products == "dtm":
             dsm_functions.rename_rasters(dtm_mos_no_fill_fn, dtm_no_fill_reproj)
             dsm_functions.rename_rasters(dtm_mos_fill_fn, dtm_fill_reproj)
-        if products == 'all' or products == 'intensity':
+        if products == "all" or products == "intensity":
             dsm_functions.rename_rasters(intensity_mos_fn, intensity_reproj)
 
     print("****Building Gaussian overviews for all rasters****")
     print("Running overview creation sequentially")
-    if products == 'all' or products == 'dsm':
+    if products == "all" or products == "dsm":
         dsm_functions.gdal_add_overview(dsm_reproj)
-    if products == 'all' or products == 'dtm':
+    if products == "all" or products == "dtm":
         dsm_functions.gdal_add_overview(dtm_no_fill_reproj)
         dsm_functions.gdal_add_overview(dtm_fill_reproj)
-    if products == 'all' or products == 'intensity':
+    if products == "all" or products == "intensity":
         dsm_functions.gdal_add_overview(intensity_reproj)
 
     if cleanup:
@@ -410,10 +463,9 @@ def _check_polygon_area(gf: gpd.GeoDataFrame) -> None:
     else:
         area = geographic_area(gf.to_crs("EPSG:4326")) * 1e-6
 
-    #print(area.values[0])
+    # print(area.values[0])
     if area.to_numpy() >= warn_if_larger_than:
         msg = f"Very large AOI ({area.values[0]:e} km^2) requested, processing may be slow or crash. Recommended AOI size is <{warn_if_larger_than:e} km^2"
         warnings.warn(msg)
     else:
         print(f"Starting Processing of {area.values[0]:e} km^2 AOI")
-

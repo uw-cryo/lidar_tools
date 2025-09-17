@@ -1,6 +1,6 @@
 [project]
 name = "lidar_tools"
-version="0.1.0"
+version="0.2.0"
 authors = [
   { name = "Scott Henderson", email = "scottyh@uw.edu" },
   { name = "David Shean", email = "dshean@uw.edu" },
@@ -20,7 +20,22 @@ classifiers = [
   "Programming Language :: Python :: 3 :: Only",
 ]
 
-dependencies = [ "cyclopts", "gdal", "geopandas", "ipykernel", "planetary-computer", "pdal", "pystac-client", "rioxarray", "requests", "scipy", "odc-stac"]
+dependencies = [
+  "cyclopts >=3.16.1,<4",
+  "dask >=2025.7.0,<2026",
+  "distributed >=2025.7.0,<2026",
+  "gdal >=3.10.3,<4",
+  "geopandas >=1.0.1,<2",
+  "ipykernel >=6.29.5,<7",
+  "planetary-computer >=1.0.0,<2",
+  # NOTE: from pip this installs *python-pdal*, just get from conda
+  "pdal >=3.4.5,<4",
+  "pystac-client >=0.8.6,<0.9",
+  "rioxarray >=0.19.0,<0.20",
+  "requests >=2.32.3,<3",
+  "scipy >=1.15.2,<2",
+  "odc-stac >=0.4.0,<0.5"
+]
 
 [build-system]
 build-backend = "hatchling.build"
@@ -39,9 +54,10 @@ lidar-tools = "lidar_tools.cli:app"
 [tool.ruff.lint.per-file-ignores]
 "pdal_pipeline.py" = ["E402"]
 
-[tool.pixi.project]
+[tool.pixi.workspace]
 channels = ["conda-forge"]
-platforms = ["osx-arm64", "osx-64", "linux-64"]
+platforms = ["linux-64", "osx-arm64", "osx-64"]
+preview = ["pixi-build"]
 
 [tool.pixi.environments]
 dev = { features = ["dev"], solve-group = "default" }
@@ -60,19 +76,19 @@ test-example-cleanup = "time lidar-tools rasterize --cleanup --geometry notebook
 
 
 [tool.pixi.dependencies]
-cyclopts = ">=3.22.2,<4"
-gdal = ">=3.10.3,<4"
-geopandas = ">=1.1.1,<2"
-ipykernel = ">=6.29.5,<7"
-planetary-computer = ">=1.0.0,<2"
-pdal = ">=2.8.4,<3"
-pystac-client = ">=0.8.6,<0.9"
-rioxarray = ">=0.19.0,<0.20"
-requests = ">=2.32.4,<3"
-scipy = ">=1.16.0,<2"
-odc-stac = ">=0.4.0,<0.5"
-dask = ">=2025.7.0,<2026"
-distributed = ">=2025.7.0,<2026"
+cyclopts = "*"
+dask = "*"
+distributed = "*"
+gdal = "*"
+geopandas = "*"
+ipykernel = "*"
+planetary-computer = "*"
+pdal = "*"
+pystac-client = "*"
+rioxarray = "*"
+requests = "*"
+scipy = "*"
+odc-stac = "*"
 
 [tool.pixi.pypi-dependencies]
 lidar_tools = { path = ".", editable = true }
@@ -81,3 +97,34 @@ lidar_tools = { path = ".", editable = true }
 mypy = "*"
 pytest = "*"
 ruff = "*"
+
+# The following section is for building .conda packages
+# NOTE: A lot of this is duplicated from [project] which used for pypi packages
+# This is a 'preview' feature so likely will change rapidly
+# https://github.com/prefix-dev/pixi/issues/3166
+[tool.pixi.package]
+name = "lidar_tools"
+version = "0.2.0"
+
+[tool.pixi.package.build.backend]
+name = "pixi-build-python"
+version = "==0.3.2"
+
+[tool.pixi.package.host-dependencies]
+hatchling = "*"
+
+[tool.pixi.package.run-dependencies]
+# NOTE: keep consistent with dependencies listed above
+cyclopts = ">=3.16.1"
+dask = ">=2025.7.0,<2026"
+distributed = ">=2025.7.0,<2026"
+gdal = ">=3.10.3"
+geopandas = ">=1.0.1"
+ipykernel = ">=6.29.5"
+planetary-computer = ">=1.0.0"
+python-pdal = ">=3.4.5"
+pystac-client = ">=0.8.6"
+rioxarray = ">=0.19.0"
+requests = ">=2.32.3"
+scipy = ">=1.15.2"
+odc-stac = ">=0.4.0"
