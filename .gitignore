@@ -1,6 +1,8 @@
 *.bak
 *.conda
+*.ipynb
 *.tif
+tests/debug.ipynb
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

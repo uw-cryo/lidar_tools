@@ -1,6 +1,6 @@
 [project]
 name = "lidar_tools"
-version="0.1.0"
+version="0.2.0"
 authors = [
   { name = "Scott Henderson", email = "scottyh@uw.edu" },
   { name = "David Shean", email = "dshean@uw.edu" },
@@ -22,6 +22,8 @@ classifiers = [
 
 dependencies = [
   "cyclopts >=3.16.1,<4",
+  "dask >=2025.7.0,<2026",
+  "distributed >=2025.7.0,<2026",
   "gdal >=3.10.3,<4",
   "geopandas >=1.0.1,<2",
   "ipykernel >=6.29.5,<7",
@@ -43,38 +45,40 @@ requires = ["hatchling"]
 dev = [
   "mypy >=1.15.0,<2",
   "pytest >=8.3.5,<9",
-  "ruff >=0.11.10,<0.12"
+  "ruff >=0.11.10,<0.13"
 ]
 
 [project.scripts]
-pdal_pipeline = "lidar_tools.cli:app"
+lidar-tools = "lidar_tools.cli:app"
 
 [tool.ruff.lint.per-file-ignores]
 "pdal_pipeline.py" = ["E402"]
 
 [tool.pixi.workspace]
-channels = [
-  "https://prefix.dev/pixi-build-backends",
-  "conda-forge",
-]
-platforms = ["linux-64", "osx-arm64"]
-# NOTE: pixi-build is for building .conda package specificifations that can be installed via conda or mamba (or uploaded to a registry like conda-forge
+channels = ["conda-forge"]
+platforms = ["linux-64", "osx-arm64", "osx-64"]
 preview = ["pixi-build"]
 
 [tool.pixi.environments]
 dev = { features = ["dev"], solve-group = "default" }
 
 [tool.pixi.tasks]
-example = "pdal_pipeline create-dsm  notebooks/uw-campus.geojson notebooks/UTM_10N_WGS84_G2139_3D.wkt /tmp/dem"
+example = "lidar-tools rasterize --geometry notebooks/uw-campus.geojson --output /tmp/lidar-tools-example"
 
 [tool.pixi.feature.dev.tasks]
 test = "pytest"
 typecheck = "mypy src/lidar_tools/"
 lint = "ruff check src/lidar_tools/ --fix ; ruff format"
-test-create-dsm = "pdal_pipeline create-dsm  notebooks/uw-campus.geojson notebooks/UTM_10N_WGS84_G2139_3D.wkt /tmp/dem"
+test-example-local = "time lidar-tools rasterize --overwrite --cleanup --geometry notebooks/uw-campus.geojson --input ~/Data/lidar_tools/WA_KingCounty_2021_B21 --output /tmp/lidar-tools-test-local"
+test-example-ept = "time lidar-tools rasterize --cleanup --geometry notebooks/uw-campus.geojson --output /tmp/lidar-tools-test-ept"
+test-example-parallel = "time lidar-tools rasterize --num-process 5 --geometry notebooks/uw-campus.geojson --output /tmp/test/uwcampus-parallel --dst-crs notebooks/UTM_10N_WGS84_G2139_3D.wkt"
+test-example-cleanup = "time lidar-tools rasterize --cleanup --geometry notebooks/uw-campus.geojson --output /tmp/test/uwcampus-cleanup --num-process 5"
+
 
 [tool.pixi.dependencies]
 cyclopts = "*"
+dask = "*",
+distributed "*",
 gdal = "*"
 geopandas = "*"
 ipykernel = "*"
@@ -87,15 +91,12 @@ scipy = "*"
 odc-stac = "*"
 
 [tool.pixi.pypi-dependencies]
-lidar_tools = { path = ".", editable = false }
+lidar_tools = { path = ".", editable = true }
 
 [tool.pixi.feature.dev.dependencies]
 mypy = "*"
 pytest = "*"
 ruff = "*"
-
-[tool.pixi.feature.dev.pypi-dependencies]
-lidar_tools = { path = ".", editable = true }
 
 # The following section is for building .conda packages
 # NOTE: A lot of this is duplicated from [project] which used for pypi packages
@@ -103,16 +104,20 @@ lidar_tools = { path = ".", editable = true }
 # https://github.com/prefix-dev/pixi/issues/3166
 [tool.pixi.package]
 name = "lidar_tools"
-version = "0.1.0"
+version = "0.2.0"
 
 [tool.pixi.package.build]
-backend = { name = "pixi-build-python", version = "0.1.*" }
+name = "pixi-build-python"
+version = "==0.3.2"
 
 [tool.pixi.package.host-dependencies]
 hatchling = "*"
 
 [tool.pixi.package.run-dependencies]
+# NOTE: keep consistent with dependencies listed above
 cyclopts = ">=3.16.1"
+dask = ">=2025.7.0,<2026"
+distributed = ">=2025.7.0,<2026"
 gdal = ">=3.10.3"
 geopandas = ">=1.0.1"
 ipykernel = ">=6.29.5"
