@@ -37,6 +37,9 @@ def rasterize(
     num_process: int = 1,
     overwrite: Annotated[bool, cyclopts.Parameter(negative="")] = False,
     cleanup: Annotated[bool, cyclopts.Parameter(negative="")] = False,
+    proj_pipeline: str = None,
+    filter_high_noise: bool = True,
+    hag_nn: float = None,
 ) -> None:
     """
     Create a Digital Surface Model (DSM), Digital Terrain Model (DTM) and/or Intensity raster from point cloud data.
@@ -69,6 +72,14 @@ def rasterize(
         Overwrite output files if they already exist.
     cleanup
         Remove the intermediate tif files, keep only final mosaiced rasters.
+    proj_pipeline
+        A PROJ pipeline string to be used for reprojection of the point cloud. If specified, this will be used in combination with the target_wkt option.
+    local_utm
+        If true, automatically compute the local UTM zone from the extent polygon for final output products. If false, use the CRS defined in the target_wkt file.
+    filter_high_noise
+        Remove high noise points (classification==18) from the point cloud before DSM and surface intensity processing. Default is True.
+    hag_nn
+        If specified, the height above ground (HAG) will be calculated using all nearest ground classied points, and all points greater than this value will be classified as high noise, by default None.
 
     Returns
     -------
@@ -162,6 +173,8 @@ def rasterize(
             # TODO: handle new 3dep project keyword here
             process_specific_3dep_survey=process_specific_3dep_survey,
             process_all_intersecting_surveys=process_all_intersecting_surveys,
+            filter_high_noise=filter_high_noise,
+            hag_nn=hag_nn,
         )
     else:
         print(f"Processing local laz files from {input}")
@@ -184,6 +197,9 @@ def rasterize(
             output_prefix=output_prefix,
             extent_polygon=extent_polygon,
             buffer_value=5,
+            proj_pipeline=proj_pipeline,
+            filter_high_noise=filter_high_noise,
+            hag_nn=hag_nn,
         )
 
     # TODO: refactor into function

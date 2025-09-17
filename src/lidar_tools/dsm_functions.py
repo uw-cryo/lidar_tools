@@ -326,7 +326,7 @@ def return_local_lpc_reader(
             output_bounds = intersection.total_bounds
             # crop to extent of intersection area
             if buffer_value is not None:
-                intesection = intersection.buffer(buffer_value)
+                intersection = intersection.buffer(buffer_value)
             intersection_bounds = intersection.total_bounds
 
             crop_filter = {
@@ -359,6 +359,7 @@ def return_local_lpc_reader(
 def create_pdal_pipeline(
     filter_low_noise: bool = False,
     filter_high_noise: bool = False,
+    hag_nn: float = None,
     filter_road: bool = False,
     reset_classes: bool = False,
     reclassify_ground: bool = False,
@@ -367,6 +368,7 @@ def create_pdal_pipeline(
     percentile_threshold: float = 0.95,
     group_filter: str = "first,only",
     reproject: bool = True,
+    proj_pipeline: str = None,
     save_pointcloud: bool = False,
     pointcloud_file: str = "pointcloud",
     input_crs: CRS = None,
@@ -382,7 +384,9 @@ def create_pdal_pipeline(
         Whether to filter low noise points, by default False.
     filter_high_noise
         Whether to filter high noise points, by default False.
-    filter_road
+    hag_nn
+        If specified, the height above ground (HAG) will be calculated using all nearest ground classified points, and all points greater than this value will be classified as high noise, by default None.
+    filter_road : bool, optional
         Whether to filter road points, by default False.
     reset_classes
         Whether to reset point classifications, by default False.
@@ -398,6 +402,8 @@ def create_pdal_pipeline(
         The group filter to apply, by default "first,only" for generating DSM.
     reproject
         Whether to reproject the point cloud, by default True.
+    proj_pipeline
+        A PROJ pipeline string to be used for reprojection of the point cloud. If specified, this will be used in combination with the input_crs and output_crs options.
     save_pointcloud
         Whether to save the point cloud to a file, by default False.
     pointcloud_file
@@ -471,27 +477,40 @@ def create_pdal_pipeline(
     else:
         # we apply the percentile filter first as it
         # classifies detected outliers as 'high noise'
-        if group_filter is not None:
-            pipeline.append(stage_group_filter)
+
         if percentile_filter:
             pipeline.append(stage_percentile_filter)
         if filter_low_noise:
             pipeline.append(stage_filter_low_noise)
+        if hag_nn is not None:
+            # if hag_nn is specified, we classify all points with HAG greater than hag_nn as high noise
+            stage_hag_nn = {
+                "type": "filters.hag_nn"}
+            stage_hag_nn_filter = {
+                "type": "filters.assign",
+                "value": [f"Classification = 18 WHERE HeightAboveGround > {hag_nn}"]
+            }
+            pipeline.append(stage_hag_nn)
+            pipeline.append(stage_hag_nn_filter)
+
+            filter_high_noise = True # ensure that we filter high noise points if hag_nn is specified
         if percentile_filter or filter_high_noise:
             pipeline.append(stage_filter_high_noise)
         if filter_road:
             pipeline.append(stage_filter_road)
-
+        if group_filter is not None:
+            pipeline.append(stage_group_filter)
     # For creating DTMs, we want to process only ground returns
     if return_only_ground:
         pipeline.append(stage_return_ground)
 
     if (output_crs is not None) & (input_crs is not None) and (reproject is True):
-        stage_reprojection = {
-            "type": "filters.reprojection",
-            "out_srs": str(output_crs),
-        }
-        stage_reprojection["in_srs"] = str(input_crs)
+        if proj_pipeline is not None:
+            stage_reprojection = {"type": "filters.projpipeline", "out_srs": str(output_crs)}
+            stage_reprojection["coord_op"] = proj_pipeline
+        else:
+            stage_reprojection = {"type": "filters.reprojection", "out_srs": str(output_crs)}
+            stage_reprojection["in_srs"] = str(input_crs)
         pipeline.append(stage_reprojection)
 
     # the pipeline can save the pointclouds to a separate file if needed
@@ -1061,27 +1080,27 @@ def gdal_warp(
         targetAlignedPixels=True,
         # use directly output format as COG when gaussian overview resampling is implemented upstream in GDAL
         outputBounds=out_extent,
-        creationOptions=[
-            "COMPRESS=LZW",
-            "TILED=YES",
-            "COPY_SRC_OVERVIEWS=YES",
-            "BIGTIFF=IF_NEEDED",
-        ],
-        multithread=True,
+        creationOptions=["COMPRESS=LZW", "TILED=YES", "COPY_SRC_OVERVIEWS=YES","BIGTIFF=IF_SAFER"],
         callback=gdal.TermProgress_nocb,
+        multithread=True,
     )
     gdal.SetConfigOption("GDAL_NUM_THREADS", None)
     ds.Close()
 
 
-def gdal_add_overview(raster_fn: str) -> None:
+
+def gdal_add_overview(raster_fn: str,ensure_cog=True) -> None:
     """
-    Add overviews to a raster file using GDAL.
+    Add Gaussian overviews to a raster file using GDAL.
+    Converts the raster to a COG,
+        as adding Gaussian overviews added to tiled and compressed rasters does not automatically ensure COG compliance
 
     Parameters
     ----------
     raster_fn
         Path to the raster file.
+    ensure_cog
+        Whether to ensure the output raster is a COG, by default True.
 
     Returns
     -------
@@ -1091,10 +1110,20 @@ def gdal_add_overview(raster_fn: str) -> None:
     print(f"Adding Gaussian overviews to {raster_fn}")
     with gdal.OpenEx(raster_fn, 1, open_options=["IGNORE_COG_LAYOUT_BREAK=YES"]) as ds:
         gdal.SetConfigOption("COMPRESS_OVERVIEW", "DEFLATE")
-        ds.BuildOverviews("GAUSS", [2, 4, 8, 16], callback=gdal.TermProgress_nocb)
+        ds.BuildOverviews(
+            "GAUSS", [2, 4, 8, 16], callback=gdal.TermProgress_nocb
+        )
 
-
-###### Provider specific functions to return appropriate pipelines for raster creation
+    if ensure_cog:
+        temp_fn =Path(raster_fn).parent / f"{Path(raster_fn).stem}-cop-temp.tif"
+        gdal.Translate(
+            str(temp_fn),
+            raster_fn,
+            format="COG",
+            creationOptions=["OVERVIEWS=FORCE_USE_EXISTING","BIGTIFF=IF_SAFER"],
+            callback=gdal.TermProgress_nocb,
+        )
+        rename_rasters(str(temp_fn), raster_fn)
 
 
 def create_lpc_pipeline(
@@ -1103,9 +1132,12 @@ def create_lpc_pipeline(
     target_wkt: str,
     output_prefix: str,
     extent_polygon: str,
+    input_crs: str = None,
+    proj_pipeline: str = None,
     raster_resolution: float = 1.0,
-    buffer_value: float = 5.0,
-) -> tuple[list, list, list, list]:
+    filter_high_noise: bool = True,
+    hag_nn: float = None,
+    buffer_value: float = 5.0) -> tuple[list, list, list, list]:
     """
     Create PDAL pipelines for processing local LiDAR point clouds (LPC) to generate DEM products
 
@@ -1121,10 +1153,17 @@ def create_lpc_pipeline(
         Prefix for the output files, which will be used to create output file names.
     extent_polygon
         Path to a polygon file defining the area of interest (AOI) for processing.
-    raster_resolution
-        Resolution for the output raster files.
-    buffer_value
-        Buffer value to apply to the AOI bounds when reading points for rasterization.
+    proj_pipeline : str, optional
+        PROJ pipeline string for reprojection, by default None.
+        If None, the reprojection will be handled by GDAL using the input and output CRS.
+    raster_resolution : float, optional
+        Resolution for the output raster files, by default 1.0.
+    filter_high_noise : bool, optional
+        Remove high noise points (classification==18) from the point cloud before DSM and surface intensity processing. Default is True.
+    hag_nn : float, optional
+        If specified, the height above ground (HAG) will be calculated using all nearest ground classied points, and all points greater than this value will be classified as high noise, by default None.
+    buffer_value : float, optional
+        Buffer value to apply to the AOI bounds when reading points for rasterization, by default 5.0.
 
     Returns
     -------
@@ -1160,7 +1199,6 @@ def create_lpc_pipeline(
             readers.append(reader)
             original_extents.append(out_extent)
             input_crs_list.append(in_crs)
-
     output_path = Path(output_prefix).parent
     prefix = Path(output_prefix).name
     output_path = Path(output_path)
@@ -1196,10 +1234,12 @@ def create_lpc_pipeline(
         pipeline_dsm = reader
         pdal_pipeline_dsm = create_pdal_pipeline(
             group_filter="first,only",
-            reproject=True,  # reproject to the output CRS
+            reproject=True, # reproject to the output CRS
+            proj_pipeline=proj_pipeline,
             input_crs=input_crs_list[i],
             output_crs=out_crs,
-        )
+            filter_high_noise=filter_high_noise,
+            hag_nn=hag_nn)
         dsm_stage = create_dem_stage(
             dem_filename=str(dsm_file),
             extent=original_extents[i],
@@ -1221,14 +1261,14 @@ def create_lpc_pipeline(
         ## DTM creation block
 
         pdal_pipeline_dtm_no_z_fill = create_pdal_pipeline(
-            return_only_ground=True,
-            group_filter=None,
-            reproject=True,  # reproject to the output CRS
-            input_crs=input_crs_list[i],
-            output_crs=out_crs,
-        )
+                return_only_ground=True,
+                group_filter=None,
+                reproject=True, # reproject to the output CRS
+                proj_pipeline=proj_pipeline,
+                input_crs=input_crs_list[i],
+                output_crs=out_crs)
 
-        pdal_pipeline_dtm_z_fill = pdal_pipeline_dtm_no_z_fill.copy()  # for later
+        pdal_pipeline_dtm_z_fill = pdal_pipeline_dtm_no_z_fill.copy() #for later
 
         dtm_stage = create_dem_stage(
             dem_filename=str(dtm_file_no_z_fill),
@@ -1278,11 +1318,13 @@ def create_lpc_pipeline(
         ## Intensity creation block
 
         pdal_pipeline_surface_intensity = create_pdal_pipeline(
-            group_filter="first,only",
-            reproject=True,  # reproject to the output CRS
-            input_crs=input_crs_list[i],
-            output_crs=out_crs,
-        )
+                group_filter="first,only",
+                reproject=True, # reproject to the output CRS
+                input_crs=input_crs_list[i],
+                output_crs=out_crs,
+                proj_pipeline=proj_pipeline,
+                filter_high_noise=filter_high_noise,
+                hag_nn=hag_nn)
 
         intensity_stage = create_dem_stage(
             dem_filename=str(intensity_file),
@@ -1321,6 +1363,8 @@ def create_ept_3dep_pipeline(
     raster_resolution: float = 1.0,
     tile_size_km: float = 1.0,
     buffer_value: float = 5.0,
+    filter_high_noise: bool = True,
+    hag_nn: float = None,
     process_specific_3dep_survey: str = None,
     process_all_intersecting_surveys: bool = False,
 ) -> tuple[list, list, list, list]:
@@ -1337,6 +1381,10 @@ def create_ept_3dep_pipeline(
         Prefix for the output files, which will be used to create output file names.
     raster_resolution
         Resolution for the output raster files, by default 1.0.
+    filter_high_noise
+        Remove high noise points (classification==18) from the point cloud before DSM and surface intensity processing. Default is True.
+    hag_nn
+        If specified, the height above ground (HAG) will be calculated using all nearest ground classified points, and all points greater than this value will be classified as high noise, by default None.
     tile_size_km
         Size of the tiles in kilometers for processing, by default 1.0.
     buffer_value
@@ -1398,8 +1446,11 @@ def create_ept_3dep_pipeline(
         ## DSM creation block
         pipeline_dsm = {"pipeline": [reader]}
         pdal_pipeline_dsm = create_pdal_pipeline(
-            group_filter="first,only", reproject=False, input_crs=POINTCLOUD_CRS[i]
-        )
+                group_filter="first,only",
+                reproject=False,
+                input_crs=POINTCLOUD_CRS[i],
+                filter_high_noise=filter_high_noise,
+                hag_nn=hag_nn)
 
         dsm_stage = create_dem_stage(
             dem_filename=str(dsm_file),
@@ -1477,11 +1528,12 @@ def create_ept_3dep_pipeline(
         ## Intensity pipeline
         pipeline_intensity = {"pipeline": [reader]}
         pdal_pipeline_surface_intensity = create_pdal_pipeline(
-            return_only_ground=False,
-            group_filter="first,only",
-            reproject=False,
-            input_crs=POINTCLOUD_CRS[i],
-        )
+                return_only_ground=False,
+                group_filter="first,only",
+                reproject=False,
+                input_crs=POINTCLOUD_CRS[i],
+                filter_high_noise=filter_high_noise,
+                hag_nn=hag_nn)
 
         intensity_stage = create_dem_stage(
             dem_filename=str(intensity_file),
