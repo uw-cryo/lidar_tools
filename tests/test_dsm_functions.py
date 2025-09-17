@@ -49,11 +49,14 @@ def test_return_readers():
             tile_size_km=1,
             buffer_value=5,
             return_specific_3dep_survey=None,
-            return_all_intersecting_surveys=False)
+            return_all_intersecting_surveys=False,
+        )
     )
 
     assert len(readers) == 12
-    assert {"type", "filename", "requests", "resolution", "polygon"} == set(readers[0].keys())
+    assert {"type", "filename", "requests", "resolution", "polygon"} == set(
+        readers[0].keys()
+    )
     assert isinstance(crslist[0], pyproj.CRS)
     assert buff_reader_extent_list[0] == (
         -13615921.0,
@@ -62,7 +65,7 @@ def test_return_readers():
         6049236.0,
     )
     assert original_dem_tile_grid_extent_list[0] == [
-       -13615916.0,
+        -13615916.0,
         6048230.0,
         -13614915.0,
         6049231.0,

@@ -1,3 +1,6 @@
+*.bak
+*.conda
+*.ipynb
 *.tif
 tests/debug.ipynb
 
