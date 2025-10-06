@@ -367,7 +367,7 @@ def create_pdal_pipeline(
     reclassify_ground: bool = False,
     return_only_ground: bool = False,
     percentile_filter: bool = False,
-    percentile_threshold: float = 0.95,
+    percentile_threshold: float = 0.98,
     group_filter: str = "first,only",
     reproject: bool = True,
     proj_pipeline: str = None,
@@ -1212,6 +1212,8 @@ def create_lpc_pipeline(local_laz_dir: str,
             proj_pipeline=proj_pipeline,           
             input_crs=input_crs_list[i],
             output_crs=out_crs,
+            save_pointcloud=True,
+            pointcloud_file=os.path.splitext(dsm_file)[0]+".laz",
             filter_high_noise=filter_high_noise,
             hag_nn=hag_nn)  
         dsm_stage = create_dem_stage(
