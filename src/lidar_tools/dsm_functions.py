@@ -567,8 +567,8 @@ def create_dem_stage(
         "resolution": float(pointcloud_resolution),
         "origin_x": origin_x,
         "origin_y": origin_y,
-        "width": width,
-        "height": height,
+        "width": int(width),
+        "height": int(height),
         "gdalopts": "COMPRESS=LZW,TILED=YES,blockxsize=256,blockysize=256,COPY_SRC_OVERVIEWS=YES",
     }
 
@@ -1422,7 +1422,7 @@ def create_ept_3dep_pipeline(
     # fetch the readers for the pointclouds
     readers, POINTCLOUD_CRS, extents, original_extents = return_readers(
         gdf,
-        pointcloud_resolution=raster_resolution/2,  # fetch points at half (finer scale) the raster resolution (suggested by HOBU)
+        pointcloud_resolution=raster_resolution,
         tile_size_km=tile_size_km,
         buffer_value=buffer_value,
         return_specific_3dep_survey=process_specific_3dep_survey,

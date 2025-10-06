@@ -210,7 +210,7 @@ def rasterize(
             proj_pipeline=proj_pipeline,
             filter_high_noise=filter_high_noise,
             filter_low_noise=filter_low_noise,
-            hag_nn=hag_nn,
+            hag_nn=height_above_ground_threshold,
             raster_resolution=resolution
         )
 
@@ -295,7 +295,7 @@ def rasterize(
         else:
             out_extent = final_out_extent
             cog = True
-        print("Running ing sequentially")
+        print("Running sequentially")
         if products == "all" or products == "dsm":
             print(f"Creating DSM mosaic at {dsm_mos_fn}")
             dsm_functions.raster_mosaic(
@@ -364,6 +364,7 @@ def rasterize(
                     dsm_reproj,
                     src_srs,
                     dst_crs,
+                    res=resolution,
                     resampling_alogrithm="bilinear",
                     out_extent=out_extent,
                 )
@@ -374,6 +375,7 @@ def rasterize(
                     dtm_no_fill_reproj,
                     src_srs,
                     dst_crs,
+                    res=resolution,
                     resampling_alogrithm="bilinear",
                     out_extent=out_extent,
                 )
@@ -382,6 +384,7 @@ def rasterize(
                     dtm_fill_reproj,
                     src_srs,
                     dst_crs,
+                    res=resolution,
                     resampling_alogrithm="bilinear",
                     out_extent=out_extent,
                 )
@@ -392,6 +395,7 @@ def rasterize(
                     intensity_reproj,
                     src_srs,
                     dst_crs,
+                    res=resolution,
                     resampling_alogrithm="bilinear",
                     out_extent=out_extent,
                 )
