@@ -38,8 +38,8 @@ def rasterize(
     overwrite: Annotated[bool, cyclopts.Parameter(negative="")] = False,
     cleanup: Annotated[bool, cyclopts.Parameter(negative="")] = False,
     proj_pipeline: str = None,
-    filter_high_noise: bool = True,
-    hag_nn: float = None,
+    filter_noise: bool = True,
+    height_above_ground_threshold: float = None,
 ) -> None:
     """
     Create a Digital Surface Model (DSM), Digital Terrain Model (DTM) and/or Intensity raster from point cloud data.
@@ -76,10 +76,10 @@ def rasterize(
         A PROJ pipeline string to be used for reprojection of the point cloud. If specified, this will be used in combination with the target_wkt option.
     local_utm
         If true, automatically compute the local UTM zone from the extent polygon for final output products. If false, use the CRS defined in the target_wkt file.
-    filter_high_noise
-        Remove high noise points (classification==18) from the point cloud before DSM and surface intensity processing. Default is True.
-    height_above_ground_threshold 
-        If specified, the height above ground (HAG) will be calculated using all nearest ground classied points, and all points greater than this value will be classified as high noise, by default None.
+    filter_noise
+        Remove noise points (classification==18 and classification==7) from the point cloud before DSM, DTM and surface intensity processing. Default is True.
+    height_above_ground_threshold
+        If specified, the height above ground (HAG) will be calculated using all nearest ground classied points, and all points greater than this value will be classified as noise, by default None.
 
     Returns
     -------
@@ -155,10 +155,18 @@ def rasterize(
         process_all_intersecting_surveys = False
         process_specific_3dep_survey = threedep_project
 
+    if filter_noise:
+        filter_high_noise = True
+        filter_low_noise = True
+    else:
+        filter_high_noise = False
+        filter_low_noise = False
     # TODO: create EPT for local laz for common workflow? https://github.com/uw-cryo/lidar_tools/issues/14#issuecomment-3076045321
+    # SB note: The main reason for seperate EPT and local laz pipelines is the difference in projection handling, not much due to difference in file formats.
     if input == "EPT_AWS":
         print("Processing 3DEP EPT tiles from AWS")
         # TODO: handle new positional args, skip products not requested
+        
         (
             dsm_pipeline_list,
             dtm_no_fill_pipeline_list,
@@ -168,13 +176,15 @@ def rasterize(
             extent_polygon,
             dst_crs,
             output_prefix,
-            buffer_value=5,
+            buffer_value=10*resolution, # buffer is based on output resolution
             tile_size_km=tile_size,  # TODO: ensure we can do non-km units
             # TODO: handle new 3dep project keyword here
             process_specific_3dep_survey=process_specific_3dep_survey,
             process_all_intersecting_surveys=process_all_intersecting_surveys,
             filter_high_noise=filter_high_noise,
-            hag_nn=hag_nn,
+            filter_low_noise=filter_low_noise,
+            hag_nn=height_above_ground_threshold,
+            raster_resolution=resolution
         )
     else:
         print(f"Processing local laz files from {input}")
@@ -196,10 +206,12 @@ def rasterize(
             target_wkt=dst_crs,
             output_prefix=output_prefix,
             extent_polygon=extent_polygon,
-            buffer_value=5,
+            buffer_value=10*resolution, # buffer is based on output resolution
             proj_pipeline=proj_pipeline,
             filter_high_noise=filter_high_noise,
+            filter_low_noise=filter_low_noise,
             hag_nn=hag_nn,
+            raster_resolution=resolution
         )
 
     # TODO: refactor into function

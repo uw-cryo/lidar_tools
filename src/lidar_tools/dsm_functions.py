@@ -1128,7 +1128,6 @@ def gdal_add_overview(raster_fn: str,ensure_cog=True) -> None:
 
 def create_lpc_pipeline(
     local_laz_dir: str,
-    input_crs: str,
     target_wkt: str,
     output_prefix: str,
     extent_polygon: str,
@@ -1136,6 +1135,7 @@ def create_lpc_pipeline(
     proj_pipeline: str = None,
     raster_resolution: float = 1.0,
     filter_high_noise: bool = True,
+    filter_low_noise: bool = True,
     hag_nn: float = None,
     buffer_value: float = 5.0) -> tuple[list, list, list, list]:
     """
@@ -1241,6 +1241,7 @@ def create_lpc_pipeline(
             save_pointcloud=True,
             pointcloud_file=os.path.splitext(dsm_file)[0]+".laz",
             filter_high_noise=filter_high_noise,
+            filter_low_noise=filter_low_noise,
             hag_nn=hag_nn)
         dsm_stage = create_dem_stage(
             dem_filename=str(dsm_file),
@@ -1268,6 +1269,8 @@ def create_lpc_pipeline(
                 reproject=True, # reproject to the output CRS
                 proj_pipeline=proj_pipeline,
                 input_crs=input_crs_list[i],
+                filter_high_noise=filter_high_noise,
+                filter_low_noise=filter_low_noise,
                 output_crs=out_crs)
 
         pdal_pipeline_dtm_z_fill = pdal_pipeline_dtm_no_z_fill.copy() #for later
@@ -1326,6 +1329,7 @@ def create_lpc_pipeline(
                 output_crs=out_crs,
                 proj_pipeline=proj_pipeline,
                 filter_high_noise=filter_high_noise,
+                filter_low_noise=filter_low_noise,
                 hag_nn=hag_nn)
 
         intensity_stage = create_dem_stage(
@@ -1366,6 +1370,7 @@ def create_ept_3dep_pipeline(
     tile_size_km: float = 1.0,
     buffer_value: float = 5.0,
     filter_high_noise: bool = True,
+    filter_low_noise: bool = True,
     hag_nn: float = None,
     process_specific_3dep_survey: str = None,
     process_all_intersecting_surveys: bool = False,
@@ -1385,6 +1390,8 @@ def create_ept_3dep_pipeline(
         Resolution for the output raster files, by default 1.0.
     filter_high_noise
         Remove high noise points (classification==18) from the point cloud before DSM and surface intensity processing. Default is True.
+    filter_low_noise
+        Remove low points (classification==7) from the point cloud before DSM, DTM and surface intensity processing. Default is True.    
     hag_nn
         If specified, the height above ground (HAG) will be calculated using all nearest ground classified points, and all points greater than this value will be classified as high noise, by default None.
     tile_size_km
@@ -1415,7 +1422,7 @@ def create_ept_3dep_pipeline(
     # fetch the readers for the pointclouds
     readers, POINTCLOUD_CRS, extents, original_extents = return_readers(
         gdf,
-        pointcloud_resolution=1,
+        pointcloud_resolution=raster_resolution/2,  # fetch points at half (finer scale) the raster resolution (suggested by HOBU)
         tile_size_km=tile_size_km,
         buffer_value=buffer_value,
         return_specific_3dep_survey=process_specific_3dep_survey,
@@ -1452,6 +1459,7 @@ def create_ept_3dep_pipeline(
                 reproject=False,
                 input_crs=POINTCLOUD_CRS[i],
                 filter_high_noise=filter_high_noise,
+                filter_low_noise=filter_low_noise,
                 hag_nn=hag_nn)
 
         dsm_stage = create_dem_stage(
@@ -1480,6 +1488,8 @@ def create_ept_3dep_pipeline(
             return_only_ground=True,
             group_filter=None,
             reproject=False,
+            filter_high_noise=filter_high_noise,
+            filter_low_noise=filter_low_noise,
             input_crs=POINTCLOUD_CRS[i],
         )
         pdal_pipeline_dtm_z_fill = pdal_pipeline_dtm_no_z_fill.copy()  # for later
@@ -1535,6 +1545,7 @@ def create_ept_3dep_pipeline(
                 reproject=False,
                 input_crs=POINTCLOUD_CRS[i],
                 filter_high_noise=filter_high_noise,
+                filter_low_noise=filter_low_noise,
                 hag_nn=hag_nn)
 
         intensity_stage = create_dem_stage(
