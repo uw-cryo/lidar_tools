@@ -555,8 +555,14 @@ def create_dem_stage(
     # compute raster width and height
     width = (extent[2] - extent[0]) / pointcloud_resolution
     height = (extent[3] - extent[1]) / pointcloud_resolution
-    origin_x = extent[0]
-    origin_y = extent[1]
+    #fix origin extent precision with respect to input resolution
+    #from https://www.reddit.com/r/pythontips/comments/zw5ana/how_to_count_decimal_places/
+    import decimal
+    d = decimal.Decimal(str(pointcloud_resolution))
+    precision = abs(d.as_tuple().exponent)
+
+    origin_x = np.round(extent[0],precision)
+    origin_y = np.round(extent[1],precision)
     dem_stage = {
         "type": "writers.gdal",
         "filename": dem_filename,

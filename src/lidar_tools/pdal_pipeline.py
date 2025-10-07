@@ -135,6 +135,13 @@ def rasterize(
         out_crs = CRS.from_string(contents)
     out_extent = gdf.to_crs(out_crs).total_bounds
     final_out_extent = dsm_functions.tap_bounds(out_extent, res=resolution)
+    #fix extent precision with respect to input resolution
+    #from https://www.reddit.com/r/pythontips/comments/zw5ana/how_to_count_decimal_places/
+    import decimal
+    d = decimal.Decimal(str(resolution))
+    precision = abs(d.as_tuple().exponent)
+    final_out_extent = [np.round(val,precision) for val in final_out_extent]
+    
     # TODO: simplify and use tempfile (https://github.com/uw-cryo/lidar_tools/pull/25#discussion_r2177660328)
     # TODO: here and elsewhere use logging instead of prints
     print(f"Output extent in target CRS is {final_out_extent}")
@@ -295,6 +302,7 @@ def rasterize(
         else:
             out_extent = final_out_extent
             cog = True
+            
         print("Running sequentially")
         if products == "all" or products == "dsm":
             print(f"Creating DSM mosaic at {dsm_mos_fn}")
