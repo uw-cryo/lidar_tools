@@ -11,14 +11,21 @@
 
 Tools to process airborne and satellite LiDAR point clouds.
 
-![UW Campus preview](https://github.com/user-attachments/assets/08798588-17d3-4e4b-b2c4-ee70a1ec0a7b)
-*Sample of standard products created with lidar_tools `pdal_pipeline` utility for University of Washington Campus AOI, using publicly-available USGS 3DEP lidar point clouds ([WA_KingCounty_2021_B21](https://prd-tnm.s3.amazonaws.com/StagedProducts/Elevation/metadata/WA_KingCounty_2021_B21/WA_KingCo_1_2021/reports/WA_KingCounty_2021_B21_Lidar_Delivery_1_Technical_Data_Report.pdf))*
+
 
 **Warning!** This package is under active development and may change rapidly!
 
 ## Datasets Supported
 * [3DEP AWS Public Dataset](https://registry.opendata.aws/usgs-lidar/)
 * Locally available, classified LiDAR point clouds in las/laz format
+
+## Output Products
+* Digital Surface Models: IDW interpolation based gridding of height values for `first` and `only` returns.
+* Digital Terrain Models: IDW interpolation based gridding of height values for `ground` returns (Classification==2). We do not perform ground classification ourselves, input point clouds need to have ground returns labelled for terrain models generation. An additional gap-filled product using IDW interpolation with a 9 x 9 kernel can also be produced which is useful in reducing data gaps in areas with dense canopy or buildings.
+* Surface Intensity: IDW interpolation based gridding of surface intensity values for `first` and `only` returns.
+
+![UW Campus preview](https://github.com/user-attachments/assets/08798588-17d3-4e4b-b2c4-ee70a1ec0a7b)
+*Sample of standard products created with lidar_tools `rasterize` utility for University of Washington Campus AOI, using publicly-available USGS 3DEP lidar point clouds ([WA_KingCounty_2021_B21](https://prd-tnm.s3.amazonaws.com/StagedProducts/Elevation/metadata/WA_KingCounty_2021_B21/WA_KingCo_1_2021/reports/WA_KingCounty_2021_B21_Lidar_Delivery_1_Technical_Data_Report.pdf))*
 
 
 ## Quickstart
@@ -58,23 +65,29 @@ Usage: lidar-tools rasterize [ARGS] [OPTIONS]
 
 Create a Digital Surface Model (DSM), Digital Terrain Model (DTM) and/or Intensity raster from point cloud data.
 
-╭─ Parameters ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
-│ *  GEOMETRY --geometry                  Path to the vector dataset containing a single polygon that defines the processing extent. [required]                     │
-│    INPUT --input                        Path to directory containing input LAS/LAZ files, otherwise uses USGS 3DEP EPT data on AWS. [default: EPT_AWS]            │
-│    OUTPUT --output                      Path to output directory. [default: /tmp/lidar-tools-output]                                                              │
-│    SRC-CRS --src-crs                    Path to file with PROJ-supported CRS definition to override CRS of input files.                                           │
-│    DST-CRS --dst-crs                    Path to file with PROJ-supported CRS definition for the output. If unspecified, a local UTM CRS will be used.             │
-│    RESOLUTION --resolution              Square output raster posting in units of dst_crs. [default: 1.0]                                                          │
-│    PRODUCTS --products                  Which output products to generate: all products, digital surface model, digital terrain model, or intensity raster.       │
-│                                         [choices: all, dsm, dtm, intensity] [default: all]                                                                        │
-│    THREEDEP-PROJECT --threedep-project  "all" processes all available 3DEP EPT point clouds which intersect with the input polygon. "first" 3DEP project          │
-│                                         encountered will be processed. "specific" should be a string that matches the "project" name in the 3DEP metadata.        │
-│                                         [choices: all, latest] [default: latest]                                                                                  │
-│    TILE-SIZE --tile-size                The size of rasterized tiles processed from input EPT point clouds in units of dst_crs. [default: 1.0]                    │
-│    NUM-PROCESS --num-process            [default: 1]                                                                                                              │
-│    OVERWRITE --overwrite                Overwrite output files if they already exist. [default: False]                                                            │
-│    CLEANUP --cleanup                    Remove the intermediate tif files, keep only final mosaiced rasters. [default: False]                                     │
-╰───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Parameters ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ *  GEOMETRY --geometry                            Path to the vector dataset containing a single polygon that defines the processing extent. [required]          │
+│    INPUT --input                                  Path to directory containing input LAS/LAZ files, otherwise uses USGS 3DEP EPT data on AWS. [default: EPT_AWS] │
+│    OUTPUT --output                                Path to output directory. [default: /tmp/lidar-tools-output]                                                   │
+│    SRC-CRS --src-crs                              Path to file with PROJ-supported CRS definition to override CRS of input files.                                │
+│    DST-CRS --dst-crs                              Path to file with PROJ-supported CRS definition for the output. If unspecified, a local UTM CRS will be used.  │
+│    RESOLUTION --resolution                        Square output raster posting in units of dst_crs. [default: 1.0]                                               │
+│    PRODUCTS --products                            Which output products to generate: all products, digital surface model, digital terrain model, or intensity    │
+│                                                   raster. [choices: all, dsm, dtm, intensity] [default: all]                                                     │
+│    THREEDEP-PROJECT --threedep-project            "all" processes all available 3DEP EPT point clouds which intersect with the input polygon. "first" 3DEP       │
+│                                                   project encountered will be processed. "specific" should be a string that matches the "project" name in the    │
+│                                                   3DEP metadata. [choices: all, latest] [default: latest]                                                        │
+│    TILE-SIZE --tile-size                          The size of rasterized tiles processed from input EPT point clouds in units of dst_crs. [default: 1.0]         │
+│    NUM-PROCESS --num-process                      [default: 1]                                                                                                   │
+│    OVERWRITE --overwrite                          Overwrite output files if they already exist. [default: False]                                                 │
+│    CLEANUP --cleanup                              Remove the intermediate tif files, keep only final mosaiced rasters. [default: False]                          │
+│    PROJ-PIPELINE --proj-pipeline                  A PROJ pipeline string to be used for reprojection of the point cloud. If specified, this will be used in      │
+│                                                   combination with the target_wkt option.                                                                        │
+│    FILTER-NOISE --filter-noise --no-filter-noise  Remove noise points (classification==18 and classification==7) from the point cloud before DSM, DTM and        │
+│                                                   surface intensity processing. Default is True. [default: True]                                                 │
+│    HEIGHT-ABOVE-GROUND-THRESHOLD                  If specified, the height above ground (HAG) will be calculated using all nearest ground classied points, and   │
+│      --height-above-ground-threshold              all points greater than this value will be classified as noise, by default None.                               │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
 ```
 
 ## Development
