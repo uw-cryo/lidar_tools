@@ -7,20 +7,23 @@ on:
     branches:
       - main
 
+
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        # NOTE: macos-latest is ARM, macOS-13 is Intel.
+        os: [ubuntu-latest, macos-latest, macos-13]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: prefix-dev/setup-pixi@v0.8.8
+      - uses: prefix-dev/setup-pixi@v0.9.0
         with:
           environments: dev
           manifest-path: pyproject.toml
           cache: true
           frozen: true
-          #cache-write:
-          #  ${{ github.event_name == 'push' && github.ref_name == 'main' }}
 
       - name: Run Pytest
         run: |
