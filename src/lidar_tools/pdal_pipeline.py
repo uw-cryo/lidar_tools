@@ -354,14 +354,18 @@ def rasterize(
 
     if input == "EPT_AWS":
         if out_crs != CRS.from_epsg(3857):
-            print("*********Reprojecting DSM, DTM and intensity rasters****")
-            reproject_truth_val = dsm_functions.confirm_3dep_vertical(dsm_mos_fn)
+            print("*********Reprojecting rasters****")
+            src_srs = "EPSG:3857"
+            #This is hardcoded for dsm_mos_fn, but we could have dtm fn
+            reproject_truth_val = False
+            if products == "all" or products == "dsm":
+                reproject_truth_val = dsm_functions.confirm_3dep_vertical(dsm_mos_fn)
+            elif products == "dtm":
+                reproject_truth_val = dtm_functions.confirm_3dep_vertical(dtm_mos_fill_fn)
             if reproject_truth_val:
                 # use input CRS which is EPSG:3857 with heights with respect to the NAVD88
                 epsg_3857_navd88_fn = "https://raw.githubusercontent.com/uw-cryo/lidar_tools/refs/heads/main/notebooks/SRS_CRS.wkt"
                 src_srs = epsg_3857_navd88_fn
-            else:
-                src_srs = "EPSG:3857"
             out_extent = final_out_extent
             print(src_srs)
             print("Running reprojection sequentially")
