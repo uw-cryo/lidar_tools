@@ -529,6 +529,7 @@ def create_dem_stage(
     pointcloud_resolution: float = 1.0,
     gridmethod: str = "idw",
     dimension: str = "Z",
+    data_type: str = "float32",
 ) -> list:
     """
     Create a PDAL stage for generating a DEM from a point cloud.
@@ -568,7 +569,7 @@ def create_dem_stage(
         "filename": dem_filename,
         "gdaldriver": "GTiff",
         "nodata": -9999,
-        "data_type": "float32",
+        "data_type": data_type,
         "output_type": gridmethod,
         "resolution": float(pointcloud_resolution),
         "origin_x": origin_x,
@@ -1344,6 +1345,7 @@ def create_lpc_pipeline(
             pointcloud_resolution=raster_resolution,
             gridmethod="idw",
             dimension="Intensity",
+            data_type="UInt16",
         )
         pipeline_intensity["pipeline"] += pdal_pipeline_surface_intensity
         pipeline_intensity["pipeline"] += intensity_stage
