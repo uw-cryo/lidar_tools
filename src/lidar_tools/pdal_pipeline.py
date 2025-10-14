@@ -71,7 +71,7 @@ def rasterize(
     overwrite
         Overwrite output files if they already exist.
     cleanup
-        Remove the intermediate tif files, keep only final mosaiced rasters.
+        Remove the intermediate tif files and PDAL json files, keep only final mosaiced rasters.
     proj_pipeline
         A PROJ pipeline string to be used for reprojection of the point cloud. If specified, this will be used in combination with the target_wkt option.
     local_utm
@@ -141,7 +141,7 @@ def rasterize(
     d = decimal.Decimal(str(resolution))
     precision = abs(d.as_tuple().exponent)
     final_out_extent = [np.round(val,precision) for val in final_out_extent]
-    
+
     # TODO: simplify and use tempfile (https://github.com/uw-cryo/lidar_tools/pull/25#discussion_r2177660328)
     # TODO: here and elsewhere use logging instead of prints
     print(f"Output extent in target CRS is {final_out_extent}")
@@ -173,7 +173,7 @@ def rasterize(
     if input == "EPT_AWS":
         print("Processing 3DEP EPT tiles from AWS")
         # TODO: handle new positional args, skip products not requested
-        
+
         (
             dsm_pipeline_list,
             dtm_no_fill_pipeline_list,
@@ -302,7 +302,7 @@ def rasterize(
         else:
             out_extent = final_out_extent
             cog = True
-            
+
         print("Running sequentially")
         if products == "all" or products == "dsm":
             print(f"Creating DSM mosaic at {dsm_mos_fn}")
@@ -434,8 +434,13 @@ def rasterize(
         dsm_functions.gdal_add_overview(intensity_reproj)
 
     if cleanup:
+        # Remove intermediate tile files
         for tif_file in outdir.glob("*tile*.tif*"):
             tif_file.unlink()
+        for temp_file in outdir.glob("*-temp.tif"):
+            temp_file.unlink()
+        for temp_file in outdir.glob("pipeline*.json"):
+            temp_file.unlink()
 
     print("****Processing complete****")
 
