@@ -1139,6 +1139,7 @@ def create_lpc_pipeline(
     output_prefix: str,
     extent_polygon: str,
     input_crs: str = None,
+    dsm_gridding_choice: str = "first_idw",
     proj_pipeline: str = None,
     raster_resolution: float = 1.0,
     filter_high_noise: bool = True,
@@ -1160,6 +1161,8 @@ def create_lpc_pipeline(
         Prefix for the output files, which will be used to create output file names.
     extent_polygon
         Path to a polygon file defining the area of interest (AOI) for processing.
+    dsm_gridding_choice : str
+        The gridding method to use for DSM generation. 'first_idw' uses the first and only returns which are gridded using IDW, 'n-pct' computes points matching the nth percentile in a pointview (e.g., 98-pct), which are gridded using the max binning operator.
     proj_pipeline : str, optional
         PROJ pipeline string for reprojection, by default None.
         If None, the reprojection will be handled by GDAL using the input and output CRS.
@@ -1220,6 +1223,17 @@ def create_lpc_pipeline(
     dtm_pipeline_fill_list = []
     intensity_pipeline_list = []
 
+    if dsm_gridding_choice == "first_idw":
+        dsm_group_filter = "first,only"
+        dsm_gridding_method = "idw"
+        percentile_filter = False
+        percentile_threshold = None
+    else:
+        dsm_group_filter = None
+        dsm_gridding_method = "max"
+        percentile_threshold = int(dsm_gridding_choice.split("-pcd")[0])/100.0
+        percentile_filter = True
+
     for i, reader in enumerate(readers):
         # print(f"Processing reader #{i}")
         dsm_file = output_path / f"{prefix}_dsm_tile_aoi_{str(i).zfill(4)}.tif"
@@ -1238,9 +1252,12 @@ def create_lpc_pipeline(
         pipeline_dtm_z_fill = copy.deepcopy(reader)
         pipeline_intensity = copy.deepcopy(reader)
         ## DSM creation block
+        
         pipeline_dsm = reader
         pdal_pipeline_dsm = create_pdal_pipeline(
-            group_filter="first,only",
+            group_filter=dsm_group_filter,
+            percentile_filter=percentile_filter,
+            percentile_threshold=percentile_threshold,
             reproject=True, # reproject to the output CRS
             proj_pipeline=proj_pipeline,
             input_crs=input_crs_list[i],
@@ -1254,7 +1271,7 @@ def create_lpc_pipeline(
             dem_filename=str(dsm_file),
             extent=original_extents[i],
             pointcloud_resolution=raster_resolution,
-            gridmethod="idw",
+            gridmethod=dsm_gridding_method,
             dimension="Z",
         )
         pipeline_dsm["pipeline"] += pdal_pipeline_dsm
@@ -1377,6 +1394,7 @@ def create_ept_3dep_pipeline(
     raster_resolution: float = 1.0,
     tile_size_km: float = 1.0,
     buffer_value: float = 5.0,
+    dsm_gridding_choice: str = "first_idw",
     filter_high_noise: bool = True,
     filter_low_noise: bool = True,
     hag_nn: float = None,
@@ -1406,6 +1424,8 @@ def create_ept_3dep_pipeline(
         Size of the tiles in kilometers for processing, by default 1.0.
     buffer_value
         Buffer value to apply to the AOI bounds when reading points for rasterization, by default 5.0.
+    dsm_gridding_choice : str
+        The gridding method to use for DSM generation. 'first_idw' uses the first and only returns which are gridded using IDW, 'n-pct' computes points matching the nth percentile in a pointview (e.g., 98-pct), which are gridded using the max binning operator.
     process_specific_3dep_survey
         Specific 3DEP survey to process. If None, and process_all_intersecting_surveys is False, the first intersecting survey will be processed
     process_all_intersecting_surveys
@@ -1447,6 +1467,16 @@ def create_ept_3dep_pipeline(
     dtm_pipeline_no_fill_list = []
     dtm_pipeline_fill_list = []
     intensity_pipeline_list = []
+    if dsm_gridding_choice == "first_idw":
+        dsm_group_filter = "first,only"
+        dsm_gridding_method = "idw"
+        percentile_filter = False
+        percentile_threshold = None
+    else:
+        dsm_group_filter = None
+        dsm_gridding_method = "max"
+        percentile_threshold = int(dsm_gridding_choice.split("-pcd")[0])/100.0
+        percentile_filter = True
 
     for i, reader in enumerate(readers):
         # print(f"Processing reader #{i}")
@@ -1463,7 +1493,9 @@ def create_ept_3dep_pipeline(
         ## DSM creation block
         pipeline_dsm = {"pipeline": [reader]}
         pdal_pipeline_dsm = create_pdal_pipeline(
-                group_filter="first,only",
+                group_filter=dsm_group_filter,
+                percentile_filter=percentile_filter,
+                percentile_threshold=percentile_threshold,
                 reproject=False,
                 input_crs=POINTCLOUD_CRS[i],
                 filter_high_noise=filter_high_noise,
@@ -1474,7 +1506,7 @@ def create_ept_3dep_pipeline(
             dem_filename=str(dsm_file),
             extent=original_extents[i],
             pointcloud_resolution=raster_resolution,
-            gridmethod="idw",
+            gridmethod=dsm_gridding_method,
             dimension="Z",
         )
         pipeline_dsm["pipeline"] += pdal_pipeline_dsm

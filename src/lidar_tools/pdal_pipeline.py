@@ -31,6 +31,7 @@ def rasterize(
     src_crs: str = None,
     dst_crs: str = None,
     resolution: float = 1.0,
+    dsm_gridding_choice: Literal["first_idw", "n-pct"] = "first_idw",
     products: Literal["all", "dsm", "dtm", "intensity"] = "all",
     threedep_project: Literal["all", "latest"] | str = "latest",
     tile_size: float = 1.0,
@@ -58,6 +59,8 @@ def rasterize(
         Path to file with PROJ-supported CRS definition for the output. If unspecified, a local UTM CRS will be used.
     resolution
         Square output raster posting in units of `dst_crs`.
+    dsm_gridding_choice
+        The gridding method to use for DSM generation. 'first_idw' uses the first and only returns which are gridded using IDW, 'n-pct' computes points matching the nth percentile in a pointview (e.g., 98-pct), which are gridded using the max binning operator.
     products
         Which output products to generate: all products, digital surface model, digital terrain model, or intensity raster.
     threedep_project
@@ -186,6 +189,7 @@ def rasterize(
             buffer_value=10*resolution, # buffer is based on output resolution
             tile_size_km=tile_size,  # TODO: ensure we can do non-km units
             # TODO: handle new 3dep project keyword here
+            dsm_gridding_choice=dsm_gridding_choice,
             process_specific_3dep_survey=process_specific_3dep_survey,
             process_all_intersecting_surveys=process_all_intersecting_surveys,
             filter_high_noise=filter_high_noise,
@@ -213,6 +217,7 @@ def rasterize(
             target_wkt=dst_crs,
             output_prefix=output_prefix,
             extent_polygon=extent_polygon,
+            dsm_gridding_choice=dsm_gridding_choice,
             buffer_value=10*resolution, # buffer is based on output resolution
             proj_pipeline=proj_pipeline,
             filter_high_noise=filter_high_noise,
