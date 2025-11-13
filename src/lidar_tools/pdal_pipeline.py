@@ -1,28 +1,29 @@
 """
-Generate a DSM,DTM,Intensity rasters from input point clouds
+Create and exectute PDAL pipelines
 """
 
-# Needs to happen before importing GDAL/PDAL
 import os
-from dask.distributed import Client, progress
+import sys
+import json
+from pathlib import Path
+import requests
+import warnings
+from typing import Literal, Annotated
+import cyclopts
+import shutil
 
+from dask.distributed import Client, LocalCluster, progress
+
+# Needs to happen before importing GDAL/PDAL
 os.environ["PROJ_NETWORK"] = (
     "ON"  # Ensure this is 'ON' to get shift grids over the internet
 )
 # print(f"PROJ_NETWORK is {os.environ['PROJ_NETWORK']}")
 
-from lidar_tools import dsm_functions
+import numpy as np
+import geopandas as gpd
 from pyproj import CRS
 from shapely.geometry.polygon import orient as _orient
-import numpy as np
-from pathlib import Path
-import warnings
-from typing import Literal, Annotated
-import geopandas as gpd
-import requests
-import cyclopts
-import shutil
-
 
 def rasterize(
     geometry: str,
@@ -146,6 +147,7 @@ def rasterize(
     # TODO: here and elsewhere use logging instead of prints
     print(f"Output extent in target CRS is {final_out_extent}")
     gdf_out = gdf.to_crs(out_crs)
+    #This is problematic if output CRS is units of decimal degrees, instead of meters
     gdf_out["geometry"] = gdf_out["geometry"].buffer(250)  # NOTE: assumes meters
     gdf_out = gdf_out.to_crs(input_crs)
     extent_polygon = outdir / "judicious_extent_polygon.geojson"
@@ -499,7 +501,7 @@ def _check_polygon_area(gf: gpd.GeoDataFrame) -> None:
     None
         Just prints a warning if area is too large
     """
-    warn_if_larger_than = 100_000  # km^2
+    warn_if_larger_than = 10000  # km^2
 
     # Fast track if projected and units are meters:
     if gf.crs.is_projected and gf.crs.axis_info[0].unit_name == "metre":
@@ -507,9 +509,9 @@ def _check_polygon_area(gf: gpd.GeoDataFrame) -> None:
     else:
         area = geographic_area(gf.to_crs("EPSG:4326")) * 1e-6
 
-    # print(area.values[0])
     if area.to_numpy() >= warn_if_larger_than:
-        msg = f"Very large AOI ({area.values[0]:e} km^2) requested, processing may be slow or crash. Recommended AOI size is <{warn_if_larger_than:e} km^2"
+        msg = f"Very large AOI area ({area.values[0]:.2f} km^2). Recommended using an area of less than {warn_if_larger_than} km^2"
         warnings.warn(msg)
     else:
-        print(f"Starting Processing of {area.values[0]:e} km^2 AOI")
+        print(f"Starting Processing of {area.values[0]:.2f} km^2 AOI")
+
