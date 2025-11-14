@@ -443,9 +443,12 @@ def create_pdal_pipeline(
         "window": 8.0,
     }
     stage_group_filter = {"type": "filters.returns", "groups": group_filter}
+    percentile_filter_script = 'https://raw.githubusercontent.com/uw-cryo/lidar_tools/refs/heads/main/src/lidar_tools/filter_percentile.py'
+    response = requests.get(percentile_filter_script)
+    source_script = response.text
     stage_percentile_filter = {
         "type": "filters.python",
-        "script": "filter_percentile.py",
+        "source": source_script,
         "pdalargs": {"percentile_threshold": percentile_threshold},
         "function": "filter_percentile",
         "module": "anything",
@@ -1231,7 +1234,7 @@ def create_lpc_pipeline(
     else:
         dsm_group_filter = None
         dsm_gridding_method = "max"
-        percentile_threshold = int(dsm_gridding_choice.split("-pcd")[0])/100.0
+        percentile_threshold = int(dsm_gridding_choice.split("-pct")[0])/100.0
         percentile_filter = True
 
     for i, reader in enumerate(readers):
@@ -1475,7 +1478,7 @@ def create_ept_3dep_pipeline(
     else:
         dsm_group_filter = None
         dsm_gridding_method = "max"
-        percentile_threshold = int(dsm_gridding_choice.split("-pcd")[0])/100.0
+        percentile_threshold = int(dsm_gridding_choice.split("-pct")[0])/100.0
         percentile_filter = True
 
     for i, reader in enumerate(readers):

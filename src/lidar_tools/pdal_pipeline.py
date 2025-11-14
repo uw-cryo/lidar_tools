@@ -4,6 +4,7 @@ Generate a DSM,DTM,Intensity rasters from input point clouds
 
 # Needs to happen before importing GDAL/PDAL
 import os
+import re
 from dask.distributed import Client, progress
 
 os.environ["PROJ_NETWORK"] = (
@@ -31,7 +32,7 @@ def rasterize(
     src_crs: str = None,
     dst_crs: str = None,
     resolution: float = 1.0,
-    dsm_gridding_choice: Literal["first_idw", "n-pct"] = "first_idw",
+    dsm_gridding_choice: str = "first_idw",
     products: Literal["all", "dsm", "dtm", "intensity"] = "all",
     threedep_project: Literal["all", "latest"] | str = "latest",
     tile_size: float = 1.0,
@@ -88,6 +89,14 @@ def rasterize(
     -------
     None
     """
+
+    # Validate dsm_gridding_choice
+    print(dsm_gridding_choice)
+    if dsm_gridding_choice != "first_idw" and not re.match(r"^\d{1,2}-pct$", dsm_gridding_choice):
+        raise ValueError(
+            f"Invalid dsm_gridding_choice: {dsm_gridding_choice}. Must be 'first_idw' or match the format 'n-pct' (e.g., '98-pct')."
+        )
+    
     # Parse input polygon CRS and check that area isn't too large
     gdf = gpd.read_file(geometry)
     _check_polygon_area(gdf)
