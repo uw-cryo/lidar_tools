@@ -5,7 +5,7 @@ Generate a DSM,DTM,Intensity rasters from input point clouds
 # Needs to happen before importing GDAL/PDAL
 import os
 import re
-from dask.distributed import Client, progress
+from dask.distributed import Client, progress, fire_and_forget
 
 os.environ["PROJ_NETWORK"] = (
     "ON"  # Ensure this is 'ON' to get shift grids over the internet
@@ -89,9 +89,6 @@ def rasterize(
     -------
     None
     """
-
-    # Validate dsm_gridding_choice
-    print(dsm_gridding_choice)
     if dsm_gridding_choice != "first_idw" and not re.match(r"^\d{1,2}-pct$", dsm_gridding_choice):
         raise ValueError(
             f"Invalid dsm_gridding_choice: {dsm_gridding_choice}. Must be 'first_idw' or match the format 'n-pct' (e.g., '98-pct')."
@@ -274,11 +271,19 @@ def rasterize(
     else:
         n_jobs = num_process if num_pipelines > num_process else num_pipelines
 
-        def run_parallel(pipeline_list):
-            with Client(n_workers=n_jobs) as client:
-                print(f"Dask dashboard available at: {client.dashboard_link}")  
-                futures = client.map(dsm_functions.execute_pdal_pipeline, pipeline_list,
-                retries=1)
+        def run_parallel(pipeline_list):   
+            with Client(
+                n_workers=n_jobs,
+                processes=True,  # run PDAL pipelines in isolated processes
+                threads_per_worker=1
+            ) as client:
+                print(f"Dask dashboard available at: {client.dashboard_link}")    
+                # Submit all tasks with fire_and_forget for better memory management
+                futures = []
+                for pipeline in pipeline_list:
+                    future = client.submit(dsm_functions.execute_pdal_pipeline, pipeline, retries=1)
+                    fire_and_forget(future)
+                    futures.append(future)
                 progress(futures)
                 results = client.gather(futures)
                 return [outfn for outfn in results if outfn is not None]
