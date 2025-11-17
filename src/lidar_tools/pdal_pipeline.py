@@ -275,12 +275,8 @@ def rasterize(
         n_jobs = num_process if num_pipelines > num_process else num_pipelines
 
         def run_parallel(pipeline_list):
-            import logging
-            logging.basicConfig(level=logging.INFO)
-            with Client(threads_per_worker=1, n_workers=5,processes=True,
-            silence_logs=logging.DEBUG) as client:
-                print(f"Dask dashboard available at: {client.dashboard_link}")  # Add this line
-                print(f"Worker logs location: {client.cluster.worker_spec}")
+            with Client(n_workers=n_jobs) as client:
+                print(f"Dask dashboard available at: {client.dashboard_link}")  
                 futures = client.map(dsm_functions.execute_pdal_pipeline, pipeline_list,
                 retries=1)
                 progress(futures)

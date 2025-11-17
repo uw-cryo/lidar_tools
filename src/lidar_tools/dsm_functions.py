@@ -398,7 +398,7 @@ def create_pdal_pipeline(
     percentile_filter
         Whether to apply a percentile filter, by default False.
     percentile_threshold
-        The percentile threshold for the filter, by default 0.95.
+        The percentile threshold for the filter
     group_filter
         The group filter to apply, by default "first,only" for generating DSM.
     reproject
@@ -421,12 +421,10 @@ def create_pdal_pipeline(
     dict
         A PDAL pipeline for processing point clouds.
     """
-    # this is probably not needed, revisit
-    assert abs(percentile_threshold) <= 1, (
-        "Percentile threshold must be in range [0, 1]"
-    )
-    # assert output_type in ["las", "laz"], "Output type must be either 'las' or 'laz'"
-    # assert output_crs is not None, "Argument 'output_crs' must be explicitly specified!"
+    if percentile_filter:
+        assert abs(percentile_threshold) <= 1, (
+            "Percentile threshold must be in range [0, 1]"
+        )
 
     stage_filter_low_noise = {"type": "filters.range", "limits": "Classification![7:7]"}
     stage_filter_high_noise = {
@@ -444,12 +442,9 @@ def create_pdal_pipeline(
         "window": 8.0,
     }
     stage_group_filter = {"type": "filters.returns", "groups": group_filter}
-    percentile_filter_script = 'https://raw.githubusercontent.com/uw-cryo/lidar_tools/refs/heads/main/src/lidar_tools/filter_percentile.py'
-    response = requests.get(percentile_filter_script)
-    source_script = response.text
     stage_percentile_filter = {
         "type": "filters.python",
-        "source": source_script,
+        "script": "filter_percentile.py",
         "pdalargs": {"percentile_threshold": percentile_threshold},
         "function": "filter_percentile",
         "module": "anything",
@@ -1255,15 +1250,14 @@ def create_lpc_pipeline(
     intensity_pipeline_list = []
 
     if dsm_gridding_choice == "first_idw":
+        percentile_filter = False
         dsm_group_filter = "first,only"
         dsm_gridding_method = "idw"
-        percentile_filter = False
-        percentile_threshold = None
     else:
+        percentile_filter = True
         dsm_group_filter = None
         dsm_gridding_method = "max"
         percentile_threshold = int(dsm_gridding_choice.split("-pct")[0])/100.0
-        percentile_filter = True
 
     for i, reader in enumerate(readers):
         # print(f"Processing reader #{i}")

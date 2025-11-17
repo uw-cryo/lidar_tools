@@ -24,7 +24,7 @@ dependencies = [
   "cyclopts >=3.16.1,<4",
   "dask >=2025.7.0,<2026",
   "distributed >=2025.7.0,<2026",
-  "gdal >=3.10.3,<4",
+  "gdal",
   "geopandas >=1.0.1,<2",
   "ipykernel >=6.29.5,<7",
   "planetary-computer >=1.0.0,<2",
@@ -73,6 +73,7 @@ test-example-local = "time lidar-tools rasterize --overwrite --cleanup --geometr
 test-example-ept = "time lidar-tools rasterize --cleanup --geometry notebooks/uw-campus.geojson --output /tmp/lidar-tools-test-ept"
 test-example-parallel = "time lidar-tools rasterize --num-process 5 --geometry notebooks/uw-campus.geojson --output /tmp/test/uwcampus-parallel --dst-crs notebooks/UTM_10N_WGS84_G2139_3D.wkt"
 test-example-cleanup = "time lidar-tools rasterize --cleanup --geometry notebooks/uw-campus.geojson --output /tmp/test/uwcampus-cleanup --num-process 5"
+test-example-filter = "time lidar-tools rasterize --cleanup --geometry notebooks/uw-campus.geojson --output /tmp/test/uwcampus-filter --dsm-gridding-choice 95-pct --products dsm"
 
 
 [tool.pixi.dependencies]
