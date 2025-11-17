@@ -1250,15 +1250,7 @@ def create_lpc_pipeline(
     dtm_pipeline_fill_list = []
     intensity_pipeline_list = []
 
-    if dsm_gridding_choice == "first_idw":
-        percentile_filter = False
-        dsm_group_filter = "first,only"
-        dsm_gridding_method = "idw"
-    else:
-        percentile_filter = True
-        dsm_group_filter = None
-        dsm_gridding_method = "max"
-        percentile_threshold = int(dsm_gridding_choice.split("-pct")[0])/100.0
+    dsm_group_filter, dsm_gridding_method, percentile_filter, percentile_threshold = _set_dsm_gridding_params(dsm_gridding_choice)
 
     for i, reader in enumerate(readers):
         # print(f"Processing reader #{i}")
@@ -1413,6 +1405,20 @@ def create_lpc_pipeline(
         intensity_pipeline_list,  # list of PDAL pipelines for Intensity creation
     )
 
+def _set_dsm_gridding_params(dsm_gridding_choice: str):
+    if dsm_gridding_choice == "first_idw":
+        dsm_group_filter = "first,only"
+        dsm_gridding_method = "idw"
+        percentile_filter = False
+        percentile_threshold = None
+    else:
+        dsm_group_filter = None
+        dsm_gridding_method = "max"
+        percentile_threshold = int(dsm_gridding_choice.split("-pct")[0])/100.0
+        percentile_filter = True
+
+    return dsm_group_filter, dsm_gridding_method, percentile_filter, percentile_threshold
+
 
 def create_ept_3dep_pipeline(
     extent_polygon: str,
@@ -1494,16 +1500,8 @@ def create_ept_3dep_pipeline(
     dtm_pipeline_no_fill_list = []
     dtm_pipeline_fill_list = []
     intensity_pipeline_list = []
-    if dsm_gridding_choice == "first_idw":
-        dsm_group_filter = "first,only"
-        dsm_gridding_method = "idw"
-        percentile_filter = False
-        percentile_threshold = None
-    else:
-        dsm_group_filter = None
-        dsm_gridding_method = "max"
-        percentile_threshold = int(dsm_gridding_choice.split("-pct")[0])/100.0
-        percentile_filter = True
+    
+    dsm_group_filter, dsm_gridding_method, percentile_filter, percentile_threshold = _set_dsm_gridding_params(dsm_gridding_choice)
 
     for i, reader in enumerate(readers):
         # print(f"Processing reader #{i}")
