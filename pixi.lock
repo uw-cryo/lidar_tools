@@ -9087,12 +9087,12 @@ packages:
 - pypi: ./
   name: lidar-tools
   version: 0.2.0
-  sha256: 2a336d9575e6f40a8eaa2df1b93a96b5b319c9a9244604475b4860957421e603
+  sha256: 1b907848138105974fa66974c37669cf041321245b1cac71b19c3a2e7ad8bfa7
   requires_dist:
   - cyclopts>=3.16.1,<4
   - dask>=2025.7.0,<2026
   - distributed>=2025.7.0,<2026
-  - gdal
+  - gdal>=3.10.3,<4
   - geopandas>=1.0.1,<2
   - ipykernel>=6.29.5,<7
   - planetary-computer>=1.0.0,<2

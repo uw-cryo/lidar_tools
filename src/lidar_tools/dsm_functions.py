@@ -444,7 +444,7 @@ def create_pdal_pipeline(
     stage_group_filter = {"type": "filters.returns", "groups": group_filter}
     stage_percentile_filter = {
         "type": "filters.python",
-        "script": "filter_percentile.py",
+        "script": str(Path(__file__).parent / "filter_percentile.py"),
         "pdalargs": {"percentile_threshold": percentile_threshold},
         "function": "filter_percentile",
         "module": "anything",
@@ -632,6 +632,7 @@ def raster_mosaic(
     # Filter out None values from the image list
     img_list = [img for img in img_list if img is not None]
     vrt_fn = Path(outfn).with_suffix(".vrt")
+    print(vrt_fn, img_list)
     gdal.BuildVRT(vrt_fn, img_list, callback=gdal.TermProgress_nocb)
     if out_extent is not None:
         minx, miny, maxx, maxy = out_extent

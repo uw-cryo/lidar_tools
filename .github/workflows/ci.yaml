@@ -34,7 +34,7 @@ jobs:
         run: |
           pixi run test-example-ept
 
-      - name: Run Basic LPC Workflow
+      - name: Run Parallelized Workflow
         if: always()
         run: |
-          pixi run test-example-local
+          pixi run test-example-filter
