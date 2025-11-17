@@ -243,7 +243,8 @@ def rasterize(
         if products == "all" or products == "dsm":
             print("Generating DSM tiles")
             final_dsm_fn_list = []
-            for pipeline in dsm_pipeline_list:
+            for idx,pipeline in enumerate(dsm_pipeline_list):
+                print(idx)
                 outfn = dsm_functions.execute_pdal_pipeline(pipeline)
                 if outfn is not None:
                     final_dsm_fn_list.append(outfn)
@@ -274,8 +275,14 @@ def rasterize(
         n_jobs = num_process if num_pipelines > num_process else num_pipelines
 
         def run_parallel(pipeline_list):
-            with Client(threads_per_worker=2, n_workers=n_jobs) as client:
-                futures = client.map(dsm_functions.execute_pdal_pipeline, pipeline_list)
+            import logging
+            logging.basicConfig(level=logging.INFO)
+            with Client(threads_per_worker=1, n_workers=5,processes=True,
+            silence_logs=logging.DEBUG) as client:
+                print(f"Dask dashboard available at: {client.dashboard_link}")  # Add this line
+                print(f"Worker logs location: {client.cluster.worker_spec}")
+                futures = client.map(dsm_functions.execute_pdal_pipeline, pipeline_list,
+                retries=1)
                 progress(futures)
                 results = client.gather(futures)
                 return [outfn for outfn in results if outfn is not None]
@@ -422,6 +429,7 @@ def rasterize(
                     src_srs,
                     dst_crs,
                     res=resolution,
+                    dtype="UInt16",
                     resampling_alogrithm="bilinear",
                     out_extent=out_extent,
                 )

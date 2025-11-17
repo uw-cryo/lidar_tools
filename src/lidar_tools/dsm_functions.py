@@ -21,6 +21,7 @@ import pdal
 import odc.stac
 import os
 import copy
+import warnings
 
 
 gdal.UseExceptions()
@@ -533,6 +534,7 @@ def create_dem_stage(
     gridmethod: str = "idw",
     dimension: str = "Z",
     data_type: str = "float32",
+    nodata_value: int = -9999,
 ) -> list:
     """
     Create a PDAL stage for generating a DEM from a point cloud.
@@ -549,7 +551,10 @@ def create_dem_stage(
         The grid method to use for generating the DEM, by default 'idw'
     dimension
         The dimension to use for the DEM, by default 'Z'
-
+    data_type
+        The data type for the raster values, by default 'float32'
+    nodata_value
+        The nodata value for the raster, by default -9999
     Returns
     -------
     dem_stage
@@ -571,7 +576,7 @@ def create_dem_stage(
         "type": "writers.gdal",
         "filename": dem_filename,
         "gdaldriver": "GTiff",
-        "nodata": -9999,
+        "nodata": nodata_value,
         "data_type": data_type,
         "output_type": gridmethod,
         "resolution": float(pointcloud_resolution),
@@ -586,12 +591,26 @@ def create_dem_stage(
 
     return [dem_stage]
 
-
+ # Dictionary mapping common dtype strings to GDAL data types
+DTYPE_TO_GDAL = {
+    "Byte": gdal.GDT_Byte,
+    "UInt16": gdal.GDT_UInt16,
+    "Int16": gdal.GDT_Int16,
+    "UInt32": gdal.GDT_UInt32,
+    "Int32": gdal.GDT_Int32,
+    "Float32": gdal.GDT_Float32,
+    "Float64": gdal.GDT_Float64,
+    "CInt16": gdal.GDT_CInt16,
+    "CInt32": gdal.GDT_CInt32,
+    "CFloat32": gdal.GDT_CFloat32,
+    "CFloat64": gdal.GDT_CFloat64,
+}
 def raster_mosaic(
     img_list: list,
     outfn: str,
     cog: bool = False,
     out_extent: list = None,
+    
 ) -> None:
     """
     Given a list of input images, mosaic them into a COG raster by using vrt and gdal_translate
@@ -622,6 +641,7 @@ def raster_mosaic(
     if out_extent is not None:
         minx, miny, maxx, maxy = out_extent
         out_extent = [minx, maxy, maxx, miny]
+    
     if cog:
         # translate to COG
         print(out_extent)
@@ -631,12 +651,13 @@ def raster_mosaic(
             projWin=out_extent,
             creationOptions=["COMPRESS=LZW", "TILED=YES"],
             callback=gdal.TermProgress_nocb,
+            
         )
 
     else:
         print(out_extent)
         gdal.Translate(
-            outfn, vrt_fn, projWin=out_extent, callback=gdal.TermProgress_nocb
+            outfn, vrt_fn, projWin=out_extent, callback=gdal.TermProgress_nocb,
         )
     # delete vrt
     os.remove(vrt_fn)
@@ -1042,6 +1063,7 @@ def gdal_warp(
     res: float = 1.0,
     resampling_alogrithm: str = "bilinear",
     out_extent: list = None,
+    dtype: str = 'Float32',
 ) -> None:
     """
     Warp a raster file to a new coordinate reference system and resolution using GDAL.
@@ -1062,12 +1084,17 @@ def gdal_warp(
         Resampling algorithm to use, by default 'cubic'.
     out_extent
         The extent of the output raster in the format [minx, miny, maxx, maxy], by default None.
-
+    dtype
+        Data type for the output raster, by default 'Float32'.
+        Common options include 'Byte', 'UInt16', 'Int16', 'UInt32', 'Int32', 'Float32', 'Float64'.
     Returns
     -------
     None
     This function does not return anything, it writes the output raster to the specified file.
     """
+
+   
+
     tolerance = 0
     resampling_mapping = {
         "nearest": gdalconst.GRA_NearestNeighbour,
@@ -1090,6 +1117,7 @@ def gdal_warp(
         targetAlignedPixels=True,
         # use directly output format as COG when gaussian overview resampling is implemented upstream in GDAL
         outputBounds=out_extent,
+        outputType=DTYPE_TO_GDAL.get(dtype),
         creationOptions=["COMPRESS=LZW", "TILED=YES", "COPY_SRC_OVERVIEWS=YES","BIGTIFF=IF_SAFER"],
         callback=gdal.TermProgress_nocb,
         multithread=True,
@@ -1366,6 +1394,7 @@ def create_lpc_pipeline(
             gridmethod="idw",
             dimension="Intensity",
             data_type="UInt16",
+            nodata_value=0,
         )
         pipeline_intensity["pipeline"] += pdal_pipeline_surface_intensity
         pipeline_intensity["pipeline"] += intensity_stage
@@ -1597,6 +1626,8 @@ def create_ept_3dep_pipeline(
             pointcloud_resolution=raster_resolution,
             gridmethod="idw",
             dimension="Intensity",
+            nodata_value=0,
+            data_type="UInt16",
         )
 
         pipeline_intensity["pipeline"] += pdal_pipeline_surface_intensity
@@ -1701,6 +1732,8 @@ def execute_pdal_pipeline(pdal_pipeline_path: str) -> str:
         The filename of the output raster is successfully saved, otherwise None is returned
     """
     try:
+        with warnings.catch_warnings():
+            warnings.filterwarnings("error", category=RuntimeWarning)
         with open(pdal_pipeline_path) as f:
             pipelineDict = json.load(f)
             # maybe more robust to check for {'type': 'writers.gdal'}...
@@ -1716,6 +1749,10 @@ def execute_pdal_pipeline(pdal_pipeline_path: str) -> str:
     except Exception as e:
         print(f"An error occurred while executing the PDAL pipeline: {e}")
         return None
+    except RuntimeWarning as rw:
+        print(f"PDAL RuntimeWarning: {rw}")
+        return None
+    
 
 
 def rename_rasters(raster_fn, out_fn) -> None:
