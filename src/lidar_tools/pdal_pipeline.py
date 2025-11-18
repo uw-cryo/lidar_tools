@@ -38,10 +38,11 @@ def rasterize(
     tile_size: float = 1.0,
     num_process: int = 1,
     overwrite: Annotated[bool, cyclopts.Parameter(negative="")] = False,
-    cleanup: Annotated[bool, cyclopts.Parameter(negative="")] = False,
+    cleanup: bool = True,
     proj_pipeline: str = None,
     filter_noise: bool = True,
     height_above_ground_threshold: float = None,
+    quiet: Annotated[bool, cyclopts.Parameter(negative="")] = False
 ) -> None:
     """
     Create a Digital Surface Model (DSM), Digital Terrain Model (DTM) and/or Intensity raster from point cloud data.
@@ -84,6 +85,8 @@ def rasterize(
         Remove noise points (classification==18 and classification==7) from the point cloud before DSM, DTM and surface intensity processing. Default is True.
     height_above_ground_threshold
         If specified, the height above ground (HAG) will be calculated using all nearest ground classied points, and all points greater than this value will be classified as noise, by default None.
+    quiet
+        Suppress dask progress bar (useful for CI logs)
 
     Returns
     -------
@@ -284,7 +287,8 @@ def rasterize(
                     future = client.submit(dsm_functions.execute_pdal_pipeline, pipeline, retries=1)
                     fire_and_forget(future)
                     futures.append(future)
-                progress(futures)
+                if not quiet:
+                    progress(futures)
                 results = client.gather(futures)
                 return [outfn for outfn in results if outfn is not None]
 
@@ -457,8 +461,10 @@ def rasterize(
         dsm_functions.gdal_add_overview(intensity_reproj)
 
     if cleanup:
-        for tif_file in outdir.glob("*tile*.tif*"):
-            tif_file.unlink()
+        print("Cleaning up intermediate outputs")
+        for pattern in ["*tile*.tif*","pipeline*.json", "*temp.tif", "*.wkt"]:
+            for file in outdir.glob(pattern):
+                file.unlink()
 
     print("****Processing complete****")
 

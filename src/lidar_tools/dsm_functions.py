@@ -632,7 +632,6 @@ def raster_mosaic(
     # Filter out None values from the image list
     img_list = [img for img in img_list if img is not None]
     vrt_fn = Path(outfn).with_suffix(".vrt")
-    print(vrt_fn, img_list)
     gdal.BuildVRT(vrt_fn, img_list, callback=gdal.TermProgress_nocb)
     if out_extent is not None:
         minx, miny, maxx, maxy = out_extent
@@ -646,8 +645,7 @@ def raster_mosaic(
             vrt_fn,
             projWin=out_extent,
             creationOptions=["COMPRESS=LZW", "TILED=YES"],
-            callback=gdal.TermProgress_nocb,
-            
+            callback=gdal.TermProgress_nocb,    
         )
 
     else:

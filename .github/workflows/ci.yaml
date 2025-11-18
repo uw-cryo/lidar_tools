@@ -34,7 +34,14 @@ jobs:
         run: |
           pixi run test-example-ept
 
-      - name: Run Parallelized Workflow
+      - name: Run Parallelized DSM Workflow
         if: always()
         run: |
-          pixi run test-example-filter
+          pixi run test-example-dsmfilter
+
+      - name: Upload test artifacts
+        if: always() && matrix.os == 'ubuntu-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: workflow-test-outputs
+          path: /tmp/lidar-tools-test/
