@@ -60,36 +60,6 @@ pixi shell # NOTE: 'exit' deactivates the environment
 lidar-tools rasterize --help
 ```
 
-```console
-Usage: lidar-tools rasterize [ARGS] [OPTIONS]
-
-Create a Digital Surface Model (DSM), Digital Terrain Model (DTM) and/or Intensity raster from point cloud data.
-
-╭─ Parameters ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
-│ *  GEOMETRY --geometry                            Path to the vector dataset containing a single polygon that defines the processing extent. [required]          │
-│    INPUT --input                                  Path to directory containing input LAS/LAZ files, otherwise uses USGS 3DEP EPT data on AWS. [default: EPT_AWS] │
-│    OUTPUT --output                                Path to output directory. [default: /tmp/lidar-tools-output]                                                   │
-│    SRC-CRS --src-crs                              Path to file with PROJ-supported CRS definition to override CRS of input files.                                │
-│    DST-CRS --dst-crs                              Path to file with PROJ-supported CRS definition for the output. If unspecified, a local UTM CRS will be used.  │
-│    RESOLUTION --resolution                        Square output raster posting in units of dst_crs. [default: 1.0]                                               │
-│    PRODUCTS --products                            Which output products to generate: all products, digital surface model, digital terrain model, or intensity    │
-│                                                   raster. [choices: all, dsm, dtm, intensity] [default: all]                                                     │
-│    THREEDEP-PROJECT --threedep-project            "all" processes all available 3DEP EPT point clouds which intersect with the input polygon. "first" 3DEP       │
-│                                                   project encountered will be processed. "specific" should be a string that matches the "project" name in the    │
-│                                                   3DEP metadata. [choices: all, latest] [default: latest]                                                        │
-│    TILE-SIZE --tile-size                          The size of rasterized tiles processed from input EPT point clouds in units of dst_crs. [default: 1.0]         │
-│    NUM-PROCESS --num-process                      [default: 1]                                                                                                   │
-│    OVERWRITE --overwrite                          Overwrite output files if they already exist. [default: False]                                                 │
-│    CLEANUP --cleanup                              Remove the intermediate tif files, keep only final mosaiced rasters. [default: False]                          │
-│    PROJ-PIPELINE --proj-pipeline                  A PROJ pipeline string to be used for reprojection of the point cloud. If specified, this will be used in      │
-│                                                   combination with the target_wkt option.                                                                        │
-│    FILTER-NOISE --filter-noise --no-filter-noise  Remove noise points (classification==18 and classification==7) from the point cloud before DSM, DTM and        │
-│                                                   surface intensity processing. Default is True. [default: True]                                                 │
-│    HEIGHT-ABOVE-GROUND-THRESHOLD                  If specified, the height above ground (HAG) will be calculated using all nearest ground classied points, and   │
-│      --height-above-ground-threshold              all points greater than this value will be classified as noise, by default None.                               │
-╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
-```
-
 ## Development
 
 Use a developement environment (including pytest, ruff, mypy etc)

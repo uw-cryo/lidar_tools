@@ -69,11 +69,11 @@ example = "lidar-tools rasterize --geometry notebooks/uw-campus.geojson --output
 test = "pytest"
 typecheck = "mypy src/lidar_tools/"
 lint = "ruff check src/lidar_tools/ --fix ; ruff format"
-test-example-local = "time lidar-tools rasterize --overwrite --cleanup --geometry notebooks/uw-campus.geojson --input ~/Data/lidar_tools/WA_KingCounty_2021_B21 --output /tmp/lidar-tools-test-local"
-test-example-ept = "time lidar-tools rasterize --cleanup --geometry notebooks/uw-campus.geojson --output /tmp/lidar-tools-test-ept"
-test-example-parallel = "time lidar-tools rasterize --num-process 5 --geometry notebooks/uw-campus.geojson --output /tmp/test/uwcampus-parallel --dst-crs notebooks/UTM_10N_WGS84_G2139_3D.wkt"
-test-example-cleanup = "time lidar-tools rasterize --cleanup --geometry notebooks/uw-campus.geojson --output /tmp/test/uwcampus-cleanup --num-process 5"
-
+test-example-ept = "time lidar-tools rasterize --geometry notebooks/uw-campus.geojson --output /tmp/lidar-tools-test/ept"
+test-example-local = "time lidar-tools rasterize --geometry notebooks/uw-campus.geojson --input ~/Data/lidar_tools/WA_KingCounty_2021_B21 --output /tmp/lidar-tools-test/local"
+test-example-nocleanup = "time lidar-tools rasterize --quiet --num-process 4 --no-cleanup --geometry notebooks/uw-campus.geojson --output /tmp/lidar-tools-test/uwcampus-nocleanup"
+test-example-parallel = "time lidar-tools rasterize --quiet --num-process 4 --geometry notebooks/uw-campus.geojson --output /tmp/lidar-tools-test/uwcampus-parallel --dst-crs notebooks/UTM_10N_WGS84_G2139_3D.wkt"
+test-example-dsmfilter = "time lidar-tools rasterize --no-cleanup --quiet --num-process 4 --geometry notebooks/uw-campus.geojson --output /tmp/lidar-tools-test/uwcampus-filter --dsm-gridding-choice 95-pct --products dsm"
 
 [tool.pixi.dependencies]
 cyclopts = "*"

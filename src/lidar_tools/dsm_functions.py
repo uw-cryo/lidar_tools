@@ -21,6 +21,7 @@ import pdal
 import odc.stac
 import os
 import copy
+import warnings
 
 
 gdal.UseExceptions()
@@ -397,7 +398,7 @@ def create_pdal_pipeline(
     percentile_filter
         Whether to apply a percentile filter, by default False.
     percentile_threshold
-        The percentile threshold for the filter, by default 0.95.
+        The percentile threshold for the filter
     group_filter
         The group filter to apply, by default "first,only" for generating DSM.
     reproject
@@ -420,12 +421,10 @@ def create_pdal_pipeline(
     dict
         A PDAL pipeline for processing point clouds.
     """
-    # this is probably not needed, revisit
-    assert abs(percentile_threshold) <= 1, (
-        "Percentile threshold must be in range [0, 1]"
-    )
-    # assert output_type in ["las", "laz"], "Output type must be either 'las' or 'laz'"
-    # assert output_crs is not None, "Argument 'output_crs' must be explicitly specified!"
+    if percentile_filter:
+        assert abs(percentile_threshold) <= 1, (
+            "Percentile threshold must be in range [0, 1]"
+        )
 
     stage_filter_low_noise = {"type": "filters.range", "limits": "Classification![7:7]"}
     stage_filter_high_noise = {
@@ -445,7 +444,7 @@ def create_pdal_pipeline(
     stage_group_filter = {"type": "filters.returns", "groups": group_filter}
     stage_percentile_filter = {
         "type": "filters.python",
-        "script": "filter_percentile.py",
+        "script": str(Path(__file__).parent / "filter_percentile.py"),
         "pdalargs": {"percentile_threshold": percentile_threshold},
         "function": "filter_percentile",
         "module": "anything",
@@ -530,6 +529,7 @@ def create_dem_stage(
     gridmethod: str = "idw",
     dimension: str = "Z",
     data_type: str = "float32",
+    nodata_value: int = -9999,
 ) -> list:
     """
     Create a PDAL stage for generating a DEM from a point cloud.
@@ -546,7 +546,10 @@ def create_dem_stage(
         The grid method to use for generating the DEM, by default 'idw'
     dimension
         The dimension to use for the DEM, by default 'Z'
-
+    data_type
+        The data type for the raster values, by default 'float32'
+    nodata_value
+        The nodata value for the raster, by default -9999
     Returns
     -------
     dem_stage
@@ -568,7 +571,7 @@ def create_dem_stage(
         "type": "writers.gdal",
         "filename": dem_filename,
         "gdaldriver": "GTiff",
-        "nodata": -9999,
+        "nodata": nodata_value,
         "data_type": data_type,
         "output_type": gridmethod,
         "resolution": float(pointcloud_resolution),
@@ -583,12 +586,26 @@ def create_dem_stage(
 
     return [dem_stage]
 
-
+ # Dictionary mapping common dtype strings to GDAL data types
+DTYPE_TO_GDAL = {
+    "Byte": gdal.GDT_Byte,
+    "UInt16": gdal.GDT_UInt16,
+    "Int16": gdal.GDT_Int16,
+    "UInt32": gdal.GDT_UInt32,
+    "Int32": gdal.GDT_Int32,
+    "Float32": gdal.GDT_Float32,
+    "Float64": gdal.GDT_Float64,
+    "CInt16": gdal.GDT_CInt16,
+    "CInt32": gdal.GDT_CInt32,
+    "CFloat32": gdal.GDT_CFloat32,
+    "CFloat64": gdal.GDT_CFloat64,
+}
 def raster_mosaic(
     img_list: list,
     outfn: str,
     cog: bool = False,
     out_extent: list = None,
+    
 ) -> None:
     """
     Given a list of input images, mosaic them into a COG raster by using vrt and gdal_translate
@@ -619,6 +636,7 @@ def raster_mosaic(
     if out_extent is not None:
         minx, miny, maxx, maxy = out_extent
         out_extent = [minx, maxy, maxx, miny]
+    
     if cog:
         # translate to COG
         print(out_extent)
@@ -627,13 +645,13 @@ def raster_mosaic(
             vrt_fn,
             projWin=out_extent,
             creationOptions=["COMPRESS=LZW", "TILED=YES"],
-            callback=gdal.TermProgress_nocb,
+            callback=gdal.TermProgress_nocb,    
         )
 
     else:
         print(out_extent)
         gdal.Translate(
-            outfn, vrt_fn, projWin=out_extent, callback=gdal.TermProgress_nocb
+            outfn, vrt_fn, projWin=out_extent, callback=gdal.TermProgress_nocb,
         )
     # delete vrt
     os.remove(vrt_fn)
@@ -1039,6 +1057,7 @@ def gdal_warp(
     res: float = 1.0,
     resampling_alogrithm: str = "bilinear",
     out_extent: list = None,
+    dtype: str = 'Float32',
 ) -> None:
     """
     Warp a raster file to a new coordinate reference system and resolution using GDAL.
@@ -1059,12 +1078,17 @@ def gdal_warp(
         Resampling algorithm to use, by default 'cubic'.
     out_extent
         The extent of the output raster in the format [minx, miny, maxx, maxy], by default None.
-
+    dtype
+        Data type for the output raster, by default 'Float32'.
+        Common options include 'Byte', 'UInt16', 'Int16', 'UInt32', 'Int32', 'Float32', 'Float64'.
     Returns
     -------
     None
     This function does not return anything, it writes the output raster to the specified file.
     """
+
+   
+
     tolerance = 0
     resampling_mapping = {
         "nearest": gdalconst.GRA_NearestNeighbour,
@@ -1087,6 +1111,7 @@ def gdal_warp(
         targetAlignedPixels=True,
         # use directly output format as COG when gaussian overview resampling is implemented upstream in GDAL
         outputBounds=out_extent,
+        outputType=DTYPE_TO_GDAL.get(dtype),
         creationOptions=["COMPRESS=LZW", "TILED=YES", "COPY_SRC_OVERVIEWS=YES","BIGTIFF=IF_SAFER"],
         callback=gdal.TermProgress_nocb,
         multithread=True,
@@ -1139,6 +1164,7 @@ def create_lpc_pipeline(
     output_prefix: str,
     extent_polygon: str,
     input_crs: str = None,
+    dsm_gridding_choice: str = "first_idw",
     proj_pipeline: str = None,
     raster_resolution: float = 1.0,
     filter_high_noise: bool = True,
@@ -1160,6 +1186,8 @@ def create_lpc_pipeline(
         Prefix for the output files, which will be used to create output file names.
     extent_polygon
         Path to a polygon file defining the area of interest (AOI) for processing.
+    dsm_gridding_choice : str
+        The gridding method to use for DSM generation. 'first_idw' uses the first and only returns which are gridded using IDW, 'n-pct' computes points matching the nth percentile in a pointview (e.g., 98-pct), which are gridded using the max binning operator.
     proj_pipeline : str, optional
         PROJ pipeline string for reprojection, by default None.
         If None, the reprojection will be handled by GDAL using the input and output CRS.
@@ -1220,6 +1248,8 @@ def create_lpc_pipeline(
     dtm_pipeline_fill_list = []
     intensity_pipeline_list = []
 
+    dsm_group_filter, dsm_gridding_method, percentile_filter, percentile_threshold = _set_dsm_gridding_params(dsm_gridding_choice)
+
     for i, reader in enumerate(readers):
         # print(f"Processing reader #{i}")
         dsm_file = output_path / f"{prefix}_dsm_tile_aoi_{str(i).zfill(4)}.tif"
@@ -1238,9 +1268,12 @@ def create_lpc_pipeline(
         pipeline_dtm_z_fill = copy.deepcopy(reader)
         pipeline_intensity = copy.deepcopy(reader)
         ## DSM creation block
+        
         pipeline_dsm = reader
         pdal_pipeline_dsm = create_pdal_pipeline(
-            group_filter="first,only",
+            group_filter=dsm_group_filter,
+            percentile_filter=percentile_filter,
+            percentile_threshold=percentile_threshold,
             reproject=True, # reproject to the output CRS
             proj_pipeline=proj_pipeline,
             input_crs=input_crs_list[i],
@@ -1254,7 +1287,7 @@ def create_lpc_pipeline(
             dem_filename=str(dsm_file),
             extent=original_extents[i],
             pointcloud_resolution=raster_resolution,
-            gridmethod="idw",
+            gridmethod=dsm_gridding_method,
             dimension="Z",
         )
         pipeline_dsm["pipeline"] += pdal_pipeline_dsm
@@ -1346,6 +1379,7 @@ def create_lpc_pipeline(
             gridmethod="idw",
             dimension="Intensity",
             data_type="UInt16",
+            nodata_value=0,
         )
         pipeline_intensity["pipeline"] += pdal_pipeline_surface_intensity
         pipeline_intensity["pipeline"] += intensity_stage
@@ -1369,6 +1403,20 @@ def create_lpc_pipeline(
         intensity_pipeline_list,  # list of PDAL pipelines for Intensity creation
     )
 
+def _set_dsm_gridding_params(dsm_gridding_choice: str):
+    if dsm_gridding_choice == "first_idw":
+        dsm_group_filter = "first,only"
+        dsm_gridding_method = "idw"
+        percentile_filter = False
+        percentile_threshold = None
+    else:
+        dsm_group_filter = None
+        dsm_gridding_method = "max"
+        percentile_threshold = int(dsm_gridding_choice.split("-pct")[0])/100.0
+        percentile_filter = True
+
+    return dsm_group_filter, dsm_gridding_method, percentile_filter, percentile_threshold
+
 
 def create_ept_3dep_pipeline(
     extent_polygon: str,
@@ -1377,6 +1425,7 @@ def create_ept_3dep_pipeline(
     raster_resolution: float = 1.0,
     tile_size_km: float = 1.0,
     buffer_value: float = 5.0,
+    dsm_gridding_choice: str = "first_idw",
     filter_high_noise: bool = True,
     filter_low_noise: bool = True,
     hag_nn: float = None,
@@ -1406,6 +1455,8 @@ def create_ept_3dep_pipeline(
         Size of the tiles in kilometers for processing, by default 1.0.
     buffer_value
         Buffer value to apply to the AOI bounds when reading points for rasterization, by default 5.0.
+    dsm_gridding_choice : str
+        The gridding method to use for DSM generation. 'first_idw' uses the first and only returns which are gridded using IDW, 'n-pct' computes points matching the nth percentile in a pointview (e.g., 98-pct), which are gridded using the max binning operator.
     process_specific_3dep_survey
         Specific 3DEP survey to process. If None, and process_all_intersecting_surveys is False, the first intersecting survey will be processed
     process_all_intersecting_surveys
@@ -1447,6 +1498,8 @@ def create_ept_3dep_pipeline(
     dtm_pipeline_no_fill_list = []
     dtm_pipeline_fill_list = []
     intensity_pipeline_list = []
+    
+    dsm_group_filter, dsm_gridding_method, percentile_filter, percentile_threshold = _set_dsm_gridding_params(dsm_gridding_choice)
 
     for i, reader in enumerate(readers):
         # print(f"Processing reader #{i}")
@@ -1463,7 +1516,9 @@ def create_ept_3dep_pipeline(
         ## DSM creation block
         pipeline_dsm = {"pipeline": [reader]}
         pdal_pipeline_dsm = create_pdal_pipeline(
-                group_filter="first,only",
+                group_filter=dsm_group_filter,
+                percentile_filter=percentile_filter,
+                percentile_threshold=percentile_threshold,
                 reproject=False,
                 input_crs=POINTCLOUD_CRS[i],
                 filter_high_noise=filter_high_noise,
@@ -1474,7 +1529,7 @@ def create_ept_3dep_pipeline(
             dem_filename=str(dsm_file),
             extent=original_extents[i],
             pointcloud_resolution=raster_resolution,
-            gridmethod="idw",
+            gridmethod=dsm_gridding_method,
             dimension="Z",
         )
         pipeline_dsm["pipeline"] += pdal_pipeline_dsm
@@ -1562,6 +1617,8 @@ def create_ept_3dep_pipeline(
             pointcloud_resolution=raster_resolution,
             gridmethod="idw",
             dimension="Intensity",
+            nodata_value=0,
+            data_type="UInt16",
         )
 
         pipeline_intensity["pipeline"] += pdal_pipeline_surface_intensity
@@ -1666,6 +1723,8 @@ def execute_pdal_pipeline(pdal_pipeline_path: str) -> str:
         The filename of the output raster is successfully saved, otherwise None is returned
     """
     try:
+        with warnings.catch_warnings():
+            warnings.filterwarnings("error", category=RuntimeWarning)
         with open(pdal_pipeline_path) as f:
             pipelineDict = json.load(f)
             # maybe more robust to check for {'type': 'writers.gdal'}...
@@ -1681,6 +1740,10 @@ def execute_pdal_pipeline(pdal_pipeline_path: str) -> str:
     except Exception as e:
         print(f"An error occurred while executing the PDAL pipeline: {e}")
         return None
+    except RuntimeWarning as rw:
+        print(f"PDAL RuntimeWarning: {rw}")
+        return None
+    
 
 
 def rename_rasters(raster_fn, out_fn) -> None:
