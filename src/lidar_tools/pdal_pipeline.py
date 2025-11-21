@@ -23,6 +23,76 @@ import geopandas as gpd
 import requests
 import cyclopts
 import shutil
+import yaml
+from datetime import datetime
+from importlib.metadata import version
+
+
+def _write_processing_metadata(
+    output_dir: Path,
+    geometry: str,
+    input: str,
+    output: str,
+    src_crs: str,
+    dst_crs: str,
+    resolution: float,
+    dsm_gridding_choice: str,
+    products: str,
+    threedep_project: str,
+    tile_size: float,
+    num_process: int,
+    overwrite: bool,
+    cleanup: bool,
+    proj_pipeline: str,
+    filter_noise: bool,
+    height_above_ground_threshold: float,
+    quiet: bool
+) -> None:
+    """
+    Write processing metadata to a YAML file in the output directory.
+
+    Parameters
+    ----------
+    output_dir
+        Path to the output directory where the metadata file will be written.
+    geometry, input, output, src_crs, dst_crs, resolution, dsm_gridding_choice,
+    products, threedep_project, tile_size, num_process, overwrite, cleanup,
+    proj_pipeline, filter_noise, height_above_ground_threshold, quiet
+        All input parameters from the rasterize function.
+
+    Returns
+    -------
+    None
+    """
+    metadata = {
+        "lidar_tools_version": version("lidar_tools"),
+        "processing_timestamp": datetime.now().isoformat(),
+        "input_parameters": {
+            "geometry": str(geometry),
+            "input": str(input),
+            "output": str(output),
+            "src_crs": str(src_crs) if src_crs else None,
+            "dst_crs": str(dst_crs) if dst_crs else None,
+            "resolution": resolution,
+            "dsm_gridding_choice": dsm_gridding_choice,
+            "products": products,
+            "threedep_project": threedep_project,
+            "tile_size": tile_size,
+            "num_process": num_process,
+            "overwrite": overwrite,
+            "cleanup": cleanup,
+            "proj_pipeline": str(proj_pipeline) if proj_pipeline else None,
+            "filter_noise": filter_noise,
+            "height_above_ground_threshold": height_above_ground_threshold,
+            "quiet": quiet,
+        }
+    }
+
+    metadata_file = output_dir / "processing_metadata.yaml"
+    with open(metadata_file, "w") as f:
+        yaml.dump(metadata, f, default_flow_style=False, sort_keys=False)
+    
+    print(f"Processing metadata written to {metadata_file}")
 
 
 def rasterize(
@@ -118,6 +188,28 @@ def rasterize(
     # Set output filename prefix based on input polygon name
     outdir.mkdir(parents=True)
     output_prefix = outdir / Path(geometry).stem
+
+    # Write processing metadata to YAML file
+    _write_processing_metadata(
+        output_dir=outdir,
+        geometry=geometry,
+        input=input,
+        output=output,
+        src_crs=src_crs,
+        dst_crs=dst_crs,
+        resolution=resolution,
+        dsm_gridding_choice=dsm_gridding_choice,
+        products=products,
+        threedep_project=threedep_project,
+        tile_size=tile_size,
+        num_process=num_process,
+        overwrite=overwrite,
+        cleanup=cleanup,
+        proj_pipeline=proj_pipeline,
+        filter_noise=filter_noise,
+        height_above_ground_threshold=height_above_ground_threshold,
+        quiet=quiet
+    )
 
     # Create custom 3D CRS UTM WKT2 with WGS84 G2139 datum realization
     if dst_crs is None:
@@ -387,7 +479,7 @@ def rasterize(
             if products == "all" or products == "dsm":
                 reproject_truth_val = dsm_functions.confirm_3dep_vertical(dsm_mos_fn)
             elif products == "dtm":
-                reproject_truth_val = dtm_functions.confirm_3dep_vertical(dtm_mos_fill_fn)
+                reproject_truth_val = dsm_functions.confirm_3dep_vertical(dtm_mos_fill_fn)
             if reproject_truth_val:
                 # use input CRS which is EPSG:3857 with heights with respect to the NAVD88
                 epsg_3857_navd88_fn = "https://raw.githubusercontent.com/uw-cryo/lidar_tools/refs/heads/main/notebooks/SRS_CRS.wkt"
