@@ -15,7 +15,7 @@ jobs:
         # NOTE: macos-latest is ARM, macOS-13 is Intel.
         os: [ubuntu-latest, macos-latest, macos-13]
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
 
       - uses: prefix-dev/setup-pixi@v0.9.3
         with:
@@ -41,7 +41,7 @@ jobs:
 
       - name: Upload test artifacts
         if: always() && matrix.os == 'ubuntu-latest'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: workflow-test-outputs
           path: /tmp/lidar-tools-test/
