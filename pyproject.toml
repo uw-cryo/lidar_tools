@@ -21,22 +21,22 @@ classifiers = [
 ]
 
 dependencies = [
-  "cyclopts >=3.16.1,<4",
-  "dask >=2025.7.0,<2026",
-  "distributed >=2025.7.0,<2026",
-  "gdal >=3.10.3,<4",
-  "geopandas >=1.0.1,<2",
-  "ipykernel >=6.29.5,<7",
-  "planetary-computer >=1.0.0,<2",
+  "cyclopts",
+  "dask",
+  "distributed",
+  "gdal",
+  "geopandas",
+  "ipykernel",
+  "planetary-computer",
   # NOTE: from pip this installs *python-pdal*, just get from conda
-  "pdal >=3.4.5,<4",
-  "pystac-client >=0.8.6,<0.9",
-  "pyyaml >=6.0,<7",
-  "rioxarray >=0.19.0,<0.20",
-  "requests >=2.32.3,<3",
-  "scipy >=1.15.2,<2",
-  "odc-stac >=0.4.0,<0.5"
-]
+  "pdal",
+  "pydantic >=2",
+  "pystac-client",
+  "pyyaml",
+  "rioxarray",
+  "requests",
+  "scipy",
+  "odc-stac"]
 
 [build-system]
 build-backend = "hatchling.build"
@@ -44,9 +44,9 @@ requires = ["hatchling"]
 
 [project.optional-dependencies]
 dev = [
-  "mypy >=1.15.0,<2",
-  "pytest >=8.3.5,<9",
-  "ruff >=0.11.10,<0.13"
+  "mypy",
+  "pytest",
+  "ruff"
 ]
 
 [project.scripts]
@@ -77,27 +77,29 @@ test-example-parallel = "time lidar-tools rasterize --quiet --num-process 4 --ge
 test-example-dsmfilter = "time lidar-tools rasterize --no-cleanup --quiet --num-process 4 --geometry notebooks/uw-campus.geojson --output /tmp/lidar-tools-test/uwcampus-filter --dsm-gridding-choice 95-pct --products dsm"
 
 [tool.pixi.dependencies]
-cyclopts = "*"
-dask = "*"
-distributed = "*"
-gdal = "*"
-geopandas = "*"
-ipykernel = "*"
-planetary-computer = "*"
-pdal = "*"
-pystac-client = "*"
-rioxarray = "*"
-requests = "*"
-scipy = "*"
-odc-stac = "*"
+cyclopts = ">=4,<5"
+dask = ">=2025.12.0,<2026"
+distributed = ">=2025.12.0,<2026"
+gdal = ">=3.12.0,<4"
+geopandas = ">=1.1.1,<2"
+ipykernel = ">=7.1.0,<8"
+planetary-computer = ">=1.0.0,<2"
+pdal = ">=2.9.2,<3"
+pydantic = ">=2"
+pystac-client = ">=0.9.0,<0.10"
+rioxarray = ">=0.20.0,<0.21"
+requests = ">=2.32.5,<3"
+scipy = ">=1.16.3,<2"
+odc-stac = ">=0.5.0,<0.6"
+
 
 [tool.pixi.pypi-dependencies]
 lidar_tools = { path = ".", editable = true }
 
 [tool.pixi.feature.dev.dependencies]
-mypy = "*"
-pytest = "*"
-ruff = "*"
+mypy = ">=1.19.0,<2"
+pytest = ">=9.0.2,<10"
+ruff = ">=0.14.8,<0.15"
 
 # The following section is for building .conda packages
 # NOTE: A lot of this is duplicated from [project] which used for pypi packages
@@ -116,16 +118,17 @@ hatchling = "*"
 
 [tool.pixi.package.run-dependencies]
 # NOTE: keep consistent with dependencies listed above
-cyclopts = ">=3.16.1"
-dask = ">=2025.7.0,<2026"
-distributed = ">=2025.7.0,<2026"
-gdal = ">=3.10.3"
-geopandas = ">=1.0.1"
-ipykernel = ">=6.29.5"
+#python-pdal = ">=3.4.5"
+cyclopts = ">=4.3.0"
+dask = ">=2025.12.0"
+distributed = ">=2025.12.0"
+gdal = ">=3.12.0"
+geopandas = ">=1.1.1"
+ipykernel = ">=7.1.0"
 planetary-computer = ">=1.0.0"
-python-pdal = ">=3.4.5"
-pystac-client = ">=0.8.6"
-rioxarray = ">=0.19.0"
-requests = ">=2.32.3"
-scipy = ">=1.15.2"
-odc-stac = ">=0.4.0"
+pdal = ">=2.9.2"
+pystac-client = ">=0.9.0"
+rioxarray = ">=0.20.0"
+requests = ">=2.32.5"
+scipy = ">=1.16.3"
+odc-stac = ">=0.5.0"
