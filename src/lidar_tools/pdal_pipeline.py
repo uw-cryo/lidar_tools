@@ -3,16 +3,8 @@ Create and exectute PDAL pipelines
 """
 
 import os
-import sys
-import json
-from pathlib import Path
-import requests
-import warnings
-from typing import Literal, Annotated
-import cyclopts
-import shutil
-
-from dask.distributed import Client, LocalCluster, progress
+import re
+from dask.distributed import Client, progress, fire_and_forget
 
 # Needs to happen before importing GDAL/PDAL
 os.environ["PROJ_NETWORK"] = (
@@ -20,10 +12,87 @@ os.environ["PROJ_NETWORK"] = (
 )
 # print(f"PROJ_NETWORK is {os.environ['PROJ_NETWORK']}")
 
-import numpy as np
-import geopandas as gpd
+from lidar_tools import dsm_functions
 from pyproj import CRS
 from shapely.geometry.polygon import orient as _orient
+import numpy as np
+from pathlib import Path
+import warnings
+from typing import Literal, Annotated
+import geopandas as gpd
+import requests
+import cyclopts
+import shutil
+import yaml
+from datetime import datetime
+from importlib.metadata import version
+
+
+def _write_processing_metadata(
+    output_dir: Path,
+    geometry: str,
+    input: str,
+    output: str,
+    src_crs: str,
+    dst_crs: str,
+    resolution: float,
+    dsm_gridding_choice: str,
+    products: str,
+    threedep_project: str,
+    tile_size: float,
+    num_process: int,
+    overwrite: bool,
+    cleanup: bool,
+    proj_pipeline: str,
+    filter_noise: bool,
+    height_above_ground_threshold: float,
+    quiet: bool
+) -> None:
+    """
+    Write processing metadata to a YAML file in the output directory.
+
+    Parameters
+    ----------
+    output_dir
+        Path to the output directory where the metadata file will be written.
+    geometry, input, output, src_crs, dst_crs, resolution, dsm_gridding_choice,
+    products, threedep_project, tile_size, num_process, overwrite, cleanup,
+    proj_pipeline, filter_noise, height_above_ground_threshold, quiet
+        All input parameters from the rasterize function.
+
+    Returns
+    -------
+    None
+    """
+    metadata = {
+        "lidar_tools_version": version("lidar_tools"),
+        "processing_timestamp": datetime.now().isoformat(),
+        "input_parameters": {
+            "geometry": str(geometry),
+            "input": str(input),
+            "output": str(output),
+            "src_crs": str(src_crs) if src_crs else None,
+            "dst_crs": str(dst_crs) if dst_crs else None,
+            "resolution": resolution,
+            "dsm_gridding_choice": dsm_gridding_choice,
+            "products": products,
+            "threedep_project": threedep_project,
+            "tile_size": tile_size,
+            "num_process": num_process,
+            "overwrite": overwrite,
+            "cleanup": cleanup,
+            "proj_pipeline": str(proj_pipeline) if proj_pipeline else None,
+            "filter_noise": filter_noise,
+            "height_above_ground_threshold": height_above_ground_threshold,
+            "quiet": quiet,
+        }
+    }
+
+    metadata_file = output_dir / "processing_metadata.yaml"
+    with open(metadata_file, "w") as f:
+        yaml.dump(metadata, f, default_flow_style=False, sort_keys=False)
+    
+    print(f"Processing metadata written to {metadata_file}")
 
 def rasterize(
     geometry: str,
@@ -32,15 +101,17 @@ def rasterize(
     src_crs: str = None,
     dst_crs: str = None,
     resolution: float = 1.0,
+    dsm_gridding_choice: str = "first_idw",
     products: Literal["all", "dsm", "dtm", "intensity"] = "all",
     threedep_project: Literal["all", "latest"] | str = "latest",
     tile_size: float = 1.0,
     num_process: int = 1,
     overwrite: Annotated[bool, cyclopts.Parameter(negative="")] = False,
-    cleanup: Annotated[bool, cyclopts.Parameter(negative="")] = False,
+    cleanup: bool = True,
     proj_pipeline: str = None,
     filter_noise: bool = True,
     height_above_ground_threshold: float = None,
+    quiet: Annotated[bool, cyclopts.Parameter(negative="")] = False
 ) -> None:
     """
     Create a Digital Surface Model (DSM), Digital Terrain Model (DTM) and/or Intensity raster from point cloud data.
@@ -59,6 +130,8 @@ def rasterize(
         Path to file with PROJ-supported CRS definition for the output. If unspecified, a local UTM CRS will be used.
     resolution
         Square output raster posting in units of `dst_crs`.
+    dsm_gridding_choice
+        The gridding method to use for DSM generation. 'first_idw' uses the first and only returns which are gridded using IDW, 'n-pct' computes points matching the nth percentile in a pointview (e.g., 98-pct), which are gridded using the max binning operator.
     products
         Which output products to generate: all products, digital surface model, digital terrain model, or intensity raster.
     threedep_project
@@ -81,11 +154,18 @@ def rasterize(
         Remove noise points (classification==18 and classification==7) from the point cloud before DSM, DTM and surface intensity processing. Default is True.
     height_above_ground_threshold
         If specified, the height above ground (HAG) will be calculated using all nearest ground classied points, and all points greater than this value will be classified as noise, by default None.
+    quiet
+        Suppress dask progress bar (useful for CI logs)
 
     Returns
     -------
     None
     """
+    if dsm_gridding_choice != "first_idw" and not re.match(r"^\d{1,2}-pct$", dsm_gridding_choice):
+        raise ValueError(
+            f"Invalid dsm_gridding_choice: {dsm_gridding_choice}. Must be 'first_idw' or match the format 'n-pct' (e.g., '98-pct')."
+        )
+    
     # Parse input polygon CRS and check that area isn't too large
     gdf = gpd.read_file(geometry)
     _check_polygon_area(gdf)
@@ -107,6 +187,28 @@ def rasterize(
     # Set output filename prefix based on input polygon name
     outdir.mkdir(parents=True)
     output_prefix = outdir / Path(geometry).stem
+
+    # Write processing metadata to YAML file
+    _write_processing_metadata(
+        output_dir=outdir,
+        geometry=geometry,
+        input=input,
+        output=output,
+        src_crs=src_crs,
+        dst_crs=dst_crs,
+        resolution=resolution,
+        dsm_gridding_choice=dsm_gridding_choice,
+        products=products,
+        threedep_project=threedep_project,
+        tile_size=tile_size,
+        num_process=num_process,
+        overwrite=overwrite,
+        cleanup=cleanup,
+        proj_pipeline=proj_pipeline,
+        filter_noise=filter_noise,
+        height_above_ground_threshold=height_above_ground_threshold,
+        quiet=quiet
+    )
 
     # Create custom 3D CRS UTM WKT2 with WGS84 G2139 datum realization
     if dst_crs is None:
@@ -188,6 +290,7 @@ def rasterize(
             buffer_value=10*resolution, # buffer is based on output resolution
             tile_size_km=tile_size,  # TODO: ensure we can do non-km units
             # TODO: handle new 3dep project keyword here
+            dsm_gridding_choice=dsm_gridding_choice,
             process_specific_3dep_survey=process_specific_3dep_survey,
             process_all_intersecting_surveys=process_all_intersecting_surveys,
             filter_high_noise=filter_high_noise,
@@ -215,6 +318,7 @@ def rasterize(
             target_wkt=dst_crs,
             output_prefix=output_prefix,
             extent_polygon=extent_polygon,
+            dsm_gridding_choice=dsm_gridding_choice,
             buffer_value=10*resolution, # buffer is based on output resolution
             proj_pipeline=proj_pipeline,
             filter_high_noise=filter_high_noise,
@@ -231,7 +335,8 @@ def rasterize(
         if products == "all" or products == "dsm":
             print("Generating DSM tiles")
             final_dsm_fn_list = []
-            for pipeline in dsm_pipeline_list:
+            for idx,pipeline in enumerate(dsm_pipeline_list):
+                print(idx)
                 outfn = dsm_functions.execute_pdal_pipeline(pipeline)
                 if outfn is not None:
                     final_dsm_fn_list.append(outfn)
@@ -261,10 +366,21 @@ def rasterize(
     else:
         n_jobs = num_process if num_pipelines > num_process else num_pipelines
 
-        def run_parallel(pipeline_list):
-            with Client(threads_per_worker=2, n_workers=n_jobs) as client:
-                futures = client.map(dsm_functions.execute_pdal_pipeline, pipeline_list)
-                progress(futures)
+        def run_parallel(pipeline_list):   
+            with Client(
+                n_workers=n_jobs,
+                processes=True,  # run PDAL pipelines in isolated processes
+                threads_per_worker=1
+            ) as client:
+                print(f"Dask dashboard available at: {client.dashboard_link}")    
+                # Submit all tasks with fire_and_forget for better memory management
+                futures = []
+                for pipeline in pipeline_list:
+                    future = client.submit(dsm_functions.execute_pdal_pipeline, pipeline, retries=1)
+                    fire_and_forget(future)
+                    futures.append(future)
+                if not quiet:
+                    progress(futures)
                 results = client.gather(futures)
                 return [outfn for outfn in results if outfn is not None]
 
@@ -356,14 +472,18 @@ def rasterize(
 
     if input == "EPT_AWS":
         if out_crs != CRS.from_epsg(3857):
-            print("*********Reprojecting DSM, DTM and intensity rasters****")
-            reproject_truth_val = dsm_functions.confirm_3dep_vertical(dsm_mos_fn)
+            print("*********Reprojecting rasters****")
+            src_srs = "EPSG:3857"
+            #This is hardcoded for dsm_mos_fn, but we could have dtm fn
+            reproject_truth_val = False
+            if products == "all" or products == "dsm":
+                reproject_truth_val = dsm_functions.confirm_3dep_vertical(dsm_mos_fn)
+            elif products == "dtm":
+                reproject_truth_val = dsm_functions.confirm_3dep_vertical(dtm_mos_fill_fn)
             if reproject_truth_val:
                 # use input CRS which is EPSG:3857 with heights with respect to the NAVD88
                 epsg_3857_navd88_fn = "https://raw.githubusercontent.com/uw-cryo/lidar_tools/refs/heads/main/notebooks/SRS_CRS.wkt"
                 src_srs = epsg_3857_navd88_fn
-            else:
-                src_srs = "EPSG:3857"
             out_extent = final_out_extent
             print(src_srs)
             print("Running reprojection sequentially")
@@ -406,6 +526,7 @@ def rasterize(
                     src_srs,
                     dst_crs,
                     res=resolution,
+                    dtype="UInt16",
                     resampling_alogrithm="bilinear",
                     out_extent=out_extent,
                 )
@@ -432,8 +553,10 @@ def rasterize(
         dsm_functions.gdal_add_overview(intensity_reproj)
 
     if cleanup:
-        for tif_file in outdir.glob("*tile*.tif*"):
-            tif_file.unlink()
+        print("Cleaning up intermediate outputs")
+        for pattern in ["*tile*.tif*","pipeline*.json", "*temp.tif", "*.wkt"]:
+            for file in outdir.glob(pattern):
+                file.unlink()
 
     print("****Processing complete****")
 
