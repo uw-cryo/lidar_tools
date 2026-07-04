@@ -22,7 +22,6 @@ import odc.stac
 import os
 import copy
 import warnings
-import glob
 
 gdal.UseExceptions()
 
@@ -1061,6 +1060,7 @@ def gdal_warp(
     resampling_alogrithm: str = "bilinear",
     out_extent: list = None,
     dtype: str = 'Float32',
+    target_aligned_pixels: bool = True,
 ) -> None:
     """
     Warp a raster file to a new coordinate reference system and resolution using GDAL.
@@ -1084,6 +1084,9 @@ def gdal_warp(
     dtype
         Data type for the output raster, by default 'Float32'.
         Common options include 'Byte', 'UInt16', 'Int16', 'UInt32', 'Int32', 'Float32', 'Float64'.
+    target_aligned_pixels
+        Align output grid to multiples of res (gdalwarp -tap), by default True.
+        Set False to reproduce an existing grid via out_extent whose origin is not a multiple of res.
     Returns
     -------
     None
@@ -1111,7 +1114,9 @@ def gdal_warp(
         yRes=res,
         dstSRS=dst_srs,
         errorThreshold=tolerance,
-        targetAlignedPixels=True,
+        # disable when matching an existing raster grid whose origin is not
+        # a multiple of res (e.g. recovering interrupted-run intermediates)
+        targetAlignedPixels=target_aligned_pixels,
         # use directly output format as COG when gaussian overview resampling is implemented upstream in GDAL
         outputBounds=out_extent,
         outputType=DTYPE_TO_GDAL.get(dtype),
@@ -1475,9 +1480,6 @@ def create_ept_3dep_pipeline(
     #Should check that this is EPSG:4326 (default for geojson)
     gdf = gpd.read_file(extent_polygon)
 
-    # specify the output CRS of DEMs
-    with open(target_wkt, "r") as f:
-        OUTPUT_CRS = " ".join(f.read().replace("\n", "").split())
     # fetch the readers for the pointclouds
     readers, POINTCLOUD_CRS, extents, original_extents = return_readers(
         gdf,

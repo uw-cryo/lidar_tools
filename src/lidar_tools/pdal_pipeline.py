@@ -520,10 +520,15 @@ def rasterize(
                 )
             if products == "all" or products == "intensity":
                 print("Reprojecting intensity raster")
+                # Intensity values are not heights: warp with the horizontal-only
+                # source SRS. Passing the compound 3857+NAVD88 src_srs makes
+                # gdal.Warp apply the geoid/ellipsoid vertical shift to the
+                # single-band intensity values themselves (~-30 m in CONUS,
+                # values below the undulation clamp to 0 = nodata).
                 dsm_functions.gdal_warp(
                     intensity_mos_fn,
                     intensity_reproj,
-                    src_srs,
+                    "EPSG:3857",
                     dst_crs,
                     res=resolution,
                     dtype="UInt16",

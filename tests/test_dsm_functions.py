@@ -1,6 +1,5 @@
 import lidar_tools
 import geopandas as gpd
-from shapely.geometry import Polygon
 import pyproj
 import numpy as np
 
@@ -70,3 +69,77 @@ def test_return_readers():
         -13614915.0,
         6049231.0,
     ]
+
+
+def _make_const_uint16_raster(fn, value=120, origin=(-13615000, 6045000), size=100, res=0.5):
+    """Constant UInt16 raster in EPSG:3857 (default origin near Seattle, UTM 10N)."""
+    from osgeo import gdal, osr
+
+    drv = gdal.GetDriverByName("GTiff")
+    ds = drv.Create(str(fn), size, size, 1, gdal.GDT_UInt16)
+    ds.SetGeoTransform((origin[0], res, 0, origin[1], 0, -res))
+    srs = osr.SpatialReference()
+    srs.ImportFromEPSG(3857)
+    ds.SetProjection(srs.ExportToWkt())
+    ds.GetRasterBand(1).WriteArray(np.full((size, size), value, np.uint16))
+    ds.GetRasterBand(1).SetNoDataValue(0)
+    ds = None
+
+
+def test_gdal_warp_2d_source_preserves_band_values(tmp_path):
+    """Non-height rasters (intensity) must never be vertically datum-shifted.
+
+    Warping with a horizontal-only source SRS into a 3D target CRS must leave
+    band values untouched (a compound source SRS with a vertical datum makes
+    gdal.Warp shift single-band values by the geoid undulation).
+    """
+    from osgeo import gdal
+
+    src = tmp_path / "const_3857.tif"
+    _make_const_uint16_raster(src)
+    dst = tmp_path / "warped.tif"
+    lidar_tools.dsm_functions.gdal_warp(
+        str(src),
+        str(dst),
+        "EPSG:3857",
+        "./notebooks/UTM_10N_WGS84_G2139_3D.wkt",
+        res=0.5,
+        dtype="UInt16",
+    )
+    arr = gdal.Open(str(dst)).ReadAsArray()
+    interior = arr[10:-10, 10:-10]
+    vals = np.unique(interior[interior != 0])
+    assert list(vals) == [120]
+
+
+def test_gdal_warp_tap_false_reproduces_exact_extent(tmp_path):
+    """target_aligned_pixels=False must honor an out_extent whose origin is not
+    a multiple of res (needed to match grids of recovered interrupted runs)."""
+    from osgeo import gdal
+
+    src = tmp_path / "const_3857.tif"
+    _make_const_uint16_raster(src)
+    first = tmp_path / "warp1.tif"
+    lidar_tools.dsm_functions.gdal_warp(
+        str(src), str(first), "EPSG:3857", "EPSG:32610", res=0.5, dtype="UInt16"
+    )
+    gt = gdal.Open(str(first)).GetGeoTransform()
+    # request a grid deliberately offset from res multiples
+    minx, maxy = gt[0] + 5.13, gt[3] - 5.13
+    out_extent = [minx, maxy - 20.0, minx + 20.0, maxy]
+    second = tmp_path / "warp2.tif"
+    lidar_tools.dsm_functions.gdal_warp(
+        str(src),
+        str(second),
+        "EPSG:3857",
+        "EPSG:32610",
+        res=0.5,
+        dtype="UInt16",
+        out_extent=out_extent,
+        target_aligned_pixels=False,
+    )
+    ds = gdal.Open(str(second))
+    gt2 = ds.GetGeoTransform()
+    np.testing.assert_almost_equal(gt2[0], minx)
+    np.testing.assert_almost_equal(gt2[3], maxy)
+    assert (ds.RasterXSize, ds.RasterYSize) == (40, 40)
