@@ -10,8 +10,12 @@ from dask.distributed import Client, progress, fire_and_forget
 # Needs to happen before importing GDAL/PDAL. PROJ fetches datum shift grids
 # over the internet; respect an explicit user setting (e.g. PROJ_NETWORK=OFF).
 os.environ.setdefault("PROJ_NETWORK", "ON")
+# Error out instead of silently falling back to a less accurate transformation
+# when the best one is unavailable (e.g. missing geoid grid with networking
+# off => heights silently wrong by the ~31 m geoid undulation in CONUS)
+os.environ.setdefault("PROJ_ONLY_BEST_DEFAULT", "YES")
 
-from lidar_tools import dsm_functions
+from lidar_tools import dsm_functions, geodesy
 from pyproj import CRS
 from shapely.geometry.polygon import orient as _orient
 import numpy as np
@@ -19,7 +23,6 @@ from pathlib import Path
 import warnings
 from typing import Literal, Annotated
 import geopandas as gpd
-import requests
 import cyclopts
 import shutil
 import yaml
@@ -90,8 +93,36 @@ def _write_processing_metadata(
     metadata_file = output_dir / "processing_metadata.yaml"
     with open(metadata_file, "w") as f:
         yaml.dump(metadata, f, default_flow_style=False, sort_keys=False)
-    
+
     print(f"Processing metadata written to {metadata_file}")
+
+
+def _update_processing_metadata(output_dir: Path, section: str, data) -> None:
+    """
+    Merge a top-level section into an existing processing_metadata.yaml.
+
+    Parameters
+    ----------
+    output_dir
+        Directory containing processing_metadata.yaml.
+    section
+        Top-level key to set or replace.
+    data
+        YAML-serializable content for the section.
+
+    Returns
+    -------
+    None
+    """
+    metadata_file = Path(output_dir) / "processing_metadata.yaml"
+    metadata: dict = {}
+    if metadata_file.exists():
+        with open(metadata_file) as f:
+            metadata = yaml.safe_load(f) or {}
+    metadata[section] = data
+    with open(metadata_file, "w") as f:
+        yaml.dump(metadata, f, default_flow_style=False, sort_keys=False)
+
 
 def rasterize(
     geometry: str,
@@ -209,26 +240,15 @@ def rasterize(
         quiet=quiet
     )
 
-    # Create custom 3D CRS UTM WKT2 with WGS84 G2139 datum realization
+    # Create custom 3D CRS UTM WKT2 with WGS84 G2139 datum realization,
+    # built programmatically with pyproj (correct southern-hemisphere false
+    # northing; no runtime network fetch of a WKT template)
     if dst_crs is None:
-        gdf = gpd.read_file(geometry)
         epsg_code = gdf.estimate_utm_crs().to_epsg()
-        identifier_ns = str(epsg_code)[:3]
-        identifier_zone = str(epsg_code)[3:]
-        if identifier_ns == "326":
-            zone = identifier_zone + "N"
-        else:
-            zone = identifier_zone + "S"
+        zone = geodesy.utm_zone_label(epsg_code)
         target_wkt = outdir / f"UTM_{zone}_WGS84_G2139_3D.wkt"
-        path_to_base_utm10_def = outdir / "UTM_10.wkt"
-        # TODO: replace with local copy of file
-        url = "https://raw.githubusercontent.com/uw-cryo/lidar_tools/refs/heads/main/notebooks/UTM_10N_WGS84_G2139_3D.wkt"
-        response = requests.get(url)
-        if response.status_code == 200:
-            with open(path_to_base_utm10_def, "w") as f:
-                f.write(response.text)
-        dst_crs = dsm_functions.write_local_utm_3DCRS_G2139(
-            path_to_base_utm10_def, zone=zone, outfn=target_wkt
+        dst_crs = geodesy.write_crs_file(
+            geodesy.build_utm_g2139_3d(epsg_code), target_wkt
         )
 
     # Configure output raster extents and posting based on input polygon
@@ -273,10 +293,26 @@ def rasterize(
         filter_low_noise = False
     # TODO: create EPT for local laz for common workflow? https://github.com/uw-cryo/lidar_tools/issues/14#issuecomment-3076045321
     # SB note: The main reason for seperate EPT and local laz pipelines is the difference in projection handling, not much due to difference in file formats.
+    # Fail fast, before hours of tile compute, if PROJ cannot rigorously
+    # perform the datum transformations this run will need (e.g. missing
+    # geoid grids would otherwise surface as a silent ~31 m vertical error
+    # or a crash at the final warp stage)
+    transform_checks = []
+
     if input == "EPT_AWS":
         print("Processing 3DEP EPT tiles from AWS")
+        if out_crs != CRS.from_epsg(3857):
+            # both candidate source interpretations of EPT data; which one
+            # applies is decided empirically after mosaicking
+            for branch, ept_src_crs in [
+                ("geoid (EPSG:3857 + NAVD88 heights)", geodesy.build_3857_navd88_compound()),
+                ("ellipsoid (EPSG:3857 as NAD83(2011) 3D)", geodesy.build_ept_3857_nad83_2011()),
+            ]:
+                record = geodesy.preflight_vertical_transform(ept_src_crs, out_crs)
+                record["branch"] = branch
+                transform_checks.append(record)
         # TODO: handle new positional args, skip products not requested
-        
+
         (
             dsm_pipeline_list,
             dtm_no_fill_pipeline_list,
@@ -306,6 +342,10 @@ def rasterize(
         else:
             src_projcrs = None
         print(src_projcrs)
+        if src_projcrs is not None:
+            record = geodesy.preflight_vertical_transform(src_projcrs, out_crs)
+            record["branch"] = "local point cloud (in-pipeline reprojection)"
+            transform_checks.append(record)
         (
             dsm_pipeline_list,
             dtm_no_fill_pipeline_list,
@@ -325,6 +365,15 @@ def rasterize(
             hag_nn=height_above_ground_threshold,
             raster_resolution=resolution
         )
+
+    # Record geodesy provenance now (before compute) so it survives an
+    # interrupted run; the coordinate epoch is filled in after stamping
+    geodesy_record: dict = {
+        "versions": geodesy.library_versions(),
+        "vertical_transform_preflight": transform_checks,
+        "coordinate_epoch": None,
+    }
+    _update_processing_metadata(outdir, "geodesy", geodesy_record)
 
     # BuildVRT opens every tile at once during mosaicking; the default soft
     # open-file limit fails for large AOIs (issue #43)
@@ -506,73 +555,91 @@ def rasterize(
     dtm_fill_reproj = dtm_mos_fill_fn.split("-temp.tif")[0] + ".tif"
     intensity_reproj = intensity_mos_fn.split("-temp.tif")[0] + ".tif"
 
-    if input == "EPT_AWS":
-        if out_crs != CRS.from_epsg(3857):
-            print("*********Reprojecting rasters****")
-            src_srs = "EPSG:3857"
-            #This is hardcoded for dsm_mos_fn, but we could have dtm fn
-            reproject_truth_val = False
-            if products == "all" or products == "dsm":
-                reproject_truth_val = dsm_functions.confirm_3dep_vertical(dsm_mos_fn)
-            elif products == "dtm":
-                reproject_truth_val = dsm_functions.confirm_3dep_vertical(dtm_mos_fill_fn)
-            if reproject_truth_val:
-                # use input CRS which is EPSG:3857 with heights with respect to the NAVD88
-                epsg_3857_navd88_fn = "https://raw.githubusercontent.com/uw-cryo/lidar_tools/refs/heads/main/notebooks/SRS_CRS.wkt"
-                src_srs = epsg_3857_navd88_fn
-            out_extent = final_out_extent
-            print(src_srs)
-            print("Running reprojection sequentially")
-            if products == "all" or products == "dsm":
-                print("Reprojecting DSM raster")
-                dsm_functions.gdal_warp(
-                    dsm_mos_fn,
-                    dsm_reproj,
-                    src_srs,
-                    dst_crs,
-                    res=resolution,
-                    resampling_alogrithm="bilinear",
-                    out_extent=out_extent,
-                )
-            if products == "all" or products == "dtm":
-                print("Reprojecting DTM raster")
-                dsm_functions.gdal_warp(
-                    dtm_mos_no_fill_fn,
-                    dtm_no_fill_reproj,
-                    src_srs,
-                    dst_crs,
-                    res=resolution,
-                    resampling_alogrithm="bilinear",
-                    out_extent=out_extent,
-                )
-                dsm_functions.gdal_warp(
-                    dtm_mos_fill_fn,
-                    dtm_fill_reproj,
-                    src_srs,
-                    dst_crs,
-                    res=resolution,
-                    resampling_alogrithm="bilinear",
-                    out_extent=out_extent,
-                )
-            if products == "all" or products == "intensity":
-                print("Reprojecting intensity raster")
-                # Intensity values are not heights: warp with the horizontal-only
-                # source SRS. Passing the compound 3857+NAVD88 src_srs makes
-                # gdal.Warp apply the geoid/ellipsoid vertical shift to the
-                # single-band intensity values themselves (~-30 m in CONUS,
-                # values below the undulation clamp to 0 = nodata).
-                dsm_functions.gdal_warp(
-                    intensity_mos_fn,
-                    intensity_reproj,
-                    "EPSG:3857",
-                    dst_crs,
-                    res=resolution,
-                    dtype="UInt16",
-                    resampling_alogrithm="bilinear",
-                    out_extent=out_extent,
-                )
+    if input == "EPT_AWS" and out_crs != CRS.from_epsg(3857):
+        print("*********Reprojecting rasters****")
+        #This is hardcoded for dsm_mos_fn, but we could have dtm fn
+        reproject_truth_val = False
+        if products == "all" or products == "dsm":
+            reproject_truth_val = dsm_functions.confirm_3dep_vertical(dsm_mos_fn)
+        elif products == "dtm":
+            reproject_truth_val = dsm_functions.confirm_3dep_vertical(dtm_mos_fill_fn)
+        if reproject_truth_val:
+            # EPT heights are NAVD88 orthometric: warp with the compound
+            # source SRS so the geoid-to-ellipsoid shift is applied
+            src_srs = geodesy.write_crs_file(
+                geodesy.build_3857_navd88_compound(),
+                outdir / "EPT_3857_NAVD88_compound.wkt",
+            )
+        else:
+            # EPT heights are already NAD83(2011) ellipsoidal: declare the
+            # true datum (3D) so the ITRF<->NAD83(2011) Helmert applies to
+            # positions and heights, instead of a null relabel that leaves
+            # outputs ~1.3 m horizontal / ~0.9 m vertical off in CONUS
+            src_srs = geodesy.write_crs_file(
+                geodesy.build_ept_3857_nad83_2011(),
+                outdir / "EPT_3857_NAD83_2011_3D.wkt",
+            )
+        out_extent = final_out_extent
+        print(src_srs)
+        print("Running reprojection sequentially")
+        if products == "all" or products == "dsm":
+            print("Reprojecting DSM raster")
+            dsm_functions.gdal_warp(
+                dsm_mos_fn,
+                dsm_reproj,
+                src_srs,
+                dst_crs,
+                res=resolution,
+                resampling_alogrithm="bilinear",
+                out_extent=out_extent,
+            )
+        if products == "all" or products == "dtm":
+            print("Reprojecting DTM raster")
+            dsm_functions.gdal_warp(
+                dtm_mos_no_fill_fn,
+                dtm_no_fill_reproj,
+                src_srs,
+                dst_crs,
+                res=resolution,
+                resampling_alogrithm="bilinear",
+                out_extent=out_extent,
+            )
+            dsm_functions.gdal_warp(
+                dtm_mos_fill_fn,
+                dtm_fill_reproj,
+                src_srs,
+                dst_crs,
+                res=resolution,
+                resampling_alogrithm="bilinear",
+                out_extent=out_extent,
+            )
+        if products == "all" or products == "intensity":
+            print("Reprojecting intensity raster")
+            # Intensity values are not heights: warp with a horizontal-only
+            # (2D) source SRS. Passing a compound/3D src_srs makes gdal.Warp
+            # apply the geoid/ellipsoid vertical shift to the single-band
+            # intensity values themselves (~-30 m in CONUS, values below the
+            # undulation clamp to 0 = nodata). Still declare the NAD83(2011)
+            # datum so the horizontal Helmert matches the height products.
+            intensity_src_srs = geodesy.write_crs_file(
+                geodesy.build_ept_3857_nad83_2011(three_d=False),
+                outdir / "EPT_3857_NAD83_2011_2D.wkt",
+            )
+            dsm_functions.gdal_warp(
+                intensity_mos_fn,
+                intensity_reproj,
+                intensity_src_srs,
+                dst_crs,
+                res=resolution,
+                dtype="UInt16",
+                resampling_alogrithm="bilinear",
+                out_extent=out_extent,
+            )
 
     else:
+        # local point clouds are reprojected in-pipeline; EPT runs with an
+        # EPSG:3857 target need no warp (previously these were never renamed
+        # and the run crashed at the overview stage)
         print("No reprojection required")
         # rename the temp files to the final output names
         if products == "all" or products == "dsm":
@@ -583,15 +650,34 @@ def rasterize(
         if products == "all" or products == "intensity":
             dsm_functions.rename_rasters(intensity_mos_fn, intensity_reproj)
 
+    final_products = []
+    if products == "all" or products == "dsm":
+        final_products.append(dsm_reproj)
+    if products == "all" or products == "dtm":
+        final_products.extend([dtm_no_fill_reproj, dtm_fill_reproj])
+    if products == "all" or products == "intensity":
+        final_products.append(intensity_reproj)
+
+    # 3DEP sources are NAD83(2011) epoch-reduced to 2010.0, so products in a
+    # dynamic frame (default WGS84 G2139 target) are coordinates at epoch
+    # 2010.0; unstamped they are ambiguous by ~1.65 cm/yr of plate motion.
+    # Stamp before overview creation so the COG translate carries it over.
+    # Static target CRSs are left unstamped (set_coordinate_epoch no-ops).
+    stamped = [
+        fn
+        for fn in final_products
+        if geodesy.set_coordinate_epoch(fn, geodesy.DEFAULT_COORDINATE_EPOCH)
+    ]
+    geodesy_record["coordinate_epoch"] = (
+        geodesy.DEFAULT_COORDINATE_EPOCH if stamped else None
+    )
+    geodesy_record["epoch_stamped_products"] = [Path(fn).name for fn in stamped]
+    _update_processing_metadata(outdir, "geodesy", geodesy_record)
+
     print("****Building Gaussian overviews for all rasters****")
     print("Running overview creation sequentially")
-    if products == "all" or products == "dsm":
-        dsm_functions.gdal_add_overview(dsm_reproj)
-    if products == "all" or products == "dtm":
-        dsm_functions.gdal_add_overview(dtm_no_fill_reproj)
-        dsm_functions.gdal_add_overview(dtm_fill_reproj)
-    if products == "all" or products == "intensity":
-        dsm_functions.gdal_add_overview(intensity_reproj)
+    for raster_fn in final_products:
+        dsm_functions.gdal_add_overview(raster_fn)
 
     if cleanup:
         print("Cleaning up intermediate outputs")
