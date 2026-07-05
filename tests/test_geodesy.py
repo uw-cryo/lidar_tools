@@ -170,6 +170,79 @@ def test_set_coordinate_epoch_static_crs_noop(tmp_path):
     assert _read_epoch(fn) == 0.0  # unset
 
 
+def test_intensity_warp_helmert_without_value_shift(tmp_path):
+    # The intensity finalize warp must (a) never touch band values — the
+    # compound source's vertical leg subtracted ~28 m from UInt16 DNs
+    # (issue #70) — and (b) still apply the ITRF<->NAD83(2011) horizontal
+    # Helmert (E1: EPT "3857" numbers are null-tie NAD83(2011) values).
+    # A 2D NAD83(2011)-based source gives both in a single warp.
+    from osgeo import gdal, osr
+
+    from lidar_tools import dsm_functions
+
+    # step-edge UInt16 raster in EPSG:3857 near Las Vegas
+    src_fn = tmp_path / "step3857.tif"
+    n = 200
+    arr = np.full((n, n), 100, dtype=np.uint16)
+    arr[:, n // 2 :] = 200
+    drv = gdal.GetDriverByName("GTiff")
+    ds = drv.Create(str(src_fn), n, n, 1, gdal.GDT_UInt16)
+    ds.SetGeoTransform((-12818000, 1, 0, 4325000, 0, -1))
+    srs = osr.SpatialReference()
+    srs.ImportFromEPSG(3857)
+    ds.SetSpatialRef(srs)
+    ds.GetRasterBand(1).WriteArray(arr)
+    ds.GetRasterBand(1).SetNoDataValue(0)
+    ds = None
+
+    # 2D target: a 3D target promotes the source and applies the ~-0.7 m
+    # Helmert dz to the band values (200 -> 199 after UInt16 truncation)
+    dst_crs_fn = geodesy.write_crs_file(
+        geodesy.build_utm_g2139_3d(32611).to_2d(), tmp_path / "utm11_g2139_2d.wkt"
+    )
+    intensity_src = geodesy.write_crs_file(
+        geodesy.build_ept_3857_nad83_2011(three_d=False), tmp_path / "src2d.wkt"
+    )
+
+    def warp(src_srs, out_fn, ct=None):
+        dsm_functions.gdal_warp(
+            str(src_fn), str(out_fn), src_srs, dst_crs_fn,
+            res=1.0, dtype="UInt16", resampling_alogrithm="nearest",
+            coordinate_operation=ct,
+        )
+        with gdal.OpenEx(str(out_fn)) as ds:
+            a = ds.GetRasterBand(1).ReadAsArray()
+            gt = ds.GetGeoTransform()
+        return a, gt
+
+    # GDAL's own operation selection silently uses the null tie for this
+    # horizontal-only pair: the explicit pipeline (as selected/recorded by
+    # the preflight) is required to engage the Helmert
+    check = geodesy.preflight_vertical_transform(
+        geodesy.build_ept_3857_nad83_2011(three_d=False),
+        geodesy.build_utm_g2139_3d(32611).to_2d(),
+        download=False,
+    )
+    fixed, gt_f = warp(
+        intensity_src, tmp_path / "fixed.tif", ct=check["proj_pipeline"]
+    )
+    naive, gt_n = warp("EPSG:3857", tmp_path / "naive.tif")
+
+    # (a) values pass through exactly: no vertical leg can touch them
+    assert set(np.unique(fixed)) <= {0, 100, 200}
+
+    def edge_x(a, gt):
+        cols = (a == 200).sum(axis=0)
+        edge_col = int(np.argmax(cols > (a != 0).sum(axis=0).max() * 0.5))
+        return gt[0] + edge_col * gt[1]
+
+    # (b) Helmert engaged: the datum-declared warp places the same content
+    # ~1.3 m west of the null-tie warp (null coordinates sit +1.26 m east
+    # of truth at Las Vegas)
+    shift_east = edge_x(fixed, gt_f) - edge_x(naive, gt_n)
+    assert -2.0 < shift_east < -0.5
+
+
 def test_coordinate_epoch_survives_overviews(tmp_path):
     # the pipeline stamps before gdal_add_overview; the COG translate in
     # there must carry the epoch through to the final product

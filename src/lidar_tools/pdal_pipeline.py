@@ -615,25 +615,40 @@ def rasterize(
             )
         if products == "all" or products == "intensity":
             print("Reprojecting intensity raster")
-            # Intensity values are not heights: warp with a horizontal-only
-            # (2D) source SRS. Passing a compound/3D src_srs makes gdal.Warp
-            # apply the geoid/ellipsoid vertical shift to the single-band
-            # intensity values themselves (~-30 m in CONUS, values below the
-            # undulation clamp to 0 = nodata). Still declare the NAD83(2011)
+            # Intensity values are not heights: warp 2D -> 2D. A vertical
+            # axis on EITHER side makes gdal.Warp treat the band values as
+            # heights (compound source: ~-30 m geoid shift, values below
+            # the undulation clamp to 0 = nodata; even a 2D source against
+            # the 3D target gets promoted and picks up the ~-0.7 m Helmert
+            # dz, truncating UInt16 DNs). Still declare the NAD83(2011)
             # datum so the horizontal Helmert matches the height products.
             intensity_src_srs = geodesy.write_crs_file(
                 geodesy.build_ept_3857_nad83_2011(three_d=False),
                 outdir / "EPT_3857_NAD83_2011_2D.wkt",
             )
+            intensity_dst_srs = geodesy.write_crs_file(
+                out_crs.to_2d(),
+                outdir / (Path(str(dst_crs)).stem + "_2D.wkt"),
+            )
+            # GDAL will not route the horizontal-only NAD83(2011)->target
+            # transform through the ITRF Helmert on its own (it silently
+            # selects the null tie): enforce the pipeline pyproj selects
+            intensity_check = geodesy.preflight_vertical_transform(
+                geodesy.build_ept_3857_nad83_2011(three_d=False),
+                out_crs.to_2d(),
+            )
+            intensity_check["branch"] = "intensity (2D horizontal-only)"
+            transform_checks.append(intensity_check)
             dsm_functions.gdal_warp(
                 intensity_mos_fn,
                 intensity_reproj,
                 intensity_src_srs,
-                dst_crs,
+                intensity_dst_srs,
                 res=resolution,
                 dtype="UInt16",
                 resampling_alogrithm="bilinear",
                 out_extent=out_extent,
+                coordinate_operation=intensity_check["proj_pipeline"],
             )
 
     else:

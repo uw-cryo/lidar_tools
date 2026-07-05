@@ -1145,6 +1145,7 @@ def gdal_warp(
     out_extent: list = None,
     dtype: str = 'Float32',
     target_aligned_pixels: bool = True,
+    coordinate_operation: str = None,
 ) -> None:
     """
     Warp a raster file to a new coordinate reference system and resolution using GDAL.
@@ -1171,6 +1172,13 @@ def gdal_warp(
     target_aligned_pixels
         Align output grid to multiples of res (gdalwarp -tap), by default True.
         Set False to reproduce an existing grid via out_extent whose origin is not a multiple of res.
+    coordinate_operation
+        Explicit PROJ pipeline string (gdalwarp -ct) overriding GDAL's
+        coordinate-operation selection. GDAL will not route horizontal-only
+        transformations through an intermediate frame (e.g. the
+        NAD83(2011)<->ITRF Helmert via ITRF2014), silently picking a null
+        operation instead; pass the pipeline selected by
+        geodesy.preflight_vertical_transform to enforce the rigorous path.
     Returns
     -------
     None
@@ -1201,6 +1209,7 @@ def gdal_warp(
         # disable when matching an existing raster grid whose origin is not
         # a multiple of res (e.g. recovering interrupted-run intermediates)
         targetAlignedPixels=target_aligned_pixels,
+        coordinateOperation=coordinate_operation,
         # use directly output format as COG when gaussian overview resampling is implemented upstream in GDAL
         outputBounds=out_extent,
         outputType=DTYPE_TO_GDAL.get(dtype),
