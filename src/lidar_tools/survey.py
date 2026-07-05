@@ -344,17 +344,18 @@ def plot_coverage(
     aoi = aoi_gdf.to_crs("EPSG:4326")
     aoi_geom = aoi.union_all()
 
-    # numbers = inclusion priority (1 = anchor); draw larger footprints
-    # first so smaller ones stay visible on top
+    # numbers = proposed inclusion priority (1 = anchor); draw larger
+    # footprints first so smaller ones stay visible on top
     draw_order = surveys.geometry.area.sort_values(ascending=False).index
-    n_lines = len(surveys) + surveys["epoch"].nunique() + 2
-    # map on top, single-line legend grouped by epoch below, left-aligned
-    text_in = 0.19 * n_lines + 0.3
+    n_lines = len(surveys) + surveys["epoch"].nunique() + 3
+    # centered map on top, single-line legend grouped by epoch below
+    text_in = 0.17 * n_lines + 0.3
     fig_h = 6.6 + text_in
-    fig = plt.figure(figsize=(11, fig_h))
+    fig = plt.figure(figsize=(12, fig_h))
     ax = fig.add_axes(
-        [0.08, (text_in + 0.55) / fig_h, 0.86, 1 - (text_in + 0.55) / fig_h - 0.05]
+        [0.06, (text_in + 0.55) / fig_h, 0.88, 1 - (text_in + 0.55) / fig_h - 0.05]
     )
+    ax.set_anchor("N")  # center the (aspect-constrained) map horizontally
     legend_entries = {}
     for idx in draw_order:
         row = surveys.loc[idx]
@@ -431,17 +432,26 @@ def plot_coverage(
     ax.set_aspect(1 / max(0.1, abs(np.cos(np.deg2rad((miny + maxy) / 2)))))
     ax.set_title(title or "Lidar collection coverage")
     ax.locator_params(axis="x", nbins=5)
+    legend_lines.insert(
+        0,
+        "collections by proposed epoch (numbers = proposed inclusion "
+        "priority, 1 = anchor; user decides):",
+    )
+    # fixed canvas (no tight bbox): size the font so the longest line fits
+    max_chars = max(len(line) for line in legend_lines)
+    usable_pt = 0.90 * 12 * 72
+    fontsize = min(8.5, usable_pt / (0.62 * max_chars))
     fig.text(
-        0.08,
+        0.05,
         (text_in + 0.15) / fig_h,
         "\n".join(legend_lines),
-        fontsize=9,
+        fontsize=fontsize,
         family="monospace",
         va="top",
         ha="left",
     )
     if out_fn is not None:
-        fig.savefig(out_fn, dpi=130, bbox_inches="tight")
+        fig.savefig(out_fn, dpi=130)
         print(f"Wrote coverage map to {out_fn}")
     return fig
 
@@ -548,7 +558,7 @@ def survey(
     output: str = None,
     wesm_source: str = WESM_URL,
     ept_index: str = EPT_RESOURCES_URL,
-    min_overlap: float = 0.02,
+    min_overlap: float = 0.0,
 ) -> None:
     """
     Report the lidar collections covering an AOI.
@@ -570,9 +580,11 @@ def survey(
     ept_index
         EPT boundary index (GeoJSON) URL or local path.
     min_overlap
-        Drop collections overlapping less than this fraction of the AOI
-        (sliver suppression), by default 0.02. Dropped collections are
-        listed so nothing disappears silently; use 0 to keep everything.
+        Optional exploration filter: drop collections overlapping less than
+        this fraction of the AOI. Default 0 — the inventory shows
+        everything available; thinning is a selection decision, not a
+        display rule. Dropped collections are listed when the filter is
+        used.
 
     Returns
     -------
