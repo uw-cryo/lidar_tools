@@ -18,7 +18,8 @@ from pathlib import Path
 
 import pyproj.network
 from osgeo import gdal
-from pyproj import CRS
+from pyproj import CRS, Transformer
+from pyproj.aoi import AreaOfInterest
 from pyproj.crs import CompoundCRS, ProjectedCRS
 from pyproj.crs.coordinate_operation import UTMConversion
 from pyproj.transformer import TransformerGroup
@@ -109,14 +110,14 @@ def build_3857_navd88_compound() -> CRS:
     )
 
 
-def build_ept_3857_nad83_2011(three_d: bool = True) -> CRS:
+def build_ept_3857_nad83_2011(three_d: bool = True, base_epsg: int = NAD83_2011_EPSG) -> CRS:
     """
-    Build Pseudo-Mercator on a NAD83(2011) base, describing 3DEP EPT
-    coordinates by their true datum.
+    Build Pseudo-Mercator on the survey's true NAD83-family base datum,
+    describing 3DEP EPT coordinates by what they actually are.
 
     EPT tiles were projected to EPSG:3857 with a null datum tie, so the
-    numbers are NAD83(2011) values relabeled WGS84. Declaring the actual
-    datum makes PROJ apply the ITRF<->NAD83(2011) time-dependent Helmert
+    numbers are values of the source realization relabeled WGS84. Declaring
+    the actual datum makes PROJ apply the correct time-dependent Helmert
     when transforming to an ITRF-based output CRS, instead of relabeling
     the coordinates (~1.3 m horizontal / ~0.9 m vertical error in CONUS).
 
@@ -124,21 +125,39 @@ def build_ept_3857_nad83_2011(three_d: bool = True) -> CRS:
     ----------
     three_d
         If True, add an ellipsoidal-height axis so heights are transformed
-        too (for surveys whose EPT Z is already NAD83(2011) ellipsoidal).
+        too (for surveys whose EPT Z is already ellipsoidal).
         Use False for rasters whose band values are not heights (intensity).
+    base_epsg
+        Geographic 2D EPSG code of the survey's true horizontal datum, by
+        default NAD83(2011) (EPSG:6318). Older surveys may need e.g.
+        NAD83(HARN) (EPSG:4152) or NAD83(NSRS2007) (EPSG:4759) — the
+        realization difference reaches ~5-20 cm in deforming regions.
+        Take it from the per-survey WESM record, not an assumption.
 
     Returns
     -------
     CRS
-        Projected CRS with NAD83(2011) datum and pseudo-Mercator conversion.
+        Projected CRS with the declared datum and pseudo-Mercator conversion.
     """
+    base = CRS.from_epsg(base_epsg)
     mercator = CRS.from_epsg(3857).to_json_dict()
-    mercator["base_crs"] = CRS.from_epsg(NAD83_2011_EPSG).to_json_dict()
-    mercator["name"] = "Pseudo-Mercator (NAD83(2011) based)"
+    mercator["base_crs"] = base.to_json_dict()
+    mercator["name"] = f"Pseudo-Mercator ({base.name} based)"
     # no longer EPSG:3857 once the base datum is replaced
     mercator.pop("id", None)
     crs = CRS.from_json_dict(mercator)
     return crs.to_3d() if three_d else crs
+
+
+def navd88_offset(lon: float, lat: float) -> float:
+    """
+    Local NAVD88-to-NAD83(2011)-ellipsoidal offset N (meters, ~-18..-35 in
+    CONUS): the ellipsoidal height of the zero-orthometric surface. Used as
+    the expected signature of an already-ellipsoidal source in the vertical
+    datum check. Requires the geoid grid (verify with the preflight first).
+    """
+    t = Transformer.from_crs("EPSG:6318+5703", "EPSG:6319", always_xy=True)
+    return float(t.transform(lon, lat, 0.0)[2])
 
 
 def write_crs_file(crs: CRS, outfn: str | Path) -> str:
@@ -177,7 +196,11 @@ def library_versions() -> dict:
 
 
 def preflight_vertical_transform(
-    src_crs: CRS | str, dst_crs: CRS | str, download: bool = True
+    src_crs: CRS | str,
+    dst_crs: CRS | str,
+    download: bool = True,
+    aoi_bounds: tuple = None,
+    prefer_grids: str = None,
 ) -> dict:
     """
     Verify PROJ can rigorously transform src_crs -> dst_crs before compute.
@@ -199,6 +222,18 @@ def preflight_vertical_transform(
     download
         Attempt to download missing grids to the PROJ user data directory
         when pyproj networking is enabled, by default True.
+    aoi_bounds
+        (west, south, east, north) in degrees. Scopes transformation
+        selection to the area of interest and asserts the selected
+        operation's area-of-use contains it — without this, the
+        accuracy-ranked best operation can belong to another region (e.g.
+        a CONUS geoid grid selected for a Puerto Rico/Alaska AOI), which is
+        then applied out-of-area when the pipeline is enforced via
+        gdalwarp -ct.
+    prefer_grids
+        Substring (e.g. 'g2012b') selecting the first available
+        transformation whose pipeline uses a matching grid — for honoring a
+        survey's production geoid model instead of PROJ's default ranking.
 
     Returns
     -------
@@ -214,14 +249,36 @@ def preflight_vertical_transform(
     """
     src_crs = CRS.from_user_input(src_crs)
     dst_crs = CRS.from_user_input(dst_crs)
-    group = TransformerGroup(src_crs, dst_crs, always_xy=True)
+    aoi = (
+        AreaOfInterest(
+            west_lon_degree=aoi_bounds[0],
+            south_lat_degree=aoi_bounds[1],
+            east_lon_degree=aoi_bounds[2],
+            north_lat_degree=aoi_bounds[3],
+        )
+        if aoi_bounds is not None
+        else None
+    )
+
+    def make_group():
+        # ballpark operations are the silent-fallback failure mode this
+        # preflight exists to prevent: never consider them
+        return TransformerGroup(
+            src_crs,
+            dst_crs,
+            always_xy=True,
+            area_of_interest=aoi,
+            allow_ballpark=False,
+        )
+
+    group = make_group()
     if not group.best_available and download and pyproj.network.is_network_enabled():
         print(
             "Best available transformation requires datum-shift grids; "
             "downloading to the PROJ user-writable data directory"
         )
         group.download_grids(verbose=True)
-        group = TransformerGroup(src_crs, dst_crs, always_xy=True)
+        group = make_group()
     if not group.best_available or not group.transformers:
         missing = sorted(
             {
@@ -232,14 +289,46 @@ def preflight_vertical_transform(
             }
         )
         raise RuntimeError(
-            f"PROJ cannot rigorously transform '{src_crs.name}' -> '{dst_crs.name}': "
-            f"missing datum-shift grids {missing}. Install them (e.g. "
-            "'pyproj sync --file <grid>' or the conda-forge proj-data package) "
-            "or set PROJ_NETWORK=ON to allow on-demand grid download. "
-            "Refusing to continue: without these grids, output heights would "
-            "be silently wrong by the geoid undulation (~31 m in CONUS)."
+            f"PROJ cannot rigorously transform '{src_crs.name}' -> '{dst_crs.name}'"
+            f"{f' within the AOI {aoi_bounds} (no non-ballpark operation covers its area of use)' if aoi_bounds is not None else ''}: "
+            f"missing datum-shift grids {missing}. If grids are the problem, install "
+            "them (e.g. 'pyproj sync --file <grid>' or the conda-forge proj-data "
+            "package) or set PROJ_NETWORK=ON to allow on-demand grid download. "
+            "Refusing to continue: a silent fallback would leave output heights "
+            "wrong by the geoid undulation (~31 m in CONUS)."
         )
     best = group.transformers[0]
+    if prefer_grids is not None:
+        matching = [
+            t for t in group.transformers if prefer_grids in (t.definition or "")
+        ]
+        if not matching:
+            raise RuntimeError(
+                f"No available transformation '{src_crs.name}' -> '{dst_crs.name}' "
+                f"uses a grid matching '{prefer_grids}' (candidates: "
+                f"{[t.description for t in group.transformers[:5]]})"
+            )
+        best = matching[0]
+    # never enforce a pipeline outside its stated validity area
+    if aoi_bounds is not None and best.area_of_use is not None:
+        a = best.area_of_use
+        west, south, east, north = aoi_bounds
+
+        def lon_in(lon):
+            # areas of use spanning the antimeridian (e.g. CONUS+Alaska)
+            # have west > east
+            if a.west <= a.east:
+                return a.west <= lon <= a.east
+            return lon >= a.west or lon <= a.east
+
+        if not (
+            a.south <= south and north <= a.north and lon_in(west) and lon_in(east)
+        ):
+            raise RuntimeError(
+                f"Selected transformation '{best.description}' has area of use "
+                f"'{a.name}' ({a.bounds}), which does not contain the AOI "
+                f"{aoi_bounds}. Refusing to enforce an out-of-area pipeline."
+            )
     definition = best.definition or ""
     grids = sorted(
         {name for match in re.findall(r"grids=(\S+)", definition) for name in match.split(",")}
@@ -255,6 +344,7 @@ def preflight_vertical_transform(
         "proj_pipeline": definition,
         "grids": grids,
         "accuracy_m": best.accuracy,
+        "area_of_use": best.area_of_use.name if best.area_of_use else None,
     }
 
 

@@ -146,17 +146,36 @@ def test_gdal_warp_tap_false_reproduces_exact_extent(tmp_path):
 
 
 def test_datum_shift_required():
-    # small median offset vs COP30/EGM2008 => geoid-referenced, shift required
-    assert lidar_tools.dsm_functions.datum_shift_required(0.4, valid_count=5000)
-    # ~geoid-undulation-sized offset => already ellipsoidal, no shift
-    assert not lidar_tools.dsm_functions.datum_shift_required(-30.2, valid_count=5000)
-    # empty or tiny samples must never silently decide (silent ~30 m error)
     import pytest
 
+    N = -31.0  # local NAVD88->ellipsoid offset (e.g. Casa Grande)
+    # small median offset vs COP30/EGM2008 => geoid-referenced, shift required
+    assert lidar_tools.dsm_functions.datum_shift_required(
+        0.4, valid_count=5000, expected_undulation=N
+    )
+    # offset matching the local undulation => already ellipsoidal, no shift
+    assert not lidar_tools.dsm_functions.datum_shift_required(
+        -30.2, valid_count=5000, expected_undulation=N
+    )
+    # matches NEITHER signature (terrain/snow/reference error): never guess.
+    # A two-state check would have silently declared this "ellipsoidal".
+    with pytest.raises(ValueError, match="neither"):
+        lidar_tools.dsm_functions.datum_shift_required(
+            -10.0, valid_count=5000, expected_undulation=N
+        )
+    with pytest.raises(ValueError, match="neither"):
+        lidar_tools.dsm_functions.datum_shift_required(
+            8.0, valid_count=5000, expected_undulation=N
+        )
+    # empty or tiny samples must never silently decide (silent ~30 m error)
     with pytest.raises(ValueError, match="datum check failed"):
-        lidar_tools.dsm_functions.datum_shift_required(float("nan"), valid_count=0)
+        lidar_tools.dsm_functions.datum_shift_required(
+            float("nan"), valid_count=0, expected_undulation=N
+        )
     with pytest.raises(ValueError, match="datum check failed"):
-        lidar_tools.dsm_functions.datum_shift_required(0.1, valid_count=10)
+        lidar_tools.dsm_functions.datum_shift_required(
+            0.1, valid_count=10, expected_undulation=N
+        )
 
 
 def test_raise_file_limit():

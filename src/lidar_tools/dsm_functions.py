@@ -1035,6 +1035,9 @@ def confirm_3dep_vertical(raster_fn: str, bare_diff_tolerance: float = 3.0) -> b
         True if the 3DEP LiDAR DSM is with respect to geoid, False otherwise.
     """
 
+    from lidar_tools import geodesy
+    from pyproj import Transformer as _Transformer
+
     lidar_da = rioxarray.open_rasterio(raster_fn, masked=True).squeeze()
     worldcover_da = fetch_worldcover(raster_fn, lidar_da)
     cop30_da = fetch_cop30(raster_fn, lidar_da)
@@ -1049,11 +1052,22 @@ def confirm_3dep_vertical(raster_fn: str, bare_diff_tolerance: float = 3.0) -> b
     median_diff = (
         float(np.nanmedian(dem_diff_bare.values)) if valid_count else float("nan")
     )
+    # expected signature of an already-ellipsoidal source at this location
+    cx = float(lidar_da.x.mean())
+    cy = float(lidar_da.y.mean())
+    lon, lat = _Transformer.from_crs(
+        lidar_da.rio.crs, "EPSG:4326", always_xy=True
+    ).transform(cx, cy)
+    expected_undulation = geodesy.navd88_offset(lon, lat)
     print(
-        f"Observed difference between COP30 EGM2008 and 3DEP LiDAR DSM over bareground and sparse vegetation surfaces is {median_diff:.2f} m ({valid_count} valid pixels)"
+        f"Observed difference between COP30 EGM2008 and 3DEP LiDAR DSM over bareground and sparse vegetation surfaces is {median_diff:.2f} m ({valid_count} valid pixels); "
+        f"local NAVD88->ellipsoid offset is {expected_undulation:+.2f} m"
     )
     out = datum_shift_required(
-        median_diff, valid_count, tolerance=bare_diff_tolerance
+        median_diff,
+        valid_count,
+        expected_undulation,
+        tolerance=bare_diff_tolerance,
     )
     if out:
         # this means that both COP30 and 3DEP LiDAR DSM are with respect to geoid
@@ -1071,11 +1085,19 @@ def confirm_3dep_vertical(raster_fn: str, bare_diff_tolerance: float = 3.0) -> b
 def datum_shift_required(
     median_diff: float,
     valid_count: int,
+    expected_undulation: float,
     tolerance: float = 3.0,
     min_valid_pixels: int = 100,
 ) -> bool:
     """
     Decide whether heights are geoid-referenced from a DSM-minus-COP30 sample.
+
+    Three-state decision: the sample must match one of the two physically
+    expected signatures, otherwise it is an error. A simple two-state test
+    (anything beyond +/-tolerance means "ellipsoidal") silently mislabels
+    AOIs where terrain steepness, snow/surface change, or reference-DEM
+    error push the median past the tolerance — re-arming the silent ~30 m
+    error class this check exists to prevent.
 
     Parameters
     ----------
@@ -1083,31 +1105,48 @@ def datum_shift_required(
         Median of (lidar DSM - COP30/EGM2008) over bare/sparse-vegetation pixels.
     valid_count
         Number of valid pixels contributing to the median.
+    expected_undulation
+        Local NAVD88-to-ellipsoid offset N in meters (negative in CONUS,
+        ~-18..-35; see geodesy.navd88_offset). An already-ellipsoidal source
+        must show median_diff within tolerance of this value.
     tolerance
-        Median within +/- tolerance meters means geoid-referenced, by default 3.0.
+        Half-width of the acceptance window for both signatures, by default 3.0.
     min_valid_pixels
         Minimum sample size for a reliable decision, by default 100.
 
     Returns
     -------
     bool
-        True if a geoid-to-ellipsoid datum shift is required.
+        True if heights are geoid-referenced (shift required), False if they
+        match the already-ellipsoidal signature (no shift).
 
     Raises
     ------
     ValueError
-        If the sample is empty or too small to decide. A silent wrong choice
-        here produces a ~-30 m vertical error in CONUS, so never guess.
+        If the sample is too small, or the median matches NEITHER signature
+        (unexplained offset) — never guess in that state.
     """
     if valid_count < min_valid_pixels or np.isnan(median_diff):
         raise ValueError(
             f"Vertical datum check failed: only {valid_count} valid bare/sparse-vegetation "
             "(ESA WorldCover class 60) pixels overlap the DSM and COP30 - cannot reliably "
             "determine whether heights are geoid- or ellipsoid-referenced for this AOI. "
-            "Provide the source CRS explicitly (src_crs) or use per-survey WESM metadata "
-            "instead of this empirical check."
+            "Override the source vertical interpretation explicitly (ept_vertical) or use "
+            "per-survey WESM metadata instead of this empirical check."
         )
-    return abs(median_diff) <= tolerance
+    if abs(median_diff) <= tolerance:
+        return True
+    if abs(median_diff - expected_undulation) <= tolerance:
+        return False
+    raise ValueError(
+        f"Vertical datum check failed: median offset {median_diff:+.2f} m matches "
+        f"neither the geoid-referenced signature (~0 m) nor the ellipsoidal "
+        f"signature (~{expected_undulation:+.2f} m) within +/-{tolerance} m. "
+        "Possible causes: steep terrain/snow/surface change biasing the sample, "
+        "a reference-DEM problem, or an unexpected source datum. Inspect the "
+        "products, or override with ept_vertical='geoid'/'ellipsoid' if the "
+        "source vertical datum is known."
+    )
 
 
 def check_raster_validity(raster_fn: str) -> bool:

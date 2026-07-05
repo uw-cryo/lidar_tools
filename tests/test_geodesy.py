@@ -94,6 +94,31 @@ def test_write_crs_file_roundtrip(tmp_path):
     assert pyproj.CRS.from_wkt(Path(outfn).read_text()).equals(crs)
 
 
+def test_build_ept_3857_base_realization_parameterized():
+    # older surveys are HARN/NSRS2007-based: the declared datum must be
+    # selectable per survey, not hard-coded to NAD83(2011)
+    harn = geodesy.build_ept_3857_nad83_2011(base_epsg=4152)  # NAD83(HARN)
+    assert "HARN" in harn.name
+    assert harn.geodetic_crs.name == "NAD83(HARN)"
+
+
+def test_preflight_aoi_scoping():
+    src = geodesy.build_ept_3857_nad83_2011()
+    dst = geodesy.build_utm_g2139_3d(32612)
+    # CONUS AOI: passes and records the operation's area of use
+    record = geodesy.preflight_vertical_transform(
+        src, dst, download=False, aoi_bounds=(-112.0, 32.7, -111.5, 33.1)
+    )
+    assert record["area_of_use"]
+    # AOI far outside any candidate operation's validity: refuse to select
+    # a pipeline that would be enforced out-of-area (and never fall back
+    # to a world-scope ballpark operation)
+    with pytest.raises(RuntimeError, match="area of use|no non-ballpark"):
+        geodesy.preflight_vertical_transform(
+            src, dst, download=False, aoi_bounds=(130.0, -30.0, 135.0, -25.0)
+        )
+
+
 def test_preflight_vertical_transform_provenance():
     # NAD83(2011)-based source -> G2139 UTM needs only the Helmert from
     # proj.db (no grids), so this must pass offline and return provenance
@@ -252,6 +277,75 @@ def test_intensity_warp_helmert_without_value_shift(tmp_path):
     # of truth at Las Vegas)
     shift_east = edge_x(fixed, gt_f) - edge_x(naive, gt_n)
     assert -2.0 < shift_east < -0.5
+
+
+def _make_const_float_raster(fn, value=700.0, size=80):
+    from osgeo import gdal, osr
+
+    drv = gdal.GetDriverByName("GTiff")
+    ds = drv.Create(str(fn), size, size, 1, gdal.GDT_Float32)
+    ds.SetGeoTransform((-12818000, 1, 0, 4325000, 0, -1))
+    srs = osr.SpatialReference()
+    srs.ImportFromEPSG(3857)
+    ds.SetSpatialRef(srs)
+    ds.GetRasterBand(1).WriteArray(np.full((size, size), value, dtype=np.float32))
+    ds = None
+
+
+def _warped_height_shift(tmp_path, src_crs, name):
+    # warp a constant-height raster through the enforced pipeline and
+    # return (band shift, pyproj-predicted shift)
+    from osgeo import gdal
+
+    from lidar_tools import dsm_functions
+
+    src_fn = tmp_path / f"const_{name}.tif"
+    _make_const_float_raster(src_fn)
+    dst = geodesy.build_utm_g2139_3d(32611)
+    dst_fn = geodesy.write_crs_file(dst, tmp_path / f"dst_{name}.wkt")
+    src_wkt_fn = geodesy.write_crs_file(src_crs, tmp_path / f"src_{name}.wkt")
+    check = geodesy.preflight_vertical_transform(src_crs, dst, download=False)
+    out_fn = tmp_path / f"out_{name}.tif"
+    dsm_functions.gdal_warp(
+        str(src_fn), str(out_fn), src_wkt_fn, dst_fn,
+        res=1.0, resampling_alogrithm="nearest",
+        coordinate_operation=check["proj_pipeline"],
+    )
+    with gdal.OpenEx(str(out_fn)) as ds:
+        a = ds.GetRasterBand(1).ReadAsArray()
+    v = a[np.isfinite(a) & (a != 0)]
+    predicted = (
+        pyproj.Transformer.from_crs(src_crs, dst, always_xy=True).transform(
+            -12817960.0, 4324960.0, 700.0
+        )[2]
+        - 700.0
+    )
+    return float(np.median(v) - 700.0), predicted
+
+
+def test_height_warp_ellipsoid_branch_enforced_pipeline(tmp_path):
+    # the 3D ellipsoid-branch warp must apply the Helmert dz to band values
+    # (grid-free: runs everywhere)
+    shift, predicted = _warped_height_shift(
+        tmp_path, geodesy.build_ept_3857_nad83_2011(), "ellipsoid"
+    )
+    assert abs(shift - predicted) < 0.01
+    assert -1.0 < shift < -0.4  # ~-0.7 m at Las Vegas
+
+
+def test_height_warp_geoid_branch_enforced_pipeline(tmp_path):
+    # the compound-source warp must apply the full geoid + Helmert shift to
+    # band values through the enforced pipeline (needs the GEOID18 grid)
+    src = geodesy.build_3857_navd88_compound()
+    try:
+        geodesy.preflight_vertical_transform(
+            src, geodesy.build_utm_g2139_3d(32611), download=False
+        )
+    except RuntimeError:
+        pytest.skip("GEOID grid not available offline")
+    shift, predicted = _warped_height_shift(tmp_path, src, "geoid")
+    assert abs(shift - predicted) < 0.02
+    assert -32.0 < shift < -26.0  # ~-28.8 m at Las Vegas
 
 
 def test_coordinate_epoch_survives_overviews(tmp_path):

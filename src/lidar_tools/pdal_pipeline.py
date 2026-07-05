@@ -25,6 +25,7 @@ from typing import Literal, Annotated
 import geopandas as gpd
 import cyclopts
 import shutil
+import subprocess
 import yaml
 from datetime import datetime
 from importlib.metadata import version
@@ -48,7 +49,8 @@ def _write_processing_metadata(
     proj_pipeline: str,
     filter_noise: bool,
     height_above_ground_threshold: float,
-    quiet: bool
+    quiet: bool,
+    ept_vertical: str = "auto",
 ) -> None:
     """
     Write processing metadata to a YAML file in the output directory.
@@ -66,7 +68,7 @@ def _write_processing_metadata(
     -------
     None
     """
-    metadata = {
+    metadata: dict = {
         "lidar_tools_version": version("lidar_tools"),
         "processing_timestamp": datetime.now().isoformat(),
         "input_parameters": {
@@ -87,8 +89,19 @@ def _write_processing_metadata(
             "filter_noise": filter_noise,
             "height_above_ground_threshold": height_above_ground_threshold,
             "quiet": quiet,
+            "ept_vertical": ept_vertical,
         }
     }
+    # exact code state for reproducing branch-based production runs
+    try:
+        metadata["git_commit"] = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"],
+            cwd=Path(__file__).parent,
+            text=True,
+            stderr=subprocess.DEVNULL,
+        ).strip()
+    except (subprocess.SubprocessError, OSError):
+        metadata["git_commit"] = None
 
     metadata_file = output_dir / "processing_metadata.yaml"
     with open(metadata_file, "w") as f:
@@ -141,7 +154,8 @@ def rasterize(
     proj_pipeline: str = None,
     filter_noise: bool = True,
     height_above_ground_threshold: float = None,
-    quiet: Annotated[bool, cyclopts.Parameter(negative="")] = False
+    quiet: Annotated[bool, cyclopts.Parameter(negative="")] = False,
+    ept_vertical: Literal["auto", "geoid", "ellipsoid"] = "auto",
 ) -> None:
     """
     Create a Digital Surface Model (DSM), Digital Terrain Model (DTM) and/or Intensity raster from point cloud data.
@@ -186,6 +200,12 @@ def rasterize(
         If specified, the height above ground (HAG) will be calculated using all nearest ground classied points, and all points greater than this value will be classified as noise, by default None.
     quiet
         Suppress dask progress bar (useful for CI logs)
+    ept_vertical
+        Vertical interpretation of the EPT source heights: 'auto' decides
+        empirically per run (bare-ground sample vs COP30); 'geoid' (NAVD88
+        orthometric) or 'ellipsoid' skip the empirical check when the
+        source datum is known (e.g. from per-survey metadata) or when the
+        check cannot sample reliably (steep terrain, snow, small AOIs).
 
     Returns
     -------
@@ -200,6 +220,8 @@ def rasterize(
     gdf = gpd.read_file(geometry)
     _check_polygon_area(gdf)
     input_crs = gdf.crs.to_wkt()
+    # lon/lat AOI bounds for scoping PROJ transformation selection
+    aoi_lonlat = tuple(gdf.to_crs("EPSG:4326").total_bounds)
 
     outdir = Path(output)
     if outdir.exists():
@@ -237,7 +259,8 @@ def rasterize(
         proj_pipeline=proj_pipeline,
         filter_noise=filter_noise,
         height_above_ground_threshold=height_above_ground_threshold,
-        quiet=quiet
+        quiet=quiet,
+        ept_vertical=ept_vertical,
     )
 
     # Create custom 3D CRS UTM WKT2 with WGS84 G2139 datum realization,
@@ -298,19 +321,25 @@ def rasterize(
     # geoid grids would otherwise surface as a silent ~31 m vertical error
     # or a crash at the final warp stage)
     transform_checks = []
+    ept_checks = {}
 
     if input == "EPT_AWS":
         print("Processing 3DEP EPT tiles from AWS")
         if out_crs != CRS.from_epsg(3857):
             # both candidate source interpretations of EPT data; which one
-            # applies is decided empirically after mosaicking
-            for branch, ept_src_crs in [
-                ("geoid (EPSG:3857 + NAVD88 heights)", geodesy.build_3857_navd88_compound()),
-                ("ellipsoid (EPSG:3857 as NAD83(2011) 3D)", geodesy.build_ept_3857_nad83_2011()),
+            # applies is decided empirically (or by ept_vertical) after
+            # mosaicking. The selected PROJ pipelines are enforced at the
+            # final warps (gdalwarp -ct).
+            for key, branch, ept_src_crs in [
+                ("geoid", "geoid (EPSG:3857 + NAVD88 heights)", geodesy.build_3857_navd88_compound()),
+                ("ellipsoid", "ellipsoid (EPSG:3857 as NAD83(2011) 3D)", geodesy.build_ept_3857_nad83_2011()),
             ]:
-                record = geodesy.preflight_vertical_transform(ept_src_crs, out_crs)
+                record = geodesy.preflight_vertical_transform(
+                    ept_src_crs, out_crs, aoi_bounds=aoi_lonlat
+                )
                 record["branch"] = branch
                 transform_checks.append(record)
+                ept_checks[key] = record
         # TODO: handle new positional args, skip products not requested
 
         (
@@ -343,7 +372,9 @@ def rasterize(
             src_projcrs = None
         print(src_projcrs)
         if src_projcrs is not None:
-            record = geodesy.preflight_vertical_transform(src_projcrs, out_crs)
+            record = geodesy.preflight_vertical_transform(
+                src_projcrs, out_crs, aoi_bounds=aoi_lonlat
+            )
             record["branch"] = "local point cloud (in-pipeline reprojection)"
             transform_checks.append(record)
         (
@@ -559,10 +590,19 @@ def rasterize(
         print("*********Reprojecting rasters****")
         #This is hardcoded for dsm_mos_fn, but we could have dtm fn
         reproject_truth_val = False
-        if products == "all" or products == "dsm":
+        if ept_vertical != "auto":
+            # source vertical datum supplied by the user / survey metadata
+            reproject_truth_val = ept_vertical == "geoid"
+            print(f"EPT vertical interpretation overridden: {ept_vertical}")
+        elif products == "all" or products == "dsm":
             reproject_truth_val = dsm_functions.confirm_3dep_vertical(dsm_mos_fn)
         elif products == "dtm":
             reproject_truth_val = dsm_functions.confirm_3dep_vertical(dtm_mos_fill_fn)
+        # enforce the preflight-selected pipeline: GDAL's own operation
+        # selection is not guaranteed to match (it null-ties some pairs)
+        height_ct = ept_checks["geoid" if reproject_truth_val else "ellipsoid"][
+            "proj_pipeline"
+        ]
         if reproject_truth_val:
             # EPT heights are NAVD88 orthometric: warp with the compound
             # source SRS so the geoid-to-ellipsoid shift is applied
@@ -592,6 +632,7 @@ def rasterize(
                 res=resolution,
                 resampling_alogrithm="bilinear",
                 out_extent=out_extent,
+                coordinate_operation=height_ct,
             )
         if products == "all" or products == "dtm":
             print("Reprojecting DTM raster")
@@ -603,6 +644,7 @@ def rasterize(
                 res=resolution,
                 resampling_alogrithm="bilinear",
                 out_extent=out_extent,
+                coordinate_operation=height_ct,
             )
             dsm_functions.gdal_warp(
                 dtm_mos_fill_fn,
@@ -612,6 +654,7 @@ def rasterize(
                 res=resolution,
                 resampling_alogrithm="bilinear",
                 out_extent=out_extent,
+                coordinate_operation=height_ct,
             )
         if products == "all" or products == "intensity":
             print("Reprojecting intensity raster")
@@ -636,6 +679,7 @@ def rasterize(
             intensity_check = geodesy.preflight_vertical_transform(
                 geodesy.build_ept_3857_nad83_2011(three_d=False),
                 out_crs.to_2d(),
+                aoi_bounds=aoi_lonlat,
             )
             intensity_check["branch"] = "intensity (2D horizontal-only)"
             transform_checks.append(intensity_check)
