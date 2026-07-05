@@ -4,6 +4,11 @@
 *.tif
 tests/debug.ipynb
 
+# local scratch area for run outputs, figures, profiling; only the README
+# documenting the convention is tracked (see sandbox/README.md)
+sandbox/*
+!sandbox/README.md
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
