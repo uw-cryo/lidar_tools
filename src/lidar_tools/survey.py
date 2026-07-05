@@ -22,6 +22,7 @@ Notes
 from pathlib import Path
 
 import geopandas as gpd
+import numpy as np
 import pandas as pd
 
 WESM_URL = (
@@ -161,6 +162,181 @@ def summarize_surveys(
     return out.reset_index(drop=True)
 
 
+def pick_anchor(surveys_gdf: gpd.GeoDataFrame) -> int:
+    """
+    Choose the anchor collection: the reference against which additional
+    collections are judged. Among spec-meeting collections (when any),
+    the one covering the most of the AOI, ties broken by recency. There
+    are no hard absolute rules for combining surveys — the anchor gives
+    the relative frame ("how different is each addition from the best
+    base coverage").
+
+    Returns
+    -------
+    int
+        Index (label) of the anchor row in surveys_gdf.
+    """
+    c = surveys_gdf
+    if "lpc_category" in c.columns:
+        # "Meets" and "Meets with variance" (common for Geiger/SPL
+        # collections) both count as spec-meeting
+        meets = c["lpc_category"].astype(str).str.startswith("Meets")
+        if meets.any():
+            c = c[meets]
+    sort_cols = [x for x in ["aoi_overlap_frac", "collect_end"] if x in c.columns]
+    return c.sort_values(sort_cols, ascending=False).index[0]
+
+
+def relative_metrics(surveys_gdf: gpd.GeoDataFrame, anchor_idx: int = None) -> gpd.GeoDataFrame:
+    """
+    Annotate each collection with differences relative to the anchor:
+    years between acquisitions, and whether the declared horizontal CRS
+    and geoid model match. These are the decision inputs for whether
+    merging is acceptable — judged per AOI, not by absolute rules.
+
+    Returns
+    -------
+    gpd.GeoDataFrame
+        Copy with `anchor` (bool), `dt_years` (acquisition midpoint offset
+        from the anchor, signed), `same_geoid`, `same_horiz_crs`.
+    """
+    out = surveys_gdf.copy()
+    if anchor_idx is None:
+        anchor_idx = pick_anchor(out)
+    a = out.loc[anchor_idx]
+    out["anchor"] = out.index == anchor_idx
+
+    def midpoint(row):
+        try:
+            t0 = pd.Timestamp(row.get("collect_start"))
+            t1 = pd.Timestamp(row.get("collect_end"))
+            return t0 + (t1 - t0) / 2
+        except (TypeError, ValueError):
+            return pd.NaT
+
+    mid_a = midpoint(a)
+    out["dt_years"] = [
+        round((midpoint(r) - mid_a).days / 365.25, 2)
+        if pd.notna(midpoint(r)) and pd.notna(mid_a)
+        else None
+        for _, r in out.iterrows()
+    ]
+    if "geoid" in out.columns:
+        out["same_geoid"] = out["geoid"] == a.get("geoid")
+    if "horiz_crs" in out.columns:
+        out["same_horiz_crs"] = out["horiz_crs"] == a.get("horiz_crs")
+    return out
+
+
+QL_COLORS = {
+    "QL 0": "#1a7a1a",
+    "QL 1": "#6abf40",
+    "QL 2": "#e8a838",
+    "QL 3": "#d46a6a",
+}
+
+
+def plot_coverage(
+    surveys_gdf: gpd.GeoDataFrame,
+    aoi_gdf: gpd.GeoDataFrame,
+    gaps_gdf: gpd.GeoDataFrame = None,
+    out_fn: str = None,
+    title: str = None,
+):
+    """
+    Map of collection footprints over the AOI: polygons colored by quality
+    level (gray = legacy/'Other'), numbered and keyed to a legend carrying
+    workunit, QL, dates, geoid, EPT coverage, and years-from-anchor; the
+    anchor outlined in bold; no-coverage gaps hatched red.
+
+    Returns
+    -------
+    matplotlib.figure.Figure
+    """
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    surveys = surveys_gdf.to_crs("EPSG:4326")
+    aoi = aoi_gdf.to_crs("EPSG:4326")
+    aoi_geom = aoi.union_all()
+
+    fig, ax = plt.subplots(figsize=(11, 8.5))
+    # draw larger footprints first so smaller ones stay clickable/visible
+    order = surveys.geometry.area.sort_values(ascending=False).index
+    legend_lines = []
+    for n, idx in enumerate(order, start=1):
+        row = surveys.loc[idx]
+        clipped = row.geometry.intersection(aoi_geom)
+        if clipped.is_empty:
+            continue
+        color = QL_COLORS.get(str(row.get("ql", "")), "#9a9a9a")
+        is_anchor = bool(row.get("anchor", False))
+        gpd.GeoSeries([clipped], crs="EPSG:4326").plot(
+            ax=ax,
+            facecolor=color,
+            alpha=0.35,
+            edgecolor="black" if is_anchor else color,
+            linewidth=2.5 if is_anchor else 1.0,
+        )
+        pt = clipped.representative_point()
+        ax.annotate(
+            str(n),
+            (pt.x, pt.y),
+            ha="center",
+            va="center",
+            fontsize=11,
+            fontweight="bold",
+            bbox=dict(boxstyle="circle,pad=0.25", fc="white", ec="black", alpha=0.9),
+        )
+        dt = row.get("dt_years")
+        dt_txt = f", {dt:+.1f} yr" if dt not in (None, 0.0) and pd.notna(dt) else ""
+        ept_cov = row.get("ept_coverage_frac")
+        ept_txt = (
+            f", EPT {ept_cov:.0%}" if ept_cov is not None and ept_cov < 0.99 else ""
+        )
+        frac = row["aoi_overlap_frac"]
+        frac_txt = f"{frac:.1%}" if frac < 0.01 else f"{frac:.0%}"
+        legend_lines.append(
+            f"{n}. {row.get('workunit', '?')}  [{row.get('ql', '?')}] "
+            f"{str(row.get('collect_start', '?'))[:10]}..{str(row.get('collect_end', '?'))[:10]} "
+            f"{row.get('geoid', '?')}, {frac_txt} of AOI"
+            f"{dt_txt}{ept_txt}"
+            f"{'  << ANCHOR' if is_anchor else ''}"
+        )
+
+    if gaps_gdf is not None and not gaps_gdf.empty:
+        gaps_gdf.to_crs("EPSG:4326").plot(
+            ax=ax, facecolor="none", edgecolor="red", hatch="///", linewidth=1.0
+        )
+        legend_lines.append(
+            f"red hatch: no lidar coverage "
+            f"({gaps_gdf['gap_frac'].sum():.1%} of AOI)"
+        )
+
+    aoi.boundary.plot(ax=ax, color="black", linewidth=2, linestyle="--")
+    minx, miny, maxx, maxy = aoi.total_bounds
+    pad_x, pad_y = (maxx - minx) * 0.05, (maxy - miny) * 0.05
+    ax.set_xlim(minx - pad_x, maxx + pad_x)
+    ax.set_ylim(miny - pad_y, maxy + pad_y)
+    ax.set_aspect(1 / max(0.1, abs(np.cos(np.deg2rad((miny + maxy) / 2)))))
+    ax.set_title(title or "Lidar collection coverage")
+    fig.text(
+        0.01,
+        0.01,
+        "\n".join(legend_lines),
+        fontsize=8.5,
+        family="monospace",
+        va="bottom",
+    )
+    fig.subplots_adjust(bottom=0.06 + 0.025 * len(legend_lines))
+    if out_fn is not None:
+        fig.savefig(out_fn, dpi=130, bbox_inches="tight")
+        print(f"Wrote coverage map to {out_fn}")
+    return fig
+
+
 def coverage_gaps(
     surveys_gdf: gpd.GeoDataFrame, aoi_gdf: gpd.GeoDataFrame
 ) -> gpd.GeoDataFrame:
@@ -245,6 +421,7 @@ def survey(
     if surveys.empty:
         print("No collections intersect the AOI.")
         return
+    surveys = relative_metrics(surveys)
 
     show = [
         c
@@ -259,6 +436,10 @@ def survey(
             "lpc_category",
             "aoi_overlap_frac",
             "ept_coverage_frac",
+            "anchor",
+            "dt_years",
+            "same_geoid",
+            "same_horiz_crs",
         ]
         if c in surveys.columns
     ]
@@ -289,7 +470,19 @@ def survey(
             lambda v: ",".join(v) if isinstance(v, list) else v
         )
         surveys_out.to_file(outdir / "surveys.gpkg", driver="GPKG")
-        records = surveys_out.drop(columns="geometry").to_dict(orient="records")
+        def _yaml_safe(value):
+            if isinstance(value, pd.Timestamp):
+                return value.isoformat()
+            if isinstance(value, np.generic):
+                return value.item()
+            if value is pd.NaT or (isinstance(value, float) and np.isnan(value)):
+                return None
+            return value
+
+        records = [
+            {k: _yaml_safe(v) for k, v in rec.items()}
+            for rec in surveys_out.drop(columns="geometry").to_dict(orient="records")
+        ]
         with open(outdir / "surveys.yaml", "w") as f:
             yaml.dump(
                 {
@@ -304,4 +497,11 @@ def survey(
             )
         if not gaps.empty:
             gaps.to_file(outdir / "coverage_gaps.gpkg", driver="GPKG")
+        plot_coverage(
+            surveys,
+            aoi_gdf,
+            gaps,
+            out_fn=str(outdir / "coverage_map.png"),
+            title=f"Lidar collection coverage: {Path(geometry).stem}",
+        )
         print(f"Wrote survey records to {outdir}")
