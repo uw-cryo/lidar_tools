@@ -162,6 +162,58 @@ def summarize_surveys(
     return out.reset_index(drop=True)
 
 
+def _collect_midpoint(row) -> pd.Timestamp:
+    """Midpoint of a collection's acquisition window (NaT when unknown)."""
+    try:
+        t0 = pd.Timestamp(row.get("collect_start"))
+        t1 = pd.Timestamp(row.get("collect_end"))
+        return t0 + (t1 - t0) / 2
+    except (TypeError, ValueError):
+        return pd.NaT
+
+
+def assign_epochs(surveys_gdf: gpd.GeoDataFrame, gap_years: float = 1.5) -> gpd.GeoDataFrame:
+    """
+    Group collections into acquisition epochs: clusters of collection
+    midpoints separated by more than gap_years. AOIs commonly hold a few
+    distinct well-covered timesteps (e.g. Las Vegas 2022-2023 vs 2016;
+    San Francisco 2023 vs 2010) that can be built as separate product sets
+    for change analysis; the epoch label makes those groups explicit.
+
+    Returns
+    -------
+    gpd.GeoDataFrame
+        Copy with an `epoch` column (e.g. '2023' or '2022-2023';
+        'undated' when no dates are available).
+    """
+    s = surveys_gdf.copy()
+    mids = {idx: _collect_midpoint(r) for idx, r in s.iterrows()}
+    dated = sorted(
+        (m, idx) for idx, m in mids.items() if pd.notna(m)
+    )
+    labels = {}
+    cluster: list = []
+
+    def flush():
+        if not cluster:
+            return
+        years = sorted({m.year for m, _ in cluster})
+        label = str(years[0]) if len(years) == 1 else f"{years[0]}-{years[-1]}"
+        for _, idx in cluster:
+            labels[idx] = label
+
+    prev = None
+    for m, idx in dated:
+        if prev is not None and (m - prev).days / 365.25 > gap_years:
+            flush()
+            cluster = []
+        cluster.append((m, idx))
+        prev = m
+    flush()
+    s["epoch"] = [labels.get(idx, "undated") for idx in s.index]
+    return s
+
+
 def pick_anchor(surveys_gdf: gpd.GeoDataFrame) -> int:
     """
     Choose the anchor collection: the reference against which additional
@@ -206,18 +258,10 @@ def relative_metrics(surveys_gdf: gpd.GeoDataFrame, anchor_idx: int = None) -> g
     a = out.loc[anchor_idx]
     out["anchor"] = out.index == anchor_idx
 
-    def midpoint(row):
-        try:
-            t0 = pd.Timestamp(row.get("collect_start"))
-            t1 = pd.Timestamp(row.get("collect_end"))
-            return t0 + (t1 - t0) / 2
-        except (TypeError, ValueError):
-            return pd.NaT
-
-    mid_a = midpoint(a)
+    mid_a = _collect_midpoint(a)
     out["dt_years"] = [
-        round((midpoint(r) - mid_a).days / 365.25, 2)
-        if pd.notna(midpoint(r)) and pd.notna(mid_a)
+        round((_collect_midpoint(r) - mid_a).days / 365.25, 2)
+        if pd.notna(_collect_midpoint(r)) and pd.notna(mid_a)
         else None
         for _, r in out.iterrows()
     ]
@@ -295,15 +339,22 @@ def plot_coverage(
     surveys = surveys_gdf.to_crs("EPSG:4326")
     if "priority" not in surveys.columns:
         surveys = rank_collections(surveys)
+    if "epoch" not in surveys.columns:
+        surveys = assign_epochs(surveys)
     aoi = aoi_gdf.to_crs("EPSG:4326")
     aoi_geom = aoi.union_all()
 
-    # map on the left, aligned legend panel on the right
-    fig = plt.figure(figsize=(15, 8))
-    ax = fig.add_axes([0.05, 0.06, 0.5, 0.86])
     # numbers = inclusion priority (1 = anchor); draw larger footprints
     # first so smaller ones stay visible on top
     draw_order = surveys.geometry.area.sort_values(ascending=False).index
+    n_lines = len(surveys) + surveys["epoch"].nunique() + 2
+    # map on top, single-line legend grouped by epoch below, left-aligned
+    text_in = 0.19 * n_lines + 0.3
+    fig_h = 6.6 + text_in
+    fig = plt.figure(figsize=(11, fig_h))
+    ax = fig.add_axes(
+        [0.08, (text_in + 0.55) / fig_h, 0.86, 1 - (text_in + 0.55) / fig_h - 0.05]
+    )
     legend_entries = {}
     for idx in draw_order:
         row = surveys.loc[idx]
@@ -339,19 +390,36 @@ def plot_coverage(
         frac = row["aoi_overlap_frac"]
         frac_txt = f"{frac:.1%}" if frac < 0.01 else f"{frac:.0%}"
         legend_entries[n] = (
-            f"{n}. {row.get('workunit', '?')}  [{row.get('ql', '?')}]"
-            f"{'  << ANCHOR' if is_anchor else ''}\n"
-            f"   {str(row.get('collect_start', '?'))[:10]}..{str(row.get('collect_end', '?'))[:10]}"
-            f"{dt_txt}, {row.get('geoid', '?')}, {frac_txt} of AOI{ept_txt}"
+            f"  {n}. {row.get('workunit', '?')}  [{row.get('ql', '?')}] "
+            f"{str(row.get('collect_start', '?'))[:10]}..{str(row.get('collect_end', '?'))[:10]} "
+            f"{row.get('geoid', '?')}, {frac_txt} of AOI{dt_txt}{ept_txt}"
+            f"{'  << ANCHOR' if is_anchor else ''}"
         )
 
-    legend_lines = [legend_entries[n] for n in sorted(legend_entries)]
+    # group legend by epoch: anchor's epoch first, then by temporal
+    # distance from it
+    by_priority = surveys.sort_values("priority")
+    anchor_epoch = by_priority[by_priority["anchor"]]["epoch"].iloc[0]
+    epoch_dt = by_priority.groupby("epoch")["dt_years"].apply(
+        lambda v: v.abs().min()
+    )
+    epoch_order = sorted(
+        epoch_dt.index,
+        key=lambda e: (e != anchor_epoch, epoch_dt[e] if pd.notna(epoch_dt[e]) else 999),
+    )
+    legend_lines = []
+    for epoch in epoch_order:
+        members = by_priority[by_priority["epoch"] == epoch]
+        legend_lines.append(f"epoch {epoch}:")
+        legend_lines.extend(
+            legend_entries[int(p)] for p in members["priority"] if int(p) in legend_entries
+        )
     if gaps_gdf is not None and not gaps_gdf.empty:
         gaps_gdf.to_crs("EPSG:4326").plot(
             ax=ax, facecolor="none", edgecolor="red", hatch="///", linewidth=1.0
         )
         legend_lines.append(
-            f"\nred hatch: no lidar coverage "
+            f"red hatch: no lidar coverage "
             f"({gaps_gdf['gap_frac'].sum():.1%} of AOI)"
         )
 
@@ -362,11 +430,11 @@ def plot_coverage(
     ax.set_ylim(miny - pad_y, maxy + pad_y)
     ax.set_aspect(1 / max(0.1, abs(np.cos(np.deg2rad((miny + maxy) / 2)))))
     ax.set_title(title or "Lidar collection coverage")
+    ax.locator_params(axis="x", nbins=5)
     fig.text(
-        0.58,
-        0.92,
-        "Collections by inclusion priority (1 = anchor):\n\n"
-        + "\n".join(legend_lines),
+        0.08,
+        (text_in + 0.15) / fig_h,
+        "\n".join(legend_lines),
         fontsize=9,
         family="monospace",
         va="top",
@@ -480,7 +548,7 @@ def survey(
     output: str = None,
     wesm_source: str = WESM_URL,
     ept_index: str = EPT_RESOURCES_URL,
-    min_overlap: float = 0.0,
+    min_overlap: float = 0.02,
 ) -> None:
     """
     Report the lidar collections covering an AOI.
@@ -502,7 +570,9 @@ def survey(
     ept_index
         EPT boundary index (GeoJSON) URL or local path.
     min_overlap
-        Drop collections overlapping less than this fraction of the AOI.
+        Drop collections overlapping less than this fraction of the AOI
+        (sliver suppression), by default 0.02. Dropped collections are
+        listed so nothing disappears silently; use 0 to keep everything.
 
     Returns
     -------
@@ -520,18 +590,25 @@ def survey(
     ept = load_ept_resources(ept_index)
     surveys = summarize_surveys(wesm, aoi_gdf, ept)
     if min_overlap > 0 and not surveys.empty:
+        dropped = surveys[surveys["aoi_overlap_frac"] < min_overlap]
+        if not dropped.empty:
+            print(
+                f"Dropped {len(dropped)} collections with < {min_overlap:.0%} "
+                f"AOI overlap: {', '.join(dropped['workunit'].astype(str))}"
+            )
         surveys = surveys[surveys["aoi_overlap_frac"] >= min_overlap].reset_index(
             drop=True
         )
     if surveys.empty:
         print("No collections intersect the AOI.")
         return
-    surveys = rank_collections(relative_metrics(surveys))
+    surveys = assign_epochs(rank_collections(relative_metrics(surveys)))
 
     show = [
         c
         for c in [
             "priority",
+            "epoch",
             "workunit",
             "ql",
             "collect_start",
