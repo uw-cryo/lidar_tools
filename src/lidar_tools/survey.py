@@ -228,6 +228,40 @@ def relative_metrics(surveys_gdf: gpd.GeoDataFrame, anchor_idx: int = None) -> g
     return out
 
 
+def rank_collections(surveys_gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+    """
+    Order collections by inclusion priority: the anchor first, then
+    spec-meeting collections by quality level, temporal proximity to the
+    anchor, and AOI overlap; legacy/'Other' collections last. Adds a
+    1-based `priority` column and sorts by it. This is a default ordering
+    for inspection, not a hard rule — combinability is assessed per AOI
+    (see the compare stage).
+
+    Returns
+    -------
+    gpd.GeoDataFrame
+        Sorted copy with `priority` column.
+    """
+    s = surveys_gdf.copy()
+    if "anchor" not in s.columns:
+        s = relative_metrics(s)
+    ql_order = {"QL 0": 0, "QL 1": 1, "QL 2": 2, "QL 3": 3}
+    s["_ql"] = s.get("ql", pd.Series(index=s.index, dtype=object)).map(
+        lambda q: ql_order.get(str(q), 9)
+    )
+    if "lpc_category" in s.columns:
+        s["_meets"] = (~s["lpc_category"].astype(str).str.startswith("Meets")).astype(int)
+    else:
+        s["_meets"] = 0
+    s["_absdt"] = s["dt_years"].abs().fillna(999.0)
+    s = s.sort_values(
+        ["anchor", "_meets", "_ql", "_absdt", "aoi_overlap_frac"],
+        ascending=[False, True, True, True, False],
+    ).drop(columns=["_ql", "_meets", "_absdt"])
+    s["priority"] = range(1, len(s) + 1)
+    return s
+
+
 QL_COLORS = {
     "QL 0": "#1a7a1a",
     "QL 1": "#6abf40",
@@ -259,15 +293,21 @@ def plot_coverage(
     import matplotlib.pyplot as plt
 
     surveys = surveys_gdf.to_crs("EPSG:4326")
+    if "priority" not in surveys.columns:
+        surveys = rank_collections(surveys)
     aoi = aoi_gdf.to_crs("EPSG:4326")
     aoi_geom = aoi.union_all()
 
-    fig, ax = plt.subplots(figsize=(11, 8.5))
-    # draw larger footprints first so smaller ones stay clickable/visible
-    order = surveys.geometry.area.sort_values(ascending=False).index
-    legend_lines = []
-    for n, idx in enumerate(order, start=1):
+    # map on the left, aligned legend panel on the right
+    fig = plt.figure(figsize=(15, 8))
+    ax = fig.add_axes([0.05, 0.06, 0.5, 0.86])
+    # numbers = inclusion priority (1 = anchor); draw larger footprints
+    # first so smaller ones stay visible on top
+    draw_order = surveys.geometry.area.sort_values(ascending=False).index
+    legend_entries = {}
+    for idx in draw_order:
         row = surveys.loc[idx]
+        n = int(row["priority"])
         clipped = row.geometry.intersection(aoi_geom)
         if clipped.is_empty:
             continue
@@ -298,20 +338,20 @@ def plot_coverage(
         )
         frac = row["aoi_overlap_frac"]
         frac_txt = f"{frac:.1%}" if frac < 0.01 else f"{frac:.0%}"
-        legend_lines.append(
-            f"{n}. {row.get('workunit', '?')}  [{row.get('ql', '?')}] "
-            f"{str(row.get('collect_start', '?'))[:10]}..{str(row.get('collect_end', '?'))[:10]} "
-            f"{row.get('geoid', '?')}, {frac_txt} of AOI"
-            f"{dt_txt}{ept_txt}"
-            f"{'  << ANCHOR' if is_anchor else ''}"
+        legend_entries[n] = (
+            f"{n}. {row.get('workunit', '?')}  [{row.get('ql', '?')}]"
+            f"{'  << ANCHOR' if is_anchor else ''}\n"
+            f"   {str(row.get('collect_start', '?'))[:10]}..{str(row.get('collect_end', '?'))[:10]}"
+            f"{dt_txt}, {row.get('geoid', '?')}, {frac_txt} of AOI{ept_txt}"
         )
 
+    legend_lines = [legend_entries[n] for n in sorted(legend_entries)]
     if gaps_gdf is not None and not gaps_gdf.empty:
         gaps_gdf.to_crs("EPSG:4326").plot(
             ax=ax, facecolor="none", edgecolor="red", hatch="///", linewidth=1.0
         )
         legend_lines.append(
-            f"red hatch: no lidar coverage "
+            f"\nred hatch: no lidar coverage "
             f"({gaps_gdf['gap_frac'].sum():.1%} of AOI)"
         )
 
@@ -323,17 +363,82 @@ def plot_coverage(
     ax.set_aspect(1 / max(0.1, abs(np.cos(np.deg2rad((miny + maxy) / 2)))))
     ax.set_title(title or "Lidar collection coverage")
     fig.text(
-        0.01,
-        0.01,
-        "\n".join(legend_lines),
-        fontsize=8.5,
+        0.58,
+        0.92,
+        "Collections by inclusion priority (1 = anchor):\n\n"
+        + "\n".join(legend_lines),
+        fontsize=9,
         family="monospace",
-        va="bottom",
+        va="top",
+        ha="left",
     )
-    fig.subplots_adjust(bottom=0.06 + 0.025 * len(legend_lines))
     if out_fn is not None:
         fig.savefig(out_fn, dpi=130, bbox_inches="tight")
         print(f"Wrote coverage map to {out_fn}")
+    return fig
+
+
+def plot_coverage_panels(
+    surveys_gdf: gpd.GeoDataFrame,
+    aoi_gdf: gpd.GeoDataFrame,
+    out_fn: str = None,
+):
+    """
+    Small-multiples companion to plot_coverage: one subplot per collection
+    showing its footprint alone against the AOI outline, in priority order —
+    disambiguates areas where the combined map overlaps heavily.
+
+    Returns
+    -------
+    matplotlib.figure.Figure
+    """
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    surveys = surveys_gdf.to_crs("EPSG:4326")
+    if "priority" not in surveys.columns:
+        surveys = rank_collections(surveys)
+    surveys = surveys.sort_values("priority")
+    aoi = aoi_gdf.to_crs("EPSG:4326")
+    aoi_geom = aoi.union_all()
+    minx, miny, maxx, maxy = aoi.total_bounds
+    pad_x, pad_y = (maxx - minx) * 0.05, (maxy - miny) * 0.05
+
+    n = len(surveys)
+    ncols = min(4, max(1, int(np.ceil(np.sqrt(n)))))
+    nrows = int(np.ceil(n / ncols))
+    fig, axes = plt.subplots(
+        nrows, ncols, figsize=(3.4 * ncols, 3.6 * nrows), squeeze=False
+    )
+    for ax, (_, row) in zip(axes.flat, surveys.iterrows()):
+        clipped = row.geometry.intersection(aoi_geom)
+        color = QL_COLORS.get(str(row.get("ql", "")), "#9a9a9a")
+        if not clipped.is_empty:
+            gpd.GeoSeries([clipped], crs="EPSG:4326").plot(
+                ax=ax, facecolor=color, alpha=0.55, edgecolor=color
+            )
+        aoi.boundary.plot(ax=ax, color="black", linewidth=1.2, linestyle="--")
+        ax.set_xlim(minx - pad_x, maxx + pad_x)
+        ax.set_ylim(miny - pad_y, maxy + pad_y)
+        ax.set_aspect(1 / max(0.1, abs(np.cos(np.deg2rad((miny + maxy) / 2)))))
+        ax.set_xticks([])
+        ax.set_yticks([])
+        frac = row["aoi_overlap_frac"]
+        frac_txt = f"{frac:.1%}" if frac < 0.01 else f"{frac:.0%}"
+        ax.set_title(
+            f"{int(row['priority'])}. {row.get('workunit', '?')}\n"
+            f"[{row.get('ql', '?')}] {str(row.get('collect_end', '?'))[:4]}, "
+            f"{frac_txt}",
+            fontsize=8.5,
+        )
+    for ax in axes.flat[n:]:
+        ax.set_axis_off()
+    fig.tight_layout()
+    if out_fn is not None:
+        fig.savefig(out_fn, dpi=130, bbox_inches="tight")
+        print(f"Wrote per-collection panels to {out_fn}")
     return fig
 
 
@@ -421,11 +526,12 @@ def survey(
     if surveys.empty:
         print("No collections intersect the AOI.")
         return
-    surveys = relative_metrics(surveys)
+    surveys = rank_collections(relative_metrics(surveys))
 
     show = [
         c
         for c in [
+            "priority",
             "workunit",
             "ql",
             "collect_start",
@@ -503,5 +609,8 @@ def survey(
             gaps,
             out_fn=str(outdir / "coverage_map.png"),
             title=f"Lidar collection coverage: {Path(geometry).stem}",
+        )
+        plot_coverage_panels(
+            surveys, aoi_gdf, out_fn=str(outdir / "coverage_map_panels.png")
         )
         print(f"Wrote survey records to {outdir}")
