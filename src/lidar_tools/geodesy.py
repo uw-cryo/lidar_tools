@@ -259,7 +259,9 @@ def preflight_vertical_transform(
 
 
 def set_coordinate_epoch(
-    raster_fn: str | Path, epoch: float = DEFAULT_COORDINATE_EPOCH
+    raster_fn: str | Path,
+    epoch: float = DEFAULT_COORDINATE_EPOCH,
+    crs: CRS = None,
 ) -> bool:
     """
     Stamp a coordinate epoch on a raster whose CRS is dynamic.
@@ -280,21 +282,33 @@ def set_coordinate_epoch(
         Path to the raster file (modified in place).
     epoch
         Decimal-year coordinate epoch, by default 2010.0.
+    crs
+        Authoritative CRS of the raster. The GeoTIFF round-trip can drop
+        the DYNAMIC property from custom-datum CRSs (observed for 2D
+        demotions), making the file SRS look static; pass the intended CRS
+        to decide dynamic-ness from it and rewrite the full definition
+        along with the epoch.
 
     Returns
     -------
     bool
         True if the epoch was stamped, False if the CRS is static or missing.
     """
+    from osgeo import osr
+
     with gdal.OpenEx(
         str(raster_fn),
         gdal.OF_RASTER | gdal.OF_UPDATE,
         open_options=["IGNORE_COG_LAYOUT_BREAK=YES"],
     ) as ds:
-        srs = ds.GetSpatialRef()
+        if crs is not None:
+            srs = osr.SpatialReference()
+            srs.ImportFromWkt(crs.to_wkt())
+        else:
+            srs = ds.GetSpatialRef()
+            srs = srs.Clone() if srs is not None else None
         if srs is None or not srs.IsDynamic():
             return False
-        srs = srs.Clone()
         srs.SetCoordinateEpoch(epoch)
         ds.SetSpatialRef(srs)
     print(f"Stamped coordinate epoch {epoch} on {raster_fn}")

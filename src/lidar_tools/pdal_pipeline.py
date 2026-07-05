@@ -678,10 +678,20 @@ def rasterize(
     # 2010.0; unstamped they are ambiguous by ~1.65 cm/yr of plate motion.
     # Stamp before overview creation so the COG translate carries it over.
     # Static target CRSs are left unstamped (set_coordinate_epoch no-ops).
+    # Pass the authoritative CRS: the GeoTIFF round-trip can drop the
+    # DYNAMIC property (intensity is warped to the 2D demotion of the
+    # target, whose file SRS reads back as static).
+    intensity_warped_2d = input == "EPT_AWS" and out_crs != CRS.from_epsg(3857)
     stamped = [
         fn
         for fn in final_products
-        if geodesy.set_coordinate_epoch(fn, geodesy.DEFAULT_COORDINATE_EPOCH)
+        if geodesy.set_coordinate_epoch(
+            fn,
+            geodesy.DEFAULT_COORDINATE_EPOCH,
+            crs=out_crs.to_2d()
+            if (fn == intensity_reproj and intensity_warped_2d)
+            else out_crs,
+        )
     ]
     geodesy_record["coordinate_epoch"] = (
         geodesy.DEFAULT_COORDINATE_EPOCH if stamped else None

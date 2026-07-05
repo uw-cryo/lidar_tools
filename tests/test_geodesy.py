@@ -162,6 +162,17 @@ def test_set_coordinate_epoch_dynamic_crs(tmp_path):
     assert _read_epoch(fn) == geodesy.DEFAULT_COORDINATE_EPOCH
 
 
+def test_set_coordinate_epoch_2d_crs_via_authoritative(tmp_path):
+    # the GeoTIFF round-trip drops the DYNAMIC property of the custom-datum
+    # 2D demotion (file SRS reads back static): passing the authoritative
+    # CRS must still stamp (this is the intensity-product case)
+    crs2d = geodesy.build_utm_g2139_3d(32610).to_2d()
+    fn = tmp_path / "intensity2d.tif"
+    _make_raster(fn, crs2d.to_wkt())
+    assert geodesy.set_coordinate_epoch(fn, crs=crs2d) is True
+    assert _read_epoch(fn) == geodesy.DEFAULT_COORDINATE_EPOCH
+
+
 def test_set_coordinate_epoch_static_crs_noop(tmp_path):
     # static plate-fixed CRS (NAD83(2011) UTM 12N): no epoch applies
     fn = tmp_path / "static.tif"
