@@ -22,7 +22,6 @@ from osgeo import gdal, gdalconst
 import pdal
 import odc.stac
 import os
-import copy
 
 gdal.UseExceptions()
 
@@ -1369,9 +1368,10 @@ def create_lpc_pipeline(
     filter_high_noise: bool = True,
     filter_low_noise: bool = True,
     hag_nn: float = None,
-    buffer_value: float = 5.0) -> tuple[list, list, list, list]:
+    buffer_value: float = 5.0,
+    products: list[str] | None = None) -> list[dict]:
     """
-    Create PDAL pipelines for processing local LiDAR point clouds (LPC) to generate DEM products
+    Create single-read PDAL tile jobs for processing local LiDAR point clouds (LPC) to generate DEM products
 
     Parameters
     ----------
@@ -1398,17 +1398,19 @@ def create_lpc_pipeline(
         If specified, the height above ground (HAG) will be calculated using all nearest ground classied points, and all points greater than this value will be classified as high noise, by default None.
     buffer_value : float, optional
         Buffer value to apply to the AOI bounds when reading points for rasterization, by default 5.0.
+    products
+        Canonical product names to build (see parse_products); by default
+        all products.
 
     Returns
     -------
-    dsm_pipeline_list
-        List of paths to PDAL pipeline configuration files for generating DSMs.
-    dtm_pipeline_no_fill_list
-        List of paths to PDAL pipeline configuration files for generating DTM without interpolation.
-    dtm_pipeline_fill_list
-        List of paths to PDAL pipeline configuration files for generating DTM with interpolation.
-    intensity_pipeline_list
-        List of paths to PDAL pipeline configuration files for generating intensity rasters.
+    tile_jobs
+        One tile job dict per intersecting LAZ/LAS file (see
+        create_tile_pipelines): per-filter-chain product executions with
+        in-pipeline reprojection, executable with execute_tile_job. Local
+        files are cheap to re-read, so no cache step is emitted; the
+        filtered/reprojected points are still written alongside the DSM
+        when it is requested (legacy save_pointcloud behavior).
     """
     lpc_files = sorted(Path(local_laz_dir).glob("*.laz"))
     lpc_files += sorted(Path(local_laz_dir).glob("*.las"))
@@ -1446,157 +1448,39 @@ def create_lpc_pipeline(
         contents = f.read()
     out_crs = CRS.from_string(contents)
 
-    dsm_pipeline_list = []
-    dtm_pipeline_no_fill_list = []
-    dtm_pipeline_fill_list = []
-    intensity_pipeline_list = []
+    if products is None:
+        products = list(PRODUCT_ORDER)
 
-    dsm_group_filter, dsm_gridding_method, percentile_filter, percentile_threshold = _set_dsm_gridding_params(dsm_gridding_choice)
-
+    tile_jobs = []
     for i, reader in enumerate(readers):
-        #print(f"Processing reader #{i}")
-        dsm_file = output_path / f"{prefix}_dsm_tile_aoi_{str(i).zfill(ndigits)}.tif"
-        dtm_file_no_z_fill = output_path / f"{prefix}_dtm_tile_aoi_no_fill{str(i).zfill(ndigits)}.tif"
-        dtm_file_z_fill = output_path / f"{prefix}_dtm_tile_aoi_fill4_{str(i).zfill(ndigits)}.tif"
-        intensity_file = (
-            output_path / f"{prefix}_intensity_tile_aoi_{str(i).zfill(ndigits)}.tif"
-        )
-
-        pipeline_dsm = copy.deepcopy(reader)
-        pipeline_dtm_no_z_fill = copy.deepcopy(reader)
-        pipeline_dtm_z_fill = copy.deepcopy(reader)
-        pipeline_intensity = copy.deepcopy(reader)
-        ## DSM creation block
-        
-        pipeline_dsm = reader
-        pdal_pipeline_dsm = create_pdal_pipeline(
-            group_filter=dsm_group_filter,
-            percentile_filter=percentile_filter,
-            percentile_threshold=percentile_threshold,
-            reproject=True, # reproject to the output CRS
-            proj_pipeline=proj_pipeline,
-            input_crs=input_crs_list[i],
-            output_crs=out_crs,
-            save_pointcloud=True,
-            pointcloud_file=os.path.splitext(dsm_file)[0]+".laz",
-            filter_high_noise=filter_high_noise,
-            filter_low_noise=filter_low_noise,
-            hag_nn=hag_nn)
-        dsm_stage = create_dem_stage(
-            dem_filename=str(dsm_file),
-            extent=original_extents[i],
-            pointcloud_resolution=raster_resolution,
-            gridmethod=dsm_gridding_method,
-            dimension="Z",
-        )
-        pipeline_dsm["pipeline"] += pdal_pipeline_dsm
-        pipeline_dsm["pipeline"] += dsm_stage
-        # Save a copy of each pipeline
-        dsm_pipeline_config_fn = output_path / f"pipeline_dsm_{str(i).zfill(ndigits)}.json"
-        with open(dsm_pipeline_config_fn, "w") as f:
-            f.write(json.dumps(pipeline_dsm))
-        dsm_pipeline_list.append(dsm_pipeline_config_fn)
-        # remove the pipeline from memory
-        pipeline_dsm = None
-        pdal_pipeline_dsm = None
-
-        ## DTM creation block
-
-        pdal_pipeline_dtm_no_z_fill = create_pdal_pipeline(
-                return_only_ground=True,
-                group_filter=None,
-                reproject=True, # reproject to the output CRS
-                proj_pipeline=proj_pipeline,
-                input_crs=input_crs_list[i],
-                filter_high_noise=filter_high_noise,
+        # reader is a pipeline dict: readers.las + optional filters.crop
+        tile_jobs.append(
+            create_tile_pipelines(
+                reader["pipeline"],
+                tile_id=str(i).zfill(ndigits),
+                output_path=output_path,
+                prefix=prefix,
+                extent=original_extents[i],
+                raster_resolution=raster_resolution,
+                products=products,
+                dsm_gridding_choice=dsm_gridding_choice,
                 filter_low_noise=filter_low_noise,
-                output_crs=out_crs)
-
-        pdal_pipeline_dtm_z_fill = pdal_pipeline_dtm_no_z_fill.copy() #for later
-
-        dtm_stage = create_dem_stage(
-            dem_filename=str(dtm_file_no_z_fill),
-            extent=original_extents[i],
-            pointcloud_resolution=raster_resolution,
-            gridmethod="idw",
-            dimension="Z",
-        )
-        pipeline_dtm_no_z_fill["pipeline"] += pdal_pipeline_dtm_no_z_fill
-        pipeline_dtm_no_z_fill["pipeline"] += dtm_stage
-
-        #Save a copy of each pipeline
-        dtm_pipeline_config_fn = output_path / f"pipeline_dtm_no_fill_{str(i).zfill(ndigits)}.json"
-        with open(dtm_pipeline_config_fn, "w") as f:
-            f.write(json.dumps(pipeline_dtm_no_z_fill))
-
-        dtm_pipeline_no_fill_list.append(dtm_pipeline_config_fn)
-        pipeline_dtm_no_z_fill = None
-        pdal_pipeline_dtm_no_z_fill = None
-
-        dtm_stage = create_dem_stage(
-            dem_filename=str(dtm_file_z_fill),
-            extent=original_extents[i],
-            pointcloud_resolution=raster_resolution,
-            gridmethod="idw",
-            dimension="Z",
-        )
-        # add the z-fill stage to the pipeline
-        dtm_stage[0]["window_size"] = 4
-
-        pipeline_dtm_z_fill["pipeline"] += pdal_pipeline_dtm_z_fill
-        pipeline_dtm_z_fill["pipeline"] += dtm_stage
-
-        #Save a copy of each pipeline
-        dtm_pipeline_config_fn = output_path / f"pipeline_dtm_fill_{str(i).zfill(ndigits)}.json"
-        with open(dtm_pipeline_config_fn, "w") as f:
-            f.write(json.dumps(pipeline_dtm_z_fill))
-
-        dtm_pipeline_fill_list.append(dtm_pipeline_config_fn)
-        pipeline_dtm_z_fill = None
-        pdal_pipeline_dtm_z_fill = None
-
-        ## Intensity creation block
-
-        pdal_pipeline_surface_intensity = create_pdal_pipeline(
-                group_filter="first,only",
-                reproject=True, # reproject to the output CRS
-                input_crs=input_crs_list[i],
-                output_crs=out_crs,
-                proj_pipeline=proj_pipeline,
                 filter_high_noise=filter_high_noise,
-                filter_low_noise=filter_low_noise,
-                hag_nn=hag_nn)
-
-        intensity_stage = create_dem_stage(
-            dem_filename=str(intensity_file),
-            extent=original_extents[i],
-            pointcloud_resolution=raster_resolution,
-            gridmethod="idw",
-            dimension="Intensity",
-            data_type="UInt16",
-            nodata_value=0,
+                hag_nn=hag_nn,
+                # local files are cheap to re-read: no cache step
+                use_cache=False,
+                # reprojection happens in-pipeline, shared by every chain
+                extra_pipeline_kwargs={
+                    "reproject": True,
+                    "proj_pipeline": proj_pipeline,
+                    "input_crs": input_crs_list[i],
+                    "output_crs": out_crs,
+                },
+                save_pointcloud="dsm" in products,
+            )
         )
-        pipeline_intensity["pipeline"] += pdal_pipeline_surface_intensity
-        pipeline_intensity["pipeline"] += intensity_stage
 
-        # Save a copy of each pipeline
-        intensity_pipeline_config_fn = (
-            output_path / f"pipeline_intensity_{str(i).zfill(ndigits)}.json"
-        )
-        with open(intensity_pipeline_config_fn, "w") as f:
-            f.write(json.dumps(pipeline_intensity))
-
-        intensity_pipeline_list.append(intensity_pipeline_config_fn)
-        pipeline_intensity = None
-        pdal_pipeline_surface_intensity = None
-
-    # return the pipelines and filenames
-    return (
-        dsm_pipeline_list,  # list of PDAL pipelines for DSM creation
-        dtm_pipeline_no_fill_list,  # list of PDAL pipelines for no-fill DTM creation
-        dtm_pipeline_fill_list,  # list of PDAL pipelines for filled DTM creation
-        intensity_pipeline_list,  # list of PDAL pipelines for Intensity creation
-    )
+    return tile_jobs
 
 def _set_dsm_gridding_params(dsm_gridding_choice: str):
     if dsm_gridding_choice == "first_idw":
@@ -1755,6 +1639,8 @@ def create_tile_pipelines(
     filter_high_noise: bool = True,
     hag_nn: float | None = None,
     use_cache: bool = True,
+    extra_pipeline_kwargs: dict | None = None,
+    save_pointcloud: bool = False,
 ) -> dict:
     """
     Build the single-read tile job for one tile: read points once, emit
@@ -1801,6 +1687,16 @@ def create_tile_pipelines(
     use_cache
         Emit the fetch/cache step when more than one execution is needed.
         Set False for local file input where re-reading is cheap.
+    extra_pipeline_kwargs
+        Merged into every product's create_pdal_pipeline kwargs (the local
+        input path injects reproject/proj_pipeline/input_crs/output_crs
+        here so reprojection happens in-pipeline, shared by every product
+        chain).
+    save_pointcloud
+        Write the filtered/reprojected points to a LAZ alongside the DSM
+        (chained writers.las before the DSM's writers.gdal, matching the
+        legacy local-input behavior including its historical .laz.laz
+        double-extension filename). Only applies when "dsm" is requested.
 
     Returns
     -------
@@ -1819,7 +1715,9 @@ def create_tile_pipelines(
     # (local) cache. dict preserves insertion order -> deterministic naming.
     groups: dict[str, dict] = {}
     for name in ordered:
-        chain = create_pdal_pipeline(**specs[name]["pipeline_kwargs"])
+        chain = create_pdal_pipeline(
+            **{**specs[name]["pipeline_kwargs"], **(extra_pipeline_kwargs or {})}
+        )
         signature = json.dumps(chain, sort_keys=True)
         outfile = output_path / specs[name]["filename"].format(
             prefix=prefix, tile=tile_id
@@ -1863,11 +1761,23 @@ def create_tile_pipelines(
     executions = []
     for group in groups.values():
         members = group["members"]
-        stages = (
-            list(source_stages)
-            + group["chain"]
-            + [member["writer"] for member in members]
-        )
+        writers = [member["writer"] for member in members]
+        member_names = [member["name"] for member in members]
+        if save_pointcloud and "dsm" in member_names:
+            dsm_outfile = members[member_names.index("dsm")]["outfile"]
+            # legacy filename preserved verbatim, including the historical
+            # .laz.laz double extension (downstream consumers glob for it)
+            pointcloud_fn = os.path.splitext(str(dsm_outfile))[0] + ".laz"
+            writers = [
+                {
+                    "type": "writers.las",
+                    "compression": "true",
+                    "minor_version": "2",
+                    "dataformat_id": "0",
+                    "filename": f"{pointcloud_fn}.laz",
+                }
+            ] + writers
+        stages = list(source_stages) + group["chain"] + writers
         joined = "_".join(member["name"] for member in members)
         pipeline_fn = output_path / f"pipeline_{joined}_{tile_id}.json"
         with open(pipeline_fn, "w") as f:
@@ -1882,32 +1792,6 @@ def create_tile_pipelines(
         )
 
     return {"tile_id": tile_id, "fetch": fetch, "executions": executions}
-
-
-def legacy_pipeline_lists_to_tile_jobs(
-    pipeline_lists: dict[str, list], products: list[str]
-) -> list[dict]:
-    """
-    Adapt per-product pipeline-JSON lists (create_lpc_pipeline's return
-    shape) into degenerate single-execution tile jobs so the rasterize
-    executor has one code path. Each product keeps its own standalone
-    pipeline (fetch=None): behavior is byte-identical to executing the
-    legacy lists per product.
-    """
-    ordered = [name for name in PRODUCT_ORDER if name in products]
-    n_tiles = len(pipeline_lists[ordered[0]])
-    jobs = []
-    for i in range(n_tiles):
-        executions = []
-        for name in ordered:
-            pipeline_fn = pipeline_lists[name][i]
-            with open(pipeline_fn) as f:
-                outfile = json.load(f)["pipeline"][-1]["filename"]
-            executions.append(
-                {"pipeline_json": str(pipeline_fn), "outputs": {name: outfile}}
-            )
-        jobs.append({"tile_id": str(i), "fetch": None, "executions": executions})
-    return jobs
 
 
 def create_ept_3dep_pipeline(

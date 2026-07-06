@@ -731,3 +731,92 @@ def test_execute_tile_job_empty_branch(tmp_path):
         assert np.isnan(da.values).all(), name
     da = _read_raster(results["dsm"])
     assert not np.isnan(da.values).all()
+
+
+def test_lpc_tile_jobs(tmp_path):
+    import json
+
+    import pyproj as _pyproj
+
+    d = lidar_tools.dsm_functions
+    laz_dir = tmp_path / "laz"
+    laz_dir.mkdir()
+    _make_multiclass_laz(laz_dir / "points.laz")
+
+    # AOI polygon covering the tile (geojson, EPSG:4326)
+    aoi = gpd.GeoDataFrame(
+        geometry=[
+            gpd.GeoSeries.from_wkt(
+                ["POLYGON((499990 3999990, 500030 3999990, 500030 4000030,"
+                 " 499990 4000030, 499990 3999990))"]
+            )
+            .set_crs("EPSG:32611")
+            .to_crs("EPSG:4326")
+            .iloc[0]
+        ],
+        crs="EPSG:4326",
+    )
+    aoi_fn = tmp_path / "aoi.geojson"
+    aoi.to_file(aoi_fn)
+
+    target_wkt = tmp_path / "target.wkt"
+    target_wkt.write_text(_pyproj.CRS.from_epsg(32611).to_wkt())
+
+    outdir = tmp_path / "out"
+    outdir.mkdir()
+    jobs = d.create_lpc_pipeline(
+        local_laz_dir=str(laz_dir),
+        target_wkt=str(target_wkt),
+        output_prefix=str(outdir / "aoi"),
+        extent_polygon=str(aoi_fn),
+        raster_resolution=1.0,
+        products=d.parse_products("all"),
+    )
+    assert len(jobs) == 1
+    job = jobs[0]
+    # local input: no cache step, two executions (dsm+intensity, dtm pair)
+    assert job["fetch"] is None
+    assert len(job["executions"]) == 2
+
+    dsm_int = json.loads(
+        Path(job["executions"][0]["pipeline_json"]).read_text()
+    )["pipeline"]
+    types = [s["type"] for s in dsm_int]
+    assert types[0] == "readers.las"
+    # in-pipeline reprojection shared by the chain
+    assert "filters.reprojection" in types
+    # saved point cloud chained before the gdal writers, legacy .laz.laz name
+    las_writers = [s for s in dsm_int if s["type"] == "writers.las"]
+    assert len(las_writers) == 1
+    assert las_writers[0]["filename"].endswith("_dsm_tile_aoi_0.laz.laz")
+    assert types.index("writers.las") < types.index("writers.gdal")
+    assert len([t for t in types if t == "writers.gdal"]) == 2
+
+    dtm = json.loads(
+        Path(job["executions"][1]["pipeline_json"]).read_text()
+    )["pipeline"]
+    dtm_types = [s["type"] for s in dtm]
+    assert "filters.reprojection" in dtm_types
+    assert "writers.las" not in dtm_types  # pointcloud saved only with dsm
+    assert len(job["executions"][1]["outputs"]) == 2
+
+    # executes end-to-end: all products valid, point cloud written
+    results = d.execute_tile_job(job)
+    assert all(fn is not None for fn in results.values()), results
+    assert Path(las_writers[0]["filename"]).exists()
+    da = _read_raster(results["dsm"])
+    assert da.rio.crs == _pyproj.CRS.from_epsg(32611)
+    assert not np.isnan(da.values).all()
+
+    # subset without dsm: no point-cloud save writer anywhere
+    jobs2 = d.create_lpc_pipeline(
+        local_laz_dir=str(laz_dir),
+        target_wkt=str(target_wkt),
+        output_prefix=str(outdir / "aoi2"),
+        extent_polygon=str(aoi_fn),
+        raster_resolution=1.0,
+        products=d.parse_products("dtm,intensity"),
+    )
+    for execution in jobs2[0]["executions"]:
+        stages = json.loads(Path(execution["pipeline_json"]).read_text())["pipeline"]
+        assert all(s["type"] != "writers.las" for s in stages)

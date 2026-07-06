@@ -460,12 +460,7 @@ def rasterize(
             )
             record["branch"] = "local point cloud (in-pipeline reprojection)"
             transform_checks.append(record)
-        (
-            dsm_pipeline_list,
-            dtm_no_fill_pipeline_list,
-            dtm_fill_pipeline_list,
-            intensity_pipeline_list,
-        ) = dsm_functions.create_lpc_pipeline(
+        tile_jobs = dsm_functions.create_lpc_pipeline(
             local_laz_dir=input,
             input_crs=src_projcrs,
             target_wkt=dst_crs,
@@ -477,19 +472,8 @@ def rasterize(
             filter_high_noise=filter_high_noise,
             filter_low_noise=filter_low_noise,
             hag_nn=height_above_ground_threshold,
-            raster_resolution=resolution
-        )
-        # local input still builds per-product pipelines (readers.las is a
-        # cheap local re-read); adapt them into single-execution tile jobs
-        # so the executor below has one code path
-        tile_jobs = dsm_functions.legacy_pipeline_lists_to_tile_jobs(
-            {
-                "dsm": dsm_pipeline_list,
-                "dtm_no_fill": dtm_no_fill_pipeline_list,
-                "dtm_fill": dtm_fill_pipeline_list,
-                "intensity": intensity_pipeline_list,
-            },
-            requested,
+            raster_resolution=resolution,
+            products=requested,
         )
 
     # Record geodesy provenance now (before compute) so it survives an
