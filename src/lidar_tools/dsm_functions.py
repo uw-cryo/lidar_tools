@@ -1626,6 +1626,18 @@ def _product_specs(
     }
 
 
+def _pdal_srs_string(crs: "CRS | str | None") -> str | None:
+    """
+    Render a CRS as a compact PDAL-friendly SRS string: an EPSG authority
+    code when available (unambiguous and short), else full WKT. Passes str
+    through unchanged; None -> None.
+    """
+    if crs is None or isinstance(crs, str):
+        return crs
+    epsg = crs.to_epsg()
+    return f"EPSG:{epsg}" if epsg else crs.to_wkt()
+
+
 def create_tile_pipelines(
     reader_stages: list[dict],
     tile_id: str,
@@ -1641,6 +1653,7 @@ def create_tile_pipelines(
     use_cache: bool = True,
     extra_pipeline_kwargs: dict | None = None,
     save_pointcloud: bool = False,
+    source_crs: "CRS | str | None" = None,
 ) -> dict:
     """
     Build the single-read tile job for one tile: read points once, emit
@@ -1697,6 +1710,14 @@ def create_tile_pipelines(
         (chained writers.las before the DSM's writers.gdal, matching the
         legacy local-input behavior including its historical .laz.laz
         double-extension filename). Only applies when "dsm" is requested.
+    source_crs
+        Authoritative CRS of the input points (e.g. the EPT's declared SRS).
+        When caching, it is stamped on the cache writers.las (a_srs) AND
+        forced onto the cache readers.las (override_srs) so the product
+        rasters carry the correct CRS regardless of whether the LAS-header
+        SRS survives the write/read round-trip in a given PDAL/GDAL build
+        (a CRS-less cache read otherwise yields writers.gdal output with no
+        CRS, which fails validity — observed on another environment).
 
     Returns
     -------
@@ -1732,6 +1753,8 @@ def create_tile_pipelines(
         group = groups.setdefault(signature, {"chain": chain, "members": []})
         group["members"].append({"name": name, "writer": writer, "outfile": outfile})
 
+    crs_str = _pdal_srs_string(source_crs)
+
     fetch = None
     source_stages = reader_stages
     if use_cache and len(groups) > 1:
@@ -1751,12 +1774,20 @@ def create_tile_pipelines(
             "offset_y": "auto",
             "offset_z": "auto",
         }
+        cache_reader = {"type": "readers.las", "filename": str(cache_file)}
+        if crs_str:
+            # pin the SRS explicitly on both ends of the cache round-trip:
+            # a_srs guarantees the file is tagged, override_srs guarantees
+            # the product rasters get the CRS even if a PDAL/GDAL build
+            # fails to reconstruct it from the LAS header on read
+            cache_writer["a_srs"] = crs_str
+            cache_reader["override_srs"] = crs_str
         fetch_pipeline = {"pipeline": list(reader_stages) + [cache_writer]}
         fetch_fn = output_path / f"pipeline_fetch_{tile_id}.json"
         with open(fetch_fn, "w") as f:
             f.write(json.dumps(fetch_pipeline))
         fetch = {"pipeline_json": str(fetch_fn), "cache_file": str(cache_file)}
-        source_stages = [{"type": "readers.las", "filename": str(cache_file)}]
+        source_stages = [cache_reader]
 
     executions = []
     for group in groups.values():
@@ -1892,6 +1923,7 @@ def create_ept_3dep_pipeline(
                 filter_high_noise=filter_high_noise,
                 hag_nn=hag_nn,
                 use_cache=True,
+                source_crs=POINTCLOUD_CRS[i],
             )
         )
 

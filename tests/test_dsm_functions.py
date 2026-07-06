@@ -820,3 +820,111 @@ def test_lpc_tile_jobs(tmp_path):
     for execution in jobs2[0]["executions"]:
         stages = json.loads(Path(execution["pipeline_json"]).read_text())["pipeline"]
         assert all(s["type"] != "writers.las" for s in stages)
+
+
+def test_tile_job_stamps_source_crs():
+    """The cache round-trip must not depend on the LAS-header SRS surviving:
+    source_crs is stamped on the cache writer (a_srs) and forced onto the
+    cache reader (override_srs) so product rasters always carry the CRS."""
+    import json
+
+    d = lidar_tools.dsm_functions
+    import tempfile
+
+    tmp = Path(tempfile.mkdtemp())
+    reader = {"type": "readers.ept", "filename": "https://example/ept.json"}
+    job = d.create_tile_pipelines(
+        [reader],
+        tile_id="000",
+        output_path=tmp,
+        prefix="aoi",
+        extent=_TILE_EXTENT,
+        raster_resolution=1.0,
+        products=d.parse_products("all"),
+        source_crs=pyproj.CRS.from_epsg(3857),
+    )
+    fetch = json.loads(Path(job["fetch"]["pipeline_json"]).read_text())["pipeline"]
+    cache_writer = fetch[-1]
+    assert cache_writer["type"] == "writers.las"
+    assert cache_writer["a_srs"] == "EPSG:3857"
+    for execution in job["executions"]:
+        stages = json.loads(Path(execution["pipeline_json"]).read_text())["pipeline"]
+        assert stages[0]["type"] == "readers.las"
+        assert stages[0]["override_srs"] == "EPSG:3857"
+
+
+def test_override_srs_recovers_crs_from_untagged_cache(tmp_path):
+    """Reproduce the observed cross-environment failure (a cache LAZ read
+    yields no SRS -> writers.gdal writes a CRS-less, invalid raster) and
+    prove override_srs fixes it. Uses a deliberately untagged LAZ."""
+    import json
+
+    import pdal
+    import rioxarray
+
+    d = lidar_tools.dsm_functions
+
+    # cache LAZ with NO spatial reference (no a_srs, no forward)
+    cache = tmp_path / "untagged_cache.laz"
+    n = 100
+    rng = np.random.default_rng(3)
+    arr = np.zeros(
+        n,
+        dtype=[
+            ("X", np.float64),
+            ("Y", np.float64),
+            ("Z", np.float64),
+            ("Classification", np.uint8),
+            ("ReturnNumber", np.uint8),
+            ("NumberOfReturns", np.uint8),
+            ("Intensity", np.uint16),
+        ],
+    )
+    arr["X"] = np.round(rng.uniform(_TILE_EXTENT[0], _TILE_EXTENT[2], n), 2)
+    arr["Y"] = np.round(rng.uniform(_TILE_EXTENT[1], _TILE_EXTENT[3], n), 2)
+    arr["Z"] = 100.0
+    arr["Classification"] = 1
+    arr["ReturnNumber"] = 1
+    arr["NumberOfReturns"] = 1
+    arr["Intensity"] = 500
+    pdal.Writer.las(
+        filename=str(cache), minor_version=4, dataformat_id=6
+    ).pipeline(arr).execute()
+
+    def _grid(reader_stage, out):
+        stages = [
+            reader_stage,
+            {
+                "type": "writers.gdal",
+                "filename": str(out),
+                "gdaldriver": "GTiff",
+                "dimension": "Z",
+                "output_type": "idw",
+                "data_type": "float32",
+                "nodata": -9999,
+                "resolution": 1.0,
+                "origin_x": _TILE_EXTENT[0],
+                "origin_y": _TILE_EXTENT[1],
+                "width": 20,
+                "height": 20,
+            },
+        ]
+        pj = tmp_path / (out.stem + ".json")
+        pj.write_text(json.dumps({"pipeline": stages}))
+        return d.execute_pdal_pipeline(str(pj), attempts=1)
+
+    # WITHOUT override_srs: writers.gdal produces a CRS-less raster ->
+    # check_raster_validity fails it (this is the failure signature)
+    plain = _grid({"type": "readers.las", "filename": str(cache)}, tmp_path / "plain.tif")
+    assert plain is None
+    da_plain = rioxarray.open_rasterio(str(tmp_path / "plain.tif"), masked=True)
+    assert da_plain.rio.crs is None
+
+    # WITH override_srs: the raster carries the CRS and passes validity
+    fixed = _grid(
+        {"type": "readers.las", "filename": str(cache), "override_srs": "EPSG:3857"},
+        tmp_path / "fixed.tif",
+    )
+    assert fixed is not None
+    da_fixed = _read_raster(str(tmp_path / "fixed.tif"))
+    assert da_fixed.rio.crs == pyproj.CRS.from_epsg(3857)
