@@ -665,6 +665,14 @@ def raster_mosaic(
 
     # Filter out None values from the image list
     img_list = [img for img in img_list if img is not None]
+    if not img_list:
+        # BuildVRT silently writes no file for an empty list, and the
+        # downstream Translate then fails with a cryptic "vrt: No such file
+        # or directory"; fail early with an actionable message instead
+        raise ValueError(
+            f"raster_mosaic: no input tiles to mosaic for {outfn} "
+            "(all tiles empty or failed)"
+        )
     vrt_fn = Path(outfn).with_suffix(".vrt")
     gdal.BuildVRT(vrt_fn, img_list, callback=gdal.TermProgress_nocb)
     if out_extent is not None:
@@ -2006,11 +2014,17 @@ def execute_pdal_pipeline(
         return None
 
 
-def _execute_pipeline_with_retries(pipeline_json_path: str, attempts: int) -> None:
+def _execute_pipeline_with_retries(pipeline_json_path: str, attempts: int) -> int:
     """
     Execute one PDAL pipeline JSON with retry + backoff (EPT reads over the
     network fail transiently; a multi-day run must not lose a tile to a
     single hiccup). Raises the last error after `attempts` tries.
+
+    Returns
+    -------
+    int
+        The number of points the pipeline processed (used to detect
+        legitimately empty tiles where a survey has no coverage).
     """
     with open(pipeline_json_path) as f:
         pipeline_dict = json.load(f)
@@ -2019,9 +2033,9 @@ def _execute_pipeline_with_retries(pipeline_json_path: str, attempts: int) -> No
             pipeline = pdal.Pipeline(json.dumps(pipeline_dict))
             suffix = f" (attempt {attempt}/{attempts})" if attempt > 1 else ""
             print(f"Executing {pipeline_json_path}{suffix}")
-            pipeline.execute()
+            count = pipeline.execute()
             pipeline = None
-            return
+            return count
         except Exception as e:
             if attempt == attempts:
                 raise
@@ -2036,7 +2050,7 @@ def _execute_pipeline_with_retries(pipeline_json_path: str, attempts: int) -> No
 
 def execute_tile_job(
     job: dict, skip_existing: bool = False, attempts: int = 3
-) -> dict[str, str | None]:
+) -> dict:
     """
     Execute one single-read tile job (see create_tile_pipelines): fetch the
     tile's points into a local cache once, then run each pending product
@@ -2057,41 +2071,56 @@ def execute_tile_job(
 
     Returns
     -------
-    dict[str, str | None]
-        product name -> tile raster path, or None where the product failed.
-        Never raises (policy: failures are accounted for and reported by
-        the caller; dask retries re-run the whole job idempotently).
+    dict
+        ``{"empty": bool, "outputs": {product: path | None}}``. ``empty`` is
+        True when the fetch returned zero points (the survey does not cover
+        this tile): a legitimate no-data outcome, not a failure, so no
+        rasters are written and no ERROR is logged. Otherwise ``outputs``
+        maps each product to its tile raster path, or None where that
+        product failed. Never raises (policy: failures/empties are accounted
+        for and reported by the caller; dask retries re-run the job
+        idempotently).
     """
-    results: dict[str, str | None] = {}
+    outputs: dict[str, str | None] = {}
     pending = []
     for execution in job["executions"]:
-        outputs = execution["outputs"]
+        exec_outputs = execution["outputs"]
         if skip_existing and all(
             Path(fn).exists() and check_raster_validity(fn, deep=True)
-            for fn in outputs.values()
+            for fn in exec_outputs.values()
         ):
-            for name, fn in outputs.items():
+            for name, fn in exec_outputs.items():
                 print(f"Resume: skipping existing valid tile {fn}")
-                results[name] = fn
+                outputs[name] = fn
         else:
             pending.append(execution)
-            for name in outputs:
-                results[name] = None
+            for name in exec_outputs:
+                outputs[name] = None
     if not pending:
-        return results
+        return {"empty": False, "outputs": outputs}
 
     fetch = job.get("fetch")
     cache_file = fetch["cache_file"] if fetch else None
     try:
         if fetch:
             try:
-                _execute_pipeline_with_retries(fetch["pipeline_json"], attempts)
+                n_points = _execute_pipeline_with_retries(
+                    fetch["pipeline_json"], attempts
+                )
             except Exception as e:
                 print(
                     f"ERROR: point fetch {fetch['pipeline_json']} failed: {e}",
                     file=sys.stderr,
                 )
-                return results
+                return {"empty": False, "outputs": outputs}
+            if n_points == 0:
+                # legitimately empty tile: the survey has no points here, so
+                # there is nothing to grid. Skip the product executions (which
+                # would otherwise each write a full-size CRS-less nodata raster
+                # and log a spurious "invalid raster" ERROR) and report the
+                # tile as empty, not failed.
+                print(f"Empty tile {job.get('tile_id')}: 0 points, skipped")
+                return {"empty": True, "outputs": {name: None for name in outputs}}
         for execution in pending:
             try:
                 _execute_pipeline_with_retries(execution["pipeline_json"], attempts)
@@ -2103,7 +2132,7 @@ def execute_tile_job(
                 continue
             for name, fn in execution["outputs"].items():
                 if check_raster_validity(fn):
-                    results[name] = fn
+                    outputs[name] = fn
                 else:
                     print(
                         f"ERROR: pipeline {execution['pipeline_json']} produced an "
@@ -2113,7 +2142,7 @@ def execute_tile_job(
     finally:
         if cache_file:
             Path(cache_file).unlink(missing_ok=True)
-    return results
+    return {"empty": False, "outputs": outputs}
 
 
 def rename_rasters(raster_fn, out_fn) -> None:

@@ -595,15 +595,17 @@ def _run_equivalence(tmp_path, hag_nn, dsm_gridding_choice):
         hag_nn=hag_nn,
         dsm_gridding_choice=dsm_gridding_choice,
     )
-    results = d.execute_tile_job(job)
-    assert all(fn is not None for fn in results.values()), results
+    result = d.execute_tile_job(job)
+    assert not result["empty"]
+    outputs = result["outputs"]
+    assert all(fn is not None for fn in outputs.values()), outputs
     # cache removed in-task
     if job["fetch"]:
         assert not Path(job["fetch"]["cache_file"]).exists()
 
     for name, (_, legacy_fn) in legacy.items():
         old = _read_raster(str(legacy_fn))
-        new = _read_raster(results[name])
+        new = _read_raster(outputs[name])
         assert old.rio.crs == new.rio.crs, name
         np.testing.assert_array_equal(
             np.isnan(old.values), np.isnan(new.values), err_msg=name
@@ -637,12 +639,12 @@ def test_execute_tile_job_resume(tmp_path):
         raster_resolution=1.0,
         products=d.parse_products("all"),
     )
-    first = d.execute_tile_job(job)
+    first = d.execute_tile_job(job)["outputs"]
     assert all(fn is not None for fn in first.values())
     mtimes = {name: Path(fn).stat().st_mtime_ns for name, fn in first.items()}
 
     # full resume: every execution skipped, nothing rewritten
-    second = d.execute_tile_job(job, skip_existing=True)
+    second = d.execute_tile_job(job, skip_existing=True)["outputs"]
     assert second == first
     for name, fn in second.items():
         assert Path(fn).stat().st_mtime_ns == mtimes[name], name
@@ -650,7 +652,7 @@ def test_execute_tile_job_resume(tmp_path):
     # partial-within-execution: losing intensity re-runs the dsm+intensity
     # execution whole (both rewritten); the DTM execution stays skipped
     Path(first["intensity"]).unlink()
-    third = d.execute_tile_job(job, skip_existing=True)
+    third = d.execute_tile_job(job, skip_existing=True)["outputs"]
     assert all(fn is not None for fn in third.values())
     assert Path(third["dsm"]).stat().st_mtime_ns > mtimes["dsm"]
     assert Path(third["intensity"]).exists()
@@ -670,8 +672,10 @@ def test_execute_tile_job_fetch_failure(tmp_path):
         raster_resolution=1.0,
         products=d.parse_products("all"),
     )
-    results = d.execute_tile_job(job, attempts=1)
+    result = d.execute_tile_job(job, attempts=1)
     # never raises; all products reported failed; no cache left behind
+    assert not result["empty"]
+    results = result["outputs"]
     assert set(results) == {"dsm", "dtm_no_fill", "dtm_fill", "intensity"}
     assert all(fn is None for fn in results.values())
     assert not Path(job["fetch"]["cache_file"]).exists()
@@ -721,10 +725,12 @@ def test_execute_tile_job_empty_branch(tmp_path):
         raster_resolution=1.0,
         products=d.parse_products("all"),
     )
-    results = d.execute_tile_job(job, attempts=1)
-    # writers.gdal writes an all-nodata raster for an empty point view (same
-    # as the legacy per-product path): every product "succeeds", the ground
-    # products are fully masked
+    result = d.execute_tile_job(job, attempts=1)
+    # the tile HAS points (just no ground), so it is not "empty": writers.gdal
+    # writes an all-nodata raster for the ground-only products (same as the
+    # legacy per-product path); every product "succeeds"
+    assert not result["empty"]
+    results = result["outputs"]
     assert all(fn is not None for fn in results.values())
     for name in ("dtm_no_fill", "dtm_fill"):
         da = _read_raster(results[name])
@@ -801,7 +807,7 @@ def test_lpc_tile_jobs(tmp_path):
     assert len(job["executions"][1]["outputs"]) == 2
 
     # executes end-to-end: all products valid, point cloud written
-    results = d.execute_tile_job(job)
+    results = d.execute_tile_job(job)["outputs"]
     assert all(fn is not None for fn in results.values()), results
     assert Path(las_writers[0]["filename"]).exists()
     da = _read_raster(results["dsm"])
@@ -928,3 +934,37 @@ def test_override_srs_recovers_crs_from_untagged_cache(tmp_path):
     assert fixed is not None
     da_fixed = _read_raster(str(tmp_path / "fixed.tif"))
     assert da_fixed.rio.crs == pyproj.CRS.from_epsg(3857)
+
+
+def test_execute_tile_job_empty_tile(tmp_path, capsys):
+    """A tile whose fetch returns zero points (survey has no coverage there)
+    is reported as empty, not failed: no product rasters are written and no
+    'invalid raster' ERROR is logged (F5-lite)."""
+    d = lidar_tools.dsm_functions
+
+    # a source with points, but the reader stage filters them all out, so the
+    # fetch yields zero points (as an out-of-coverage EPT query would)
+    src_laz = tmp_path / "src.laz"
+    _make_multiclass_laz(src_laz)
+    reader_stages = [
+        {"type": "readers.las", "filename": str(src_laz)},
+        {"type": "filters.range", "limits": "Classification[99:99]"},
+    ]
+    job = d.create_tile_pipelines(
+        reader_stages,
+        tile_id="000",
+        output_path=tmp_path,
+        prefix="aoi",
+        extent=_TILE_EXTENT,
+        raster_resolution=1.0,
+        products=d.parse_products("all"),
+        source_crs=pyproj.CRS.from_epsg(3857),
+    )
+    result = d.execute_tile_job(job, attempts=1)
+    assert result["empty"] is True
+    assert all(fn is None for fn in result["outputs"].values())
+    # no product tiles written, cache cleaned up
+    assert not list(tmp_path.glob("*_tile_aoi_*.tif"))
+    assert not Path(job["fetch"]["cache_file"]).exists()
+    # no spurious ERROR about invalid rasters
+    assert "invalid raster" not in capsys.readouterr().err

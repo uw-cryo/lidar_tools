@@ -530,10 +530,18 @@ def rasterize(
                 progress(futures)
             tile_results = client.gather(futures)
 
-    # reassemble tile-ordered per-product lists for mosaicking
+    # reassemble tile-ordered per-product lists for mosaicking; empty tiles
+    # (survey has no points there) are a legitimate no-data outcome, tracked
+    # separately from real failures
     results: dict[str, list] = {name: [] for name in requested}
+    n_empty = 0
     for tile_result in tile_results:
-        for name, outfn in tile_result.items():
+        if tile_result is None:
+            continue
+        if tile_result.get("empty"):
+            n_empty += 1
+            continue
+        for name, outfn in tile_result["outputs"].items():
             if outfn is not None:
                 results[name].append(outfn)
 
@@ -544,31 +552,68 @@ def rasterize(
 
     print("****Processing complete for all tiles****")
 
-    # Tile accounting: failed tiles are excluded from the mosaics below, so
-    # report them loudly instead of silently producing products with holes
+    # Tile accounting: empty tiles (survey has no points there) are expected
+    # and excluded, not failures; real failures are counted against the
+    # data-bearing tiles and reported loudly (they leave holes in the mosaic)
     product_labels = {
         "dsm": "DSM",
         "dtm_no_fill": "DTM_no_fill",
         "dtm_fill": "DTM_fill",
         "intensity": "intensity",
     }
+    data_total = num_pipelines - n_empty
     tile_counts = {
-        product_labels[name]: (len(results[name]), num_pipelines)
-        for name in requested
+        product_labels[name]: (len(results[name]), data_total) for name in requested
     }
     summary = ", ".join(
         f"{name}: {ok}/{total}" for name, (ok, total) in tile_counts.items()
     )
+    if n_empty:
+        print(
+            f"{n_empty}/{num_pipelines} tiles had no points (survey does not "
+            "cover them); excluded from the mosaics as expected."
+        )
     n_failed = sum(total - ok for ok, total in tile_counts.values())
     if n_failed:
         print(
             f"WARNING: {n_failed} tile pipelines failed or produced invalid "
-            f"rasters (valid/total {summary}). Final mosaics will contain gaps; "
-            "see ERROR messages above for the failing pipelines.",
+            f"rasters (valid/data-tiles {summary}). Final mosaics will contain "
+            "gaps; see ERROR messages above for the failing pipelines.",
             file=sys.stderr,
         )
     else:
-        print(f"All tile pipelines produced valid rasters ({summary})")
+        print(f"All data tiles produced valid rasters ({summary})")
+
+    # No-data guard: a survey may not cover the AOI at all (0 readers) or
+    # every intersecting tile may be empty. There is nothing to mosaic, warp
+    # or stamp; finish cleanly with a clear status instead of crashing on an
+    # empty tile list (final_*_fn_list[0]) or a cryptic empty-VRT error.
+    if not any(results[name] for name in requested):
+        print(
+            f"No data produced for this AOI (readers: {num_pipelines}, "
+            f"empty tiles: {n_empty}); the survey likely does not cover it. "
+            "Skipping mosaic/reprojection; no products written."
+        )
+        _update_processing_metadata(
+            outdir,
+            "run_status",
+            {
+                "state": "completed",
+                "note": "no data (survey does not cover AOI)",
+                "timestamp": datetime.now().isoformat(),
+            },
+        )
+        if cleanup:
+            for pattern in [
+                "*_tile_aoi_*.tif*",
+                "*_cache_tile_aoi_*.laz",
+                "pipeline*.json",
+                "*temp.tif",
+            ]:
+                for file in outdir.glob(pattern):
+                    file.unlink()
+        print("****Processing complete (no data)****")
+        return
 
     # Mosaicing
     # ===========
