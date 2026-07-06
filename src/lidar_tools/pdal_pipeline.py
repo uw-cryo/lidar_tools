@@ -147,7 +147,7 @@ def rasterize(
     dst_crs: str = None,
     resolution: float = 1.0,
     dsm_gridding_choice: str = "first_idw",
-    products: Literal["all", "dsm", "dtm", "intensity"] = "all",
+    products: str = "all",
     threedep_project: Literal["all", "latest"] | str = "latest",
     tile_size: float = 1.0,
     num_process: int = 1,
@@ -180,7 +180,11 @@ def rasterize(
     dsm_gridding_choice
         The gridding method to use for DSM generation. 'first_idw' uses the first and only returns which are gridded using IDW, 'n-pct' computes points matching the nth percentile in a pointview (e.g., 98-pct), which are gridded using the max binning operator.
     products
-        Which output products to generate: all products, digital surface model, digital terrain model, or intensity raster.
+        Comma-separated output products to generate: any subset of dsm,
+        dtm_no_fill, dtm_fill, intensity (e.g. "dsm,intensity"). Aliases:
+        "all" (default) = every product; "dtm" = both DTM variants. All
+        requested products for a tile are generated from a single point
+        read.
     threedep_project
         "all" processes all available 3DEP EPT point clouds which intersect with the input polygon.
         "first" 3DEP project encountered will be processed.
@@ -223,7 +227,10 @@ def rasterize(
         raise ValueError(
             f"Invalid dsm_gridding_choice: {dsm_gridding_choice}. Must be 'first_idw' or match the format 'n-pct' (e.g., '98-pct')."
         )
-    
+
+    # canonical product names (validates the selection early)
+    requested = dsm_functions.parse_products(products)
+
     # Parse input polygon CRS and check that area isn't too large
     gdf = gpd.read_file(geometry)
     _check_polygon_area(gdf)
@@ -422,14 +429,7 @@ def rasterize(
                 record["branch"] = branch
                 transform_checks.append(record)
                 ept_checks[key] = record
-        # TODO: handle new positional args, skip products not requested
-
-        (
-            dsm_pipeline_list,
-            dtm_no_fill_pipeline_list,
-            dtm_fill_pipeline_list,
-            intensity_pipeline_list,
-        ) = dsm_functions.create_ept_3dep_pipeline(
+        tile_jobs = dsm_functions.create_ept_3dep_pipeline(
             extent_polygon,
             dst_crs,
             output_prefix,
@@ -442,7 +442,8 @@ def rasterize(
             filter_high_noise=filter_high_noise,
             filter_low_noise=filter_low_noise,
             hag_nn=height_above_ground_threshold,
-            raster_resolution=resolution
+            raster_resolution=resolution,
+            products=requested,
         )
     else:
         print(f"Processing local laz files from {input}")
@@ -478,6 +479,18 @@ def rasterize(
             hag_nn=height_above_ground_threshold,
             raster_resolution=resolution
         )
+        # local input still builds per-product pipelines (readers.las is a
+        # cheap local re-read); adapt them into single-execution tile jobs
+        # so the executor below has one code path
+        tile_jobs = dsm_functions.legacy_pipeline_lists_to_tile_jobs(
+            {
+                "dsm": dsm_pipeline_list,
+                "dtm_no_fill": dtm_no_fill_pipeline_list,
+                "dtm_fill": dtm_fill_pipeline_list,
+                "intensity": intensity_pipeline_list,
+            },
+            requested,
+        )
 
     # Record geodesy provenance now (before compute) so it survives an
     # interrupted run; the coordinate epoch is filled in after stamping
@@ -493,66 +506,52 @@ def rasterize(
     dsm_functions.raise_file_limit()
 
     # TODO: refactor into function
-    num_pipelines = len(dsm_pipeline_list)
+    num_pipelines = len(tile_jobs)
 
-    # per-product pipeline batches to execute (order preserved for accounting)
-    batches = {}
-    if products == "all" or products == "dsm":
-        batches["dsm"] = dsm_pipeline_list
-    if products == "all" or products == "dtm":
-        batches["dtm_no_fill"] = dtm_no_fill_pipeline_list
-        batches["dtm_fill"] = dtm_fill_pipeline_list
-    if products == "all" or products == "intensity":
-        batches["intensity"] = intensity_pipeline_list
-
-    results = {}
+    # one task per tile: each tile job reads its points once and emits every
+    # requested product from that read (single-read consolidation, F3)
     if num_process == 1:
-        print(f"Executing PDAL in serial for products={products}")
-        for name, pipeline_list in batches.items():
-            print(f"Generating {name} tiles")
-            results[name] = [
-                outfn
-                for pipeline in pipeline_list
-                if (outfn := dsm_functions.execute_pdal_pipeline(pipeline, resume))
-                is not None
-            ]
+        print(f"Executing PDAL in serial for products={requested}")
+        tile_results = [
+            dsm_functions.execute_tile_job(job, resume) for job in tile_jobs
+        ]
     else:
         n_jobs = num_process if num_pipelines > num_process else num_pipelines
         print(
-            f"Executing PDAL in parallel with dask n_workers={n_jobs} for products={products}"
+            f"Executing PDAL in parallel with dask n_workers={n_jobs} for products={requested}"
         )
-        # one cluster for the whole run, all product batches submitted
-        # together: the scheduler interleaves tiles instead of paying a
-        # cluster spinup + idle drain per product (~20% of wall time
-        # measured at UW-campus scale)
+        # one cluster for the whole run: the scheduler interleaves tiles
+        # instead of paying a cluster spinup + idle drain per product
+        # (~20% of wall time measured at UW-campus scale)
         with Client(
             n_workers=n_jobs,
             processes=True,  # run PDAL pipelines in isolated processes
             threads_per_worker=1,
         ) as client:
             print(f"Dask dashboard available at: {client.dashboard_link}")
-            futures = {}
-            for name, pipeline_list in batches.items():
-                futures[name] = [
-                    client.submit(
-                        dsm_functions.execute_pdal_pipeline,
-                        pipeline,
-                        resume,
-                        retries=3,  # resubmit on worker death (KilledWorker)
-                        pure=False,
-                    )
-                    for pipeline in pipeline_list
-                ]
-                # fire_and_forget for better memory management
-                for future in futures[name]:
-                    fire_and_forget(future)
-            all_futures = [f for fs in futures.values() for f in fs]
+            futures = [
+                client.submit(
+                    dsm_functions.execute_tile_job,
+                    job,
+                    resume,
+                    retries=3,  # resubmit on worker death (KilledWorker)
+                    pure=False,
+                )
+                for job in tile_jobs
+            ]
+            # fire_and_forget for better memory management
+            for future in futures:
+                fire_and_forget(future)
             if not quiet:
-                progress(all_futures)
-            for name, fs in futures.items():
-                results[name] = [
-                    outfn for outfn in client.gather(fs) if outfn is not None
-                ]
+                progress(futures)
+            tile_results = client.gather(futures)
+
+    # reassemble tile-ordered per-product lists for mosaicking
+    results: dict[str, list] = {name: [] for name in requested}
+    for tile_result in tile_results:
+        for name, outfn in tile_result.items():
+            if outfn is not None:
+                results[name].append(outfn)
 
     final_dsm_fn_list = results.get("dsm", [])
     final_dtm_no_fill_fn_list = results.get("dtm_no_fill", [])
@@ -563,23 +562,16 @@ def rasterize(
 
     # Tile accounting: failed tiles are excluded from the mosaics below, so
     # report them loudly instead of silently producing products with holes
-    tile_counts = {}
-    if products == "all" or products == "dsm":
-        tile_counts["DSM"] = (len(final_dsm_fn_list), len(dsm_pipeline_list))
-    if products == "all" or products == "dtm":
-        tile_counts["DTM_no_fill"] = (
-            len(final_dtm_no_fill_fn_list),
-            len(dtm_no_fill_pipeline_list),
-        )
-        tile_counts["DTM_fill"] = (
-            len(final_dtm_fill_fn_list),
-            len(dtm_fill_pipeline_list),
-        )
-    if products == "all" or products == "intensity":
-        tile_counts["intensity"] = (
-            len(final_intensity_fn_list),
-            len(intensity_pipeline_list),
-        )
+    product_labels = {
+        "dsm": "DSM",
+        "dtm_no_fill": "DTM_no_fill",
+        "dtm_fill": "DTM_fill",
+        "intensity": "intensity",
+    }
+    tile_counts = {
+        product_labels[name]: (len(results[name]), num_pipelines)
+        for name in requested
+    }
     summary = ", ".join(
         f"{name}: {ok}/{total}" for name, (ok, total) in tile_counts.items()
     )
@@ -614,13 +606,13 @@ def rasterize(
             cog = True
             
         print("Running sequentially")
-        if products == "all" or products == "dsm":
+        if "dsm" in requested:
             print(f"Creating DSM mosaic at {dsm_mos_fn}")
             dsm_functions.raster_mosaic(
                 final_dsm_fn_list, dsm_mos_fn, cog=cog, out_extent=out_extent
             )
 
-        if products == "all" or products == "dtm":
+        if "dtm_no_fill" in requested:
             print(f"Creating DTM mosaic at {dtm_mos_no_fill_fn}")
             dsm_functions.raster_mosaic(
                 final_dtm_no_fill_fn_list,
@@ -629,12 +621,13 @@ def rasterize(
                 out_extent=out_extent,
             )
 
+        if "dtm_fill" in requested:
             print(f"Creating DTM mosaic with window size 4 at {dtm_mos_fill_fn}")
             dsm_functions.raster_mosaic(
                 final_dtm_fill_fn_list, dtm_mos_fill_fn, cog=cog, out_extent=out_extent
             )
 
-        if products == "all" or products == "intensity":
+        if "intensity" in requested:
             print(f"Creating intensity raster mosaic at {intensity_mos_fn}")
             dsm_functions.raster_mosaic(
                 final_intensity_fn_list,
@@ -645,14 +638,15 @@ def rasterize(
 
     else:
         print("Only one tile created, no mosaicing required")
-        if products == "all" or products == "dsm":
+        if "dsm" in requested:
             dsm_functions.rename_rasters(final_dsm_fn_list[0], dsm_mos_fn)
-        if products == "all" or products == "dtm":
+        if "dtm_no_fill" in requested:
             dsm_functions.rename_rasters(
                 final_dtm_no_fill_fn_list[0], dtm_mos_no_fill_fn
             )
+        if "dtm_fill" in requested:
             dsm_functions.rename_rasters(final_dtm_fill_fn_list[0], dtm_mos_fill_fn)
-        if products == "all" or products == "intensity":
+        if "intensity" in requested:
             dsm_functions.rename_rasters(final_intensity_fn_list[0], intensity_mos_fn)
 
     # Reprojection
@@ -670,10 +664,14 @@ def rasterize(
             # source vertical datum supplied by the user / survey metadata
             reproject_truth_val = ept_vertical == "geoid"
             print(f"EPT vertical interpretation overridden: {ept_vertical}")
-        elif products == "all" or products == "dsm":
+        elif "dsm" in requested:
             reproject_truth_val = dsm_functions.confirm_3dep_vertical(dsm_mos_fn)
-        elif products == "dtm":
+        elif "dtm_fill" in requested:
             reproject_truth_val = dsm_functions.confirm_3dep_vertical(dtm_mos_fill_fn)
+        elif "dtm_no_fill" in requested:
+            reproject_truth_val = dsm_functions.confirm_3dep_vertical(
+                dtm_mos_no_fill_fn
+            )
         # enforce the preflight-selected pipeline: GDAL's own operation
         # selection is not guaranteed to match (it null-ties some pairs)
         height_ct = ept_checks["geoid" if reproject_truth_val else "ellipsoid"][
@@ -698,7 +696,7 @@ def rasterize(
         out_extent = final_out_extent
         print(src_srs)
         print("Running reprojection sequentially")
-        if products == "all" or products == "dsm":
+        if "dsm" in requested:
             print("Reprojecting DSM raster")
             dsm_functions.gdal_warp(
                 dsm_mos_fn,
@@ -710,7 +708,7 @@ def rasterize(
                 out_extent=out_extent,
                 coordinate_operation=height_ct,
             )
-        if products == "all" or products == "dtm":
+        if "dtm_no_fill" in requested:
             print("Reprojecting DTM raster")
             dsm_functions.gdal_warp(
                 dtm_mos_no_fill_fn,
@@ -722,6 +720,7 @@ def rasterize(
                 out_extent=out_extent,
                 coordinate_operation=height_ct,
             )
+        if "dtm_fill" in requested:
             dsm_functions.gdal_warp(
                 dtm_mos_fill_fn,
                 dtm_fill_reproj,
@@ -732,7 +731,7 @@ def rasterize(
                 out_extent=out_extent,
                 coordinate_operation=height_ct,
             )
-        if products == "all" or products == "intensity":
+        if "intensity" in requested:
             print("Reprojecting intensity raster")
             # Intensity values are not heights: warp 2D -> 2D. A vertical
             # axis on EITHER side makes gdal.Warp treat the band values as
@@ -781,21 +780,22 @@ def rasterize(
         # and the run crashed at the overview stage)
         print("No reprojection required")
         # rename the temp files to the final output names
-        if products == "all" or products == "dsm":
+        if "dsm" in requested:
             dsm_functions.rename_rasters(dsm_mos_fn, dsm_reproj)
-        if products == "all" or products == "dtm":
+        if "dtm_no_fill" in requested:
             dsm_functions.rename_rasters(dtm_mos_no_fill_fn, dtm_no_fill_reproj)
+        if "dtm_fill" in requested:
             dsm_functions.rename_rasters(dtm_mos_fill_fn, dtm_fill_reproj)
-        if products == "all" or products == "intensity":
+        if "intensity" in requested:
             dsm_functions.rename_rasters(intensity_mos_fn, intensity_reproj)
 
-    final_products = []
-    if products == "all" or products == "dsm":
-        final_products.append(dsm_reproj)
-    if products == "all" or products == "dtm":
-        final_products.extend([dtm_no_fill_reproj, dtm_fill_reproj])
-    if products == "all" or products == "intensity":
-        final_products.append(intensity_reproj)
+    product_reproj = {
+        "dsm": dsm_reproj,
+        "dtm_no_fill": dtm_no_fill_reproj,
+        "dtm_fill": dtm_fill_reproj,
+        "intensity": intensity_reproj,
+    }
+    final_products = [product_reproj[name] for name in requested]
 
     # 3DEP sources are NAD83(2011) epoch-reduced to 2010.0, so products in a
     # dynamic frame (default WGS84 G2139 target) are coordinates at epoch
@@ -839,7 +839,13 @@ def rasterize(
         # match only per-tile outputs (a bare '*tile*' pattern deletes the
         # final mosaics when the AOI filename contains 'tile'), and keep
         # *.wkt files: the CRS definition used is provenance for the run
-        for pattern in ["*_tile_aoi_*.tif*", "pipeline*.json", "*temp.tif"]:
+        # cache LAZ normally deleted in-task; glob is a backstop for hard kills
+        for pattern in [
+            "*_tile_aoi_*.tif*",
+            "*_cache_tile_aoi_*.laz",
+            "pipeline*.json",
+            "*temp.tif",
+        ]:
             for file in outdir.glob(pattern):
                 file.unlink()
 

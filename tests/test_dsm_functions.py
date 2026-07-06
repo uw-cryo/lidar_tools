@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import lidar_tools
 import geopandas as gpd
 import pyproj
@@ -271,3 +273,461 @@ def test_return_lpc_bounds(tmp_path):
     )
     # easting 500000 in UTM 11N is exactly the -117 deg central meridian
     assert -117.01 < bounds[0] < -116.99 and 36 < bounds[1] < 37
+
+
+# ---------------------------------------------------------------------------
+# Single-read / multi-product tile jobs (F3 consolidation)
+# ---------------------------------------------------------------------------
+
+_TILE_EXTENT = [500000.0, 4000000.0, 500020.0, 4000020.0]
+
+
+def _make_multiclass_laz(fn, epsg=32611):
+    """
+    Fixture point cloud exercising every per-product filter: ground (2),
+    unclassified (1), low noise (7), high noise (18), a tall HAG outlier,
+    multi-return points (excluded from first,only products but kept for
+    ground products), and varying Intensity.
+    """
+    import pdal
+
+    n = 200
+    rng = np.random.default_rng(42)
+    arr = np.zeros(
+        n,
+        dtype=[
+            ("X", np.float64),
+            ("Y", np.float64),
+            ("Z", np.float64),
+            ("Classification", np.uint8),
+            ("ReturnNumber", np.uint8),
+            ("NumberOfReturns", np.uint8),
+            ("Intensity", np.uint16),
+            ("GpsTime", np.float64),
+            ("PointSourceId", np.uint16),
+        ],
+    )
+    # coordinates on the 0.01 m grid (matches 3DEP EPT native scale)
+    arr["X"] = np.round(rng.uniform(_TILE_EXTENT[0], _TILE_EXTENT[2], n), 2)
+    arr["Y"] = np.round(rng.uniform(_TILE_EXTENT[1], _TILE_EXTENT[3], n), 2)
+    arr["Z"] = np.round(100.0 + rng.uniform(0, 3, n), 2)
+    arr["Classification"] = rng.choice([1, 2], n, p=[0.5, 0.5])
+    arr["ReturnNumber"] = 1
+    arr["NumberOfReturns"] = 1
+    arr["Intensity"] = rng.integers(100, 2000, n)
+    arr["GpsTime"] = 3.0e8 + np.arange(n)
+    arr["PointSourceId"] = rng.choice([11, 12], n)
+    # multi-return non-first points: kept for DTM (if ground), dropped by
+    # the first,only group filter
+    arr["ReturnNumber"][:20] = 2
+    arr["NumberOfReturns"][:20] = 2
+    arr["Classification"][:20] = 2
+    arr["Z"][:20] = 99.5
+    # low and high noise points (filtered everywhere by default flags)
+    arr["Classification"][20:25] = 7
+    arr["Z"][20:25] = 50.0
+    arr["Classification"][25:30] = 18
+    arr["Z"][25:30] = 400.0
+    # tall unclassified outlier: survives noise filters, caught by hag_nn
+    arr["Classification"][30:33] = 1
+    arr["Z"][30:33] = 150.0
+    pipeline = pdal.Writer.las(
+        filename=str(fn),
+        a_srs=f"EPSG:{epsg}",
+        minor_version=4,
+        dataformat_id=6,
+        forward="all",
+    ).pipeline(arr)
+    pipeline.execute()
+
+
+def _read_raster(fn):
+    import rioxarray
+
+    da = rioxarray.open_rasterio(fn, masked=True).squeeze()
+    return da
+
+
+def _legacy_product_pipelines(reader, outdir, prefix, hag_nn=None,
+                              dsm_gridding_choice="first_idw"):
+    """
+    Replicate the pre-F3 per-product pipeline construction verbatim (one
+    standalone pipeline per product, each embedding its own reader) so a
+    registry regression breaks equivalence instead of matching it.
+    """
+    import json
+
+    d = lidar_tools.dsm_functions
+    (
+        dsm_group_filter,
+        dsm_gridding_method,
+        percentile_filter,
+        percentile_threshold,
+    ) = d._set_dsm_gridding_params(dsm_gridding_choice)
+    files = {
+        "dsm": outdir / f"{prefix}_dsm_tile_aoi_000.tif",
+        "dtm_no_fill": outdir / f"{prefix}_dtm_tile_aoi_no_fill000.tif",
+        "dtm_fill": outdir / f"{prefix}_dtm_tile_aoi_fill4_000.tif",
+        "intensity": outdir / f"{prefix}_intensity_tile_aoi_000.tif",
+    }
+    chains = {
+        "dsm": d.create_pdal_pipeline(
+            group_filter=dsm_group_filter,
+            percentile_filter=percentile_filter,
+            percentile_threshold=percentile_threshold,
+            reproject=False,
+            filter_high_noise=True,
+            filter_low_noise=True,
+            hag_nn=hag_nn,
+        ),
+        "dtm_no_fill": d.create_pdal_pipeline(
+            return_only_ground=True,
+            group_filter=None,
+            reproject=False,
+            filter_high_noise=True,
+            filter_low_noise=True,
+        ),
+        "dtm_fill": d.create_pdal_pipeline(
+            return_only_ground=True,
+            group_filter=None,
+            reproject=False,
+            filter_high_noise=True,
+            filter_low_noise=True,
+        ),
+        "intensity": d.create_pdal_pipeline(
+            return_only_ground=False,
+            group_filter="first,only",
+            reproject=False,
+            filter_high_noise=True,
+            filter_low_noise=True,
+            hag_nn=hag_nn,
+        ),
+    }
+    writer_kwargs = {
+        "dsm": dict(gridmethod=dsm_gridding_method, dimension="Z"),
+        "dtm_no_fill": dict(gridmethod="idw", dimension="Z"),
+        "dtm_fill": dict(gridmethod="idw", dimension="Z"),
+        "intensity": dict(
+            gridmethod="idw", dimension="Intensity", nodata_value=0,
+            data_type="UInt16",
+        ),
+    }
+    paths = {}
+    for name, chain in chains.items():
+        stage = d.create_dem_stage(
+            dem_filename=str(files[name]),
+            extent=_TILE_EXTENT,
+            pointcloud_resolution=1.0,
+            **writer_kwargs[name],
+        )
+        if name == "dtm_fill":
+            stage[0]["window_size"] = 4
+        pipeline_fn = outdir / f"legacy_pipeline_{name}.json"
+        pipeline_fn.write_text(
+            json.dumps({"pipeline": [reader] + chain + stage})
+        )
+        paths[name] = (pipeline_fn, files[name])
+    return paths
+
+
+def test_parse_products():
+    parse = lidar_tools.dsm_functions.parse_products
+    assert parse("all") == ["dsm", "dtm_no_fill", "dtm_fill", "intensity"]
+    assert parse("dtm") == ["dtm_no_fill", "dtm_fill"]
+    assert parse("intensity,dsm") == ["dsm", "intensity"]  # canonical order
+    assert parse("dtm_fill") == ["dtm_fill"]
+    import pytest
+
+    with pytest.raises(ValueError):
+        parse("bogus")
+    with pytest.raises(ValueError):
+        parse("")
+
+
+def test_tile_job_structure_first_idw(tmp_path):
+    import json
+
+    d = lidar_tools.dsm_functions
+    reader = {"type": "readers.ept", "filename": "https://example/ept.json"}
+    job = d.create_tile_pipelines(
+        [reader],
+        tile_id="000",
+        output_path=tmp_path,
+        prefix="aoi",
+        extent=_TILE_EXTENT,
+        raster_resolution=1.0,
+        products=d.parse_products("all"),
+        hag_nn=50.0,
+    )
+    # one network fetch into the cache, then two local executions
+    fetch = json.loads(Path(job["fetch"]["pipeline_json"]).read_text())["pipeline"]
+    assert [s["type"] for s in fetch] == ["readers.ept", "writers.las"]
+    cache = fetch[-1]
+    assert cache["minor_version"] == 4 and cache["dataformat_id"] == 6
+    assert job["fetch"]["cache_file"].endswith("_cache_tile_aoi_000.laz")
+    assert len(job["executions"]) == 2
+    # dsm+intensity share one execution (identical chains): pinned sequence
+    dsm_int = json.loads(
+        Path(job["executions"][0]["pipeline_json"]).read_text()
+    )["pipeline"]
+    assert [s["type"] for s in dsm_int] == [
+        "readers.las",
+        "filters.range",     # low noise
+        "filters.hag_nn",
+        "filters.assign",
+        "filters.range",     # high noise
+        "filters.returns",   # first,only
+        "writers.gdal",
+        "writers.gdal",
+    ]
+    assert dsm_int[0]["filename"] == job["fetch"]["cache_file"]
+    # legacy tile filenames preserved verbatim (resume + mosaic compat)
+    outputs = job["executions"][0]["outputs"]
+    assert outputs["dsm"].endswith("aoi_dsm_tile_aoi_000.tif")
+    assert outputs["intensity"].endswith("aoi_intensity_tile_aoi_000.tif")
+    # writer geometry matches create_dem_stage
+    assert dsm_int[-2]["origin_x"] == _TILE_EXTENT[0]
+    assert dsm_int[-2]["width"] == 20 and dsm_int[-2]["height"] == 20
+    # the DTM pair shares the ground execution, fill differs only by writer
+    dtm = json.loads(
+        Path(job["executions"][1]["pipeline_json"]).read_text()
+    )["pipeline"]
+    assert [s["type"] for s in dtm] == [
+        "readers.las",
+        "filters.range",     # low noise
+        "filters.range",     # high noise
+        "filters.range",     # ground only
+        "writers.gdal",
+        "writers.gdal",
+    ]
+    dtm_outputs = job["executions"][1]["outputs"]
+    assert dtm_outputs["dtm_no_fill"].endswith("aoi_dtm_tile_aoi_no_fill000.tif")
+    assert dtm_outputs["dtm_fill"].endswith("aoi_dtm_tile_aoi_fill4_000.tif")
+    writers = [s for s in dtm if s["type"] == "writers.gdal"]
+    assert "window_size" not in writers[0] and writers[1]["window_size"] == 4
+
+
+def test_tile_job_structure_npct(tmp_path):
+    d = lidar_tools.dsm_functions
+    reader = {"type": "readers.ept", "filename": "https://example/ept.json"}
+    job = d.create_tile_pipelines(
+        [reader],
+        tile_id="000",
+        output_path=tmp_path,
+        prefix="aoi",
+        extent=_TILE_EXTENT,
+        raster_resolution=1.0,
+        products=d.parse_products("all"),
+        dsm_gridding_choice="98-pct",
+    )
+    # percentile DSM diverges from intensity: three executions
+    assert len(job["executions"]) == 3
+    import json
+
+    dsm = json.loads(
+        Path(job["executions"][0]["pipeline_json"]).read_text()
+    )["pipeline"]
+    assert any(s["type"] == "filters.python" for s in dsm)
+    assert [s for s in dsm if s["type"] == "writers.gdal"][0]["output_type"] == "max"
+
+
+def test_tile_job_single_product_inlines_reader(tmp_path):
+    import json
+
+    d = lidar_tools.dsm_functions
+    reader = {"type": "readers.ept", "filename": "https://example/ept.json"}
+    job = d.create_tile_pipelines(
+        [reader],
+        tile_id="000",
+        output_path=tmp_path,
+        prefix="aoi",
+        extent=_TILE_EXTENT,
+        raster_resolution=1.0,
+        products=["dsm"],
+    )
+    # cache would be pure overhead: reader inlined, no fetch step
+    assert job["fetch"] is None
+    assert len(job["executions"]) == 1
+    stages = json.loads(
+        Path(job["executions"][0]["pipeline_json"]).read_text()
+    )["pipeline"]
+    assert stages[0]["type"] == "readers.ept"
+    # dtm pair alone still merges into one two-writer execution
+    job2 = d.create_tile_pipelines(
+        [reader],
+        tile_id="001",
+        output_path=tmp_path,
+        prefix="aoi",
+        extent=_TILE_EXTENT,
+        raster_resolution=1.0,
+        products=d.parse_products("dtm"),
+    )
+    assert job2["fetch"] is None
+    assert len(job2["executions"]) == 1
+    assert len(job2["executions"][0]["outputs"]) == 2
+
+
+def _run_equivalence(tmp_path, hag_nn, dsm_gridding_choice):
+    d = lidar_tools.dsm_functions
+    laz = tmp_path / "points.laz"
+    _make_multiclass_laz(laz)
+    reader = {"type": "readers.las", "filename": str(laz)}
+
+    legacy_dir = tmp_path / "legacy"
+    legacy_dir.mkdir()
+    legacy = _legacy_product_pipelines(
+        reader, legacy_dir, "aoi", hag_nn=hag_nn,
+        dsm_gridding_choice=dsm_gridding_choice,
+    )
+    for name, (pipeline_fn, _) in legacy.items():
+        assert d.execute_pdal_pipeline(str(pipeline_fn)) is not None, name
+
+    new_dir = tmp_path / "new"
+    new_dir.mkdir()
+    job = d.create_tile_pipelines(
+        [reader],
+        tile_id="000",
+        output_path=new_dir,
+        prefix="aoi",
+        extent=_TILE_EXTENT,
+        raster_resolution=1.0,
+        products=d.parse_products("all"),
+        hag_nn=hag_nn,
+        dsm_gridding_choice=dsm_gridding_choice,
+    )
+    results = d.execute_tile_job(job)
+    assert all(fn is not None for fn in results.values()), results
+    # cache removed in-task
+    if job["fetch"]:
+        assert not Path(job["fetch"]["cache_file"]).exists()
+
+    for name, (_, legacy_fn) in legacy.items():
+        old = _read_raster(str(legacy_fn))
+        new = _read_raster(results[name])
+        assert old.rio.crs == new.rio.crs, name
+        np.testing.assert_array_equal(
+            np.isnan(old.values), np.isnan(new.values), err_msg=name
+        )
+        # 0.011 m = one cache quantum; intensity DNs must be exact
+        atol = 0.0 if name == "intensity" else 0.011
+        np.testing.assert_allclose(
+            old.values, new.values, atol=atol, err_msg=name
+        )
+
+
+def test_tile_job_equivalence_first_idw_hag(tmp_path):
+    _run_equivalence(tmp_path, hag_nn=5.0, dsm_gridding_choice="first_idw")
+
+
+def test_tile_job_equivalence_npct(tmp_path):
+    _run_equivalence(tmp_path, hag_nn=None, dsm_gridding_choice="98-pct")
+
+
+def test_execute_tile_job_resume(tmp_path):
+    d = lidar_tools.dsm_functions
+    laz = tmp_path / "points.laz"
+    _make_multiclass_laz(laz)
+    reader = {"type": "readers.las", "filename": str(laz)}
+    job = d.create_tile_pipelines(
+        [reader],
+        tile_id="000",
+        output_path=tmp_path,
+        prefix="aoi",
+        extent=_TILE_EXTENT,
+        raster_resolution=1.0,
+        products=d.parse_products("all"),
+    )
+    first = d.execute_tile_job(job)
+    assert all(fn is not None for fn in first.values())
+    mtimes = {name: Path(fn).stat().st_mtime_ns for name, fn in first.items()}
+
+    # full resume: every execution skipped, nothing rewritten
+    second = d.execute_tile_job(job, skip_existing=True)
+    assert second == first
+    for name, fn in second.items():
+        assert Path(fn).stat().st_mtime_ns == mtimes[name], name
+
+    # partial-within-execution: losing intensity re-runs the dsm+intensity
+    # execution whole (both rewritten); the DTM execution stays skipped
+    Path(first["intensity"]).unlink()
+    third = d.execute_tile_job(job, skip_existing=True)
+    assert all(fn is not None for fn in third.values())
+    assert Path(third["dsm"]).stat().st_mtime_ns > mtimes["dsm"]
+    assert Path(third["intensity"]).exists()
+    for name in ("dtm_no_fill", "dtm_fill"):
+        assert Path(third[name]).stat().st_mtime_ns == mtimes[name], name
+
+
+def test_execute_tile_job_fetch_failure(tmp_path):
+    d = lidar_tools.dsm_functions
+    reader = {"type": "readers.las", "filename": "/nonexistent.laz"}
+    job = d.create_tile_pipelines(
+        [reader],
+        tile_id="000",
+        output_path=tmp_path,
+        prefix="aoi",
+        extent=_TILE_EXTENT,
+        raster_resolution=1.0,
+        products=d.parse_products("all"),
+    )
+    results = d.execute_tile_job(job, attempts=1)
+    # never raises; all products reported failed; no cache left behind
+    assert set(results) == {"dsm", "dtm_no_fill", "dtm_fill", "intensity"}
+    assert all(fn is None for fn in results.values())
+    assert not Path(job["fetch"]["cache_file"]).exists()
+
+
+def test_execute_tile_job_empty_branch(tmp_path):
+    # a tile whose points all fail one branch's filters (no ground) must
+    # still produce the other products and report the empty ones as failed
+    import pdal
+
+    d = lidar_tools.dsm_functions
+    laz = tmp_path / "noground.laz"
+    n = 50
+    arr = np.zeros(
+        n,
+        dtype=[
+            ("X", np.float64),
+            ("Y", np.float64),
+            ("Z", np.float64),
+            ("Classification", np.uint8),
+            ("ReturnNumber", np.uint8),
+            ("NumberOfReturns", np.uint8),
+            ("Intensity", np.uint16),
+        ],
+    )
+    rng = np.random.default_rng(7)
+    arr["X"] = np.round(rng.uniform(_TILE_EXTENT[0], _TILE_EXTENT[2], n), 2)
+    arr["Y"] = np.round(rng.uniform(_TILE_EXTENT[1], _TILE_EXTENT[3], n), 2)
+    arr["Z"] = 100.0
+    arr["Classification"] = 1  # no ground anywhere
+    arr["ReturnNumber"] = 1
+    arr["NumberOfReturns"] = 1
+    arr["Intensity"] = 500
+    pipeline = pdal.Writer.las(
+        filename=str(laz), a_srs="EPSG:32611", minor_version=4,
+        dataformat_id=6, forward="all",
+    ).pipeline(arr)
+    pipeline.execute()
+
+    reader = {"type": "readers.las", "filename": str(laz)}
+    job = d.create_tile_pipelines(
+        [reader],
+        tile_id="000",
+        output_path=tmp_path,
+        prefix="aoi",
+        extent=_TILE_EXTENT,
+        raster_resolution=1.0,
+        products=d.parse_products("all"),
+    )
+    results = d.execute_tile_job(job, attempts=1)
+    # writers.gdal writes an all-nodata raster for an empty point view (same
+    # as the legacy per-product path): every product "succeeds", the ground
+    # products are fully masked
+    assert all(fn is not None for fn in results.values())
+    for name in ("dtm_no_fill", "dtm_fill"):
+        da = _read_raster(results[name])
+        assert np.isnan(da.values).all(), name
+    da = _read_raster(results["dsm"])
+    assert not np.isnan(da.values).all()
