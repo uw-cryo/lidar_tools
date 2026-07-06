@@ -37,6 +37,84 @@ WGS84_G2139_EPSG = 9755
 # NAD83(2011) geographic 2D
 NAD83_2011_EPSG = 6318
 
+# geographic 2D bases of the NAD83 family (North America plate): the only
+# datums for which the EPT null-tie treatment and the ITRF Helmert at epoch
+# 2010.0 are valid. PA11/MA11 (Pacific/Mariana plates) are deliberately
+# excluded — a North-America Helmert is the wrong transformation there.
+NAD83_FAMILY_GEOGRAPHIC = {
+    4269,  # NAD83(1986)
+    4152,  # NAD83(HARN)
+    4759,  # NAD83(NSRS2007)
+    6318,  # NAD83(2011)
+    6783,  # NAD83(CORS96)
+}
+
+# survey geoid declaration -> PROJ grid-name fragment, for selecting the
+# transformation that uses the survey's production geoid model
+GEOID_GRID_HINTS = {
+    "GEOID18": "g2018",
+    "GEOID12B": "g2012b",
+    "GEOID12A": "g2012a",
+    "GEOID09": "geoid09",
+    "GEOID06": "geoid06",
+    "GEOID03": "geoid03",
+    "GEOID99": "geoid99",
+}
+
+
+def geographic_base_epsg(crs_input) -> int:
+    """
+    Geographic 2D base EPSG of a survey's declared horizontal CRS, validated
+    as NAD83-family (e.g. 7131 NAD83(2011)/SP CA-3 ftUS -> 6318;
+    26910 NAD83/UTM 10N -> 4269).
+
+    Parameters
+    ----------
+    crs_input
+        EPSG code (int or numeric string) or anything pyproj accepts.
+
+    Returns
+    -------
+    int
+        Geographic 2D EPSG code of the base datum.
+
+    Raises
+    ------
+    ValueError
+        If the base cannot be identified or is not NAD83-family (including
+        Pacific/Mariana-plate PA11/MA11 realizations).
+    """
+    s = str(crs_input).strip()
+    crs = CRS.from_epsg(int(s)) if s.isdigit() else CRS.from_user_input(crs_input)
+    base = crs.geodetic_crs
+    code = base.to_epsg() if base is not None else None
+    if code is not None and code not in NAD83_FAMILY_GEOGRAPHIC:
+        # projected CRSs may report a 3D/other variant: try name matching
+        if base is not None and base.name.startswith("NAD83") and "PA11" not in base.name and "MA11" not in base.name:
+            for cand in NAD83_FAMILY_GEOGRAPHIC:
+                if CRS.from_epsg(cand).name == base.name:
+                    return cand
+    if code in NAD83_FAMILY_GEOGRAPHIC:
+        return code
+    raise ValueError(
+        f"Declared horizontal CRS '{crs.name}' has base "
+        f"'{base.name if base is not None else None}' (EPSG:{code}), which is "
+        "not a supported NAD83-family (North America plate) datum. The EPT "
+        "null-tie treatment and the epoch-2010.0 Helmert do not apply — "
+        "handle this survey explicitly."
+    )
+
+
+def geoid_grid_hint(geoid_name) -> "str | None":
+    """
+    PROJ grid-name fragment for a survey's declared geoid model
+    (e.g. 'GEOID12B' -> 'g2012b'), or None when unknown/absent.
+    """
+    if geoid_name is None:
+        return None
+    key = str(geoid_name).upper().replace(" ", "")
+    return GEOID_GRID_HINTS.get(key)
+
 
 def utm_zone_label(utm_epsg: int) -> str:
     """

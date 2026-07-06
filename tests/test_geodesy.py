@@ -102,6 +102,27 @@ def test_build_ept_3857_base_realization_parameterized():
     assert harn.geodetic_crs.name == "NAD83(HARN)"
 
 
+def test_geographic_base_epsg():
+    # declared horizontal CRS -> validated NAD83-family geographic base
+    assert geodesy.geographic_base_epsg(7131) == 6318  # NAD83(2011)/SP CA-3 ftUS
+    assert geodesy.geographic_base_epsg(6521) == 6318  # NAD83(2011)/NV East ftUS
+    assert geodesy.geographic_base_epsg("26910") == 4269  # NAD83(1986)/UTM 10N
+    assert geodesy.geographic_base_epsg(3740) == 4152  # NAD83(HARN)/UTM 10N
+    # Pacific-plate PA11: the North-America Helmert is wrong there
+    with pytest.raises(ValueError, match="NAD83-family"):
+        geodesy.geographic_base_epsg(6322)  # NAD83(PA11) geographic
+    with pytest.raises(ValueError, match="NAD83-family"):
+        geodesy.geographic_base_epsg(32610)  # WGS84 UTM
+
+
+def test_geoid_grid_hint():
+    assert geodesy.geoid_grid_hint("GEOID18") == "g2018"
+    assert geodesy.geoid_grid_hint("GEOID12B") == "g2012b"
+    assert geodesy.geoid_grid_hint("geoid 09") == "geoid09"
+    assert geodesy.geoid_grid_hint("Unknown") is None
+    assert geodesy.geoid_grid_hint(None) is None
+
+
 def test_preflight_aoi_scoping():
     src = geodesy.build_ept_3857_nad83_2011()
     dst = geodesy.build_utm_g2139_3d(32612)

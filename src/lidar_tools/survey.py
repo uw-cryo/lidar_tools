@@ -78,6 +78,44 @@ def load_wesm(aoi_gdf: gpd.GeoDataFrame, wesm_source: str = WESM_URL) -> gpd.Geo
     return gpd.read_file(src, bbox=bbox)
 
 
+def _yaml_safe(value):
+    """Convert record values to plain YAML-serializable types."""
+    if isinstance(value, pd.Timestamp):
+        return value.isoformat()
+    if isinstance(value, np.generic):
+        return value.item()
+    if value is pd.NaT or (isinstance(value, float) and np.isnan(value)):
+        return None
+    return value
+
+
+def record_from_wesm(wesm_gdf: gpd.GeoDataFrame, workunit: str) -> dict:
+    """
+    Extract one workunit's sanitized attribute record (WESM_FIELDS) from a
+    WESM query result. Pure/offline; raises ValueError when absent.
+    """
+    rows = wesm_gdf[wesm_gdf["workunit"] == workunit]
+    if rows.empty:
+        available = sorted(wesm_gdf.get("workunit", pd.Series(dtype=str)).astype(str))
+        raise ValueError(
+            f"Workunit '{workunit}' not found in the WESM query result "
+            f"(available here: {available})"
+        )
+    row = rows.iloc[0]
+    return {k: _yaml_safe(row[k]) for k in WESM_FIELDS if k in rows.columns}
+
+
+def workunit_record(
+    aoi_gdf: gpd.GeoDataFrame, workunit: str, wesm_source: str = WESM_URL
+) -> dict:
+    """
+    Fetch the live WESM record for one workunit intersecting the AOI —
+    the per-survey source of truth for datum/geoid/QL/date handling,
+    pinned into processing metadata by the pipeline.
+    """
+    return record_from_wesm(load_wesm(aoi_gdf, wesm_source), workunit)
+
+
 def load_ept_resources(url: str = EPT_RESOURCES_URL) -> gpd.GeoDataFrame:
     """
     Load the EPT resource boundary index (hobu usgs-lidar mirror).
@@ -665,15 +703,6 @@ def survey(
             lambda v: ",".join(v) if isinstance(v, list) else v
         )
         surveys_out.to_file(outdir / "surveys.gpkg", driver="GPKG")
-        def _yaml_safe(value):
-            if isinstance(value, pd.Timestamp):
-                return value.isoformat()
-            if isinstance(value, np.generic):
-                return value.item()
-            if value is pd.NaT or (isinstance(value, float) and np.isnan(value)):
-                return None
-            return value
-
         records = [
             {k: _yaml_safe(v) for k, v in rec.items()}
             for rec in surveys_out.drop(columns="geometry").to_dict(orient="records")
