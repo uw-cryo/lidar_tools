@@ -4,12 +4,14 @@ A CLI following https://packaging.python.org/en/latest/guides/creating-command-l
 
 import cyclopts
 
+from .driver import rasterize_projects
 from .pdal_pipeline import rasterize
 from .survey import survey
 
 
 app = cyclopts.App()
 app.command()(rasterize)
+app.command()(rasterize_projects)
 app.command()(survey)
 
 
