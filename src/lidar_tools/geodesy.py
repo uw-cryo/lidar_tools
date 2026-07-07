@@ -168,6 +168,77 @@ def build_utm_g2139_3d(utm_epsg: int) -> CRS:
     ).to_3d()
 
 
+def build_utm_nad83_2011_3d(utm_epsg: int) -> CRS:
+    """
+    Build a 3D UTM CRS on the static NAD83(2011) datum for a UTM EPSG code.
+
+    NAD83(2011) is the source realization of 3DEP lidar, so a NAD83(2011)
+    target is the most native output: no time-dependent Helmert is applied
+    (the ellipsoid-source transform is a pure projection change), and the
+    frame is static — coordinates carry no epoch (unlike the dynamic WGS 84
+    (G2139) default, which is stamped at epoch 2010.0). Heights are
+    ellipsoidal on the GRS 1980 ellipsoid.
+
+    Parameters
+    ----------
+    utm_epsg
+        WGS84 UTM EPSG code (e.g. 32610) selecting the zone and hemisphere.
+        Only the zone/hemisphere are taken from it; the datum is NAD83(2011).
+
+    Returns
+    -------
+    CRS
+        Projected 3D CRS with a static NAD83(2011) datum and
+        ellipsoidal-height axis.
+    """
+    label = utm_zone_label(utm_epsg)
+    zone, hemisphere = label[:-1], label[-1]
+    return ProjectedCRS(
+        conversion=UTMConversion(zone, hemisphere=hemisphere),
+        geodetic_crs=CRS.from_epsg(NAD83_2011_EPSG),
+        name=f"NAD83(2011) / UTM zone {label}",
+    ).to_3d()
+
+
+# Selectable output-datum realizations for the auto-built local-UTM target.
+# key -> (3D UTM builder, filename datum label). Arbitrary output CRSs beyond
+# these are still supported by passing an explicit dst_crs WKT file.
+OUTPUT_DATUM_BUILDERS = {
+    "wgs84_g2139": (build_utm_g2139_3d, "WGS84_G2139"),
+    "nad83_2011": (build_utm_nad83_2011_3d, "NAD83_2011"),
+}
+
+
+def build_utm_target(utm_epsg: int, output_datum: str = "wgs84_g2139") -> "tuple[CRS, str]":
+    """
+    Build the auto-target 3D UTM CRS and its canonical WKT filename for a UTM
+    zone and a selectable output datum realization.
+
+    Parameters
+    ----------
+    utm_epsg
+        WGS84 UTM EPSG code selecting the zone/hemisphere (e.g. from
+        ``gdf.estimate_utm_crs().to_epsg()``).
+    output_datum
+        Output datum key, one of ``OUTPUT_DATUM_BUILDERS`` ('wgs84_g2139'
+        default, or 'nad83_2011').
+
+    Returns
+    -------
+    tuple[CRS, str]
+        The 3D UTM CRS and a canonical basename like
+        'UTM_10N_NAD83_2011_3D.wkt' (caller joins it with the run directory).
+    """
+    try:
+        builder, label = OUTPUT_DATUM_BUILDERS[output_datum]
+    except KeyError:
+        raise ValueError(
+            f"Unknown output_datum '{output_datum}'; choose from "
+            f"{sorted(OUTPUT_DATUM_BUILDERS)} or pass an explicit dst_crs WKT file."
+        )
+    return builder(utm_epsg), f"UTM_{utm_zone_label(utm_epsg)}_{label}_3D.wkt"
+
+
 def build_3857_navd88_compound() -> CRS:
     """
     Build the compound CRS describing geoid-referenced 3DEP EPT data:

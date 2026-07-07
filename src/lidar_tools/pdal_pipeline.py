@@ -145,6 +145,7 @@ def rasterize(
     output: str = "/tmp/lidar-tools-output",
     src_crs: str = None,
     dst_crs: str = None,
+    output_datum: Literal["wgs84_g2139", "nad83_2011"] = "wgs84_g2139",
     resolution: float = 1.0,
     dsm_gridding_choice: str = "first_idw",
     products: str = "all",
@@ -174,7 +175,13 @@ def rasterize(
     src_crs
         Path to file with PROJ-supported CRS definition to override CRS of input files.
     dst_crs
-        Path to file with PROJ-supported CRS definition for the output. If unspecified, a local UTM CRS will be used.
+        Path to file with PROJ-supported CRS definition for the output. If unspecified, a local UTM CRS is auto-built for the AOI (datum per `output_datum`).
+    output_datum
+        Datum realization of the auto-built local-UTM target, used only when
+        `dst_crs` is not given: 'wgs84_g2139' (default; dynamic frame,
+        outputs stamped at epoch 2010.0) or 'nad83_2011' (static source
+        realization of 3DEP; ellipsoidal heights, no epoch, no ITRF Helmert).
+        For any other target, pass an explicit `dst_crs` WKT file.
     resolution
         Square output raster posting in units of `dst_crs`.
     dsm_gridding_choice
@@ -293,16 +300,15 @@ def rasterize(
         {"state": "started", "timestamp": datetime.now().isoformat()},
     )
 
-    # Create custom 3D CRS UTM WKT2 with WGS84 G2139 datum realization,
-    # built programmatically with pyproj (correct southern-hemisphere false
-    # northing; no runtime network fetch of a WKT template)
+    # Create custom 3D CRS UTM WKT2 for the AOI's local zone on the selected
+    # output datum realization, built programmatically with pyproj (correct
+    # southern-hemisphere false northing; no runtime network fetch of a WKT
+    # template). Default is the dynamic WGS 84 (G2139); output_datum can
+    # select the static NAD83(2011) source realization instead.
     if dst_crs is None:
         epsg_code = gdf.estimate_utm_crs().to_epsg()
-        zone = geodesy.utm_zone_label(epsg_code)
-        target_wkt = outdir / f"UTM_{zone}_WGS84_G2139_3D.wkt"
-        dst_crs = geodesy.write_crs_file(
-            geodesy.build_utm_g2139_3d(epsg_code), target_wkt
-        )
+        out_crs_obj, wkt_name = geodesy.build_utm_target(epsg_code, output_datum)
+        dst_crs = geodesy.write_crs_file(out_crs_obj, outdir / wkt_name)
 
     # Configure output raster extents and posting based on input polygon
     with open(dst_crs, "r") as f:

@@ -50,6 +50,51 @@ def test_build_utm_g2139_3d_southern_hemisphere():
     assert "19S" in crs.name
 
 
+def test_build_utm_nad83_2011_3d():
+    # native 3DEP output datum: static NAD83(2011), ellipsoidal heights, no
+    # dynamic-frame epoch (contrast build_utm_g2139_3d's FRAMEEPOCH)
+    crs = geodesy.build_utm_nad83_2011_3d(32610)
+    assert crs.name == "NAD83(2011) / UTM zone 10N"
+    assert len(crs.axis_info) == 3
+    assert crs.axis_info[-1].name == "Ellipsoidal height"
+    assert crs.geodetic_crs.to_epsg() == 6319  # NAD83(2011) geographic 3D
+    assert "FRAMEEPOCH" not in crs.to_wkt()  # static, unlike G2139
+    # southern zones keep the correct false northing (not the northern 0)
+    south = geodesy.build_utm_nad83_2011_3d(32719)
+    params = {
+        p["name"]: p["value"]
+        for p in south.to_json_dict()["conversion"]["parameters"]
+    }
+    assert params["False northing"] == 10000000
+    assert "19S" in south.name
+
+
+def test_build_utm_target_dispatch():
+    crs, name = geodesy.build_utm_target(32610, "nad83_2011")
+    assert crs.name == "NAD83(2011) / UTM zone 10N"
+    assert name == "UTM_10N_NAD83_2011_3D.wkt"
+    crs, name = geodesy.build_utm_target(32610)  # default realization
+    assert crs.name == "WGS 84 (G2139) / UTM zone 10N"
+    assert name == "UTM_10N_WGS84_G2139_3D.wkt"
+    with pytest.raises(ValueError, match="Unknown output_datum"):
+        geodesy.build_utm_target(32610, "bogus")
+
+
+def test_nad83_2011_target_is_native_no_helmert():
+    # NAD83(2011) is the EPT source realization, so an ellipsoid-branch warp
+    # to a NAD83(2011) target is a pure projection change: accuracy 0, no
+    # grids, and (unlike the G2139 target) no ITRF Helmert in the pipeline.
+    # This is why the output is static and carries no coordinate epoch.
+    record = geodesy.preflight_vertical_transform(
+        geodesy.build_ept_3857_nad83_2011(),
+        geodesy.build_utm_nad83_2011_3d(32610),
+        download=False,
+    )
+    assert record["accuracy_m"] == 0.0
+    assert record["grids"] == []
+    assert "helmert" not in record["proj_pipeline"]
+
+
 def test_build_3857_navd88_compound_matches_reference():
     # equivalent to the SRS_CRS.wkt previously fetched from GitHub at runtime
     crs = geodesy.build_3857_navd88_compound()
@@ -224,6 +269,22 @@ def test_set_coordinate_epoch_static_crs_noop(tmp_path):
     fn = tmp_path / "static.tif"
     _make_raster(fn, pyproj.CRS.from_epsg(6341).to_wkt())
     assert geodesy.set_coordinate_epoch(fn) is False
+    assert _read_epoch(fn) == 0.0  # unset
+
+
+def test_set_coordinate_epoch_built_nad83_2011_utm_noop(tmp_path):
+    # the programmatically built NAD83(2011) UTM target is static: no epoch
+    # is stamped, even through the GeoTIFF round-trip or when the
+    # authoritative CRS is passed (the intensity-product path)
+    fn = tmp_path / "nad83_utm.tif"
+    _make_raster(fn, geodesy.build_utm_nad83_2011_3d(32610).to_wkt())
+    assert geodesy.set_coordinate_epoch(fn) is False
+    assert (
+        geodesy.set_coordinate_epoch(
+            fn, crs=geodesy.build_utm_nad83_2011_3d(32610).to_2d()
+        )
+        is False
+    )
     assert _read_epoch(fn) == 0.0  # unset
 
 

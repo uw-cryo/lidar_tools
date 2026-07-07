@@ -29,6 +29,7 @@ def rasterize_projects(
     cleanup: bool = True,
     quiet: bool = False,
     dst_crs: str = None,
+    output_datum: Literal["wgs84_g2139", "nad83_2011"] = "wgs84_g2139",
     ept_vertical: Literal["auto", "geoid", "ellipsoid"] = "auto",
 ) -> None:
     """
@@ -62,8 +63,13 @@ def rasterize_projects(
         Suppress dask progress bars.
     dst_crs
         Optional path to a target CRS definition shared by all projects.
-        Default: a WGS84 (G2139) 3D UTM CRS built from the AOI and written
-        to the base directory once.
+        Default: a 3D UTM CRS built from the AOI (datum per `output_datum`)
+        and written to the base directory once.
+    output_datum
+        Datum realization of the auto-built shared UTM target, used only
+        when `dst_crs` is not given: 'wgs84_g2139' (default) or 'nad83_2011'
+        (static source realization; ellipsoidal heights, no epoch). Passed
+        through to every project; ignored when an explicit `dst_crs` is set.
     ept_vertical
         Vertical interpretation override passed through to rasterize
         (applies to every project in the batch; use per-project runs when
@@ -83,10 +89,10 @@ def rasterize_projects(
     if dst_crs is None:
         gdf = gpd.read_file(geometry)
         epsg_code = gdf.estimate_utm_crs().to_epsg()
-        zone = geodesy.utm_zone_label(epsg_code)
-        target = outbase / f"UTM_{zone}_WGS84_G2139_3D.wkt"
+        out_crs_obj, wkt_name = geodesy.build_utm_target(epsg_code, output_datum)
+        target = outbase / wkt_name
         if not target.exists():
-            geodesy.write_crs_file(geodesy.build_utm_g2139_3d(epsg_code), target)
+            geodesy.write_crs_file(out_crs_obj, target)
         dst_crs = str(target)
     print(f"Shared target grid: {dst_crs} at {resolution} m")
 
@@ -100,6 +106,7 @@ def rasterize_projects(
                 input="EPT_AWS",
                 output=str(outdir),
                 dst_crs=dst_crs,
+                output_datum=output_datum,
                 resolution=resolution,
                 products=products,
                 threedep_project=workunit,
