@@ -6,6 +6,7 @@ import cyclopts
 
 from .driver import rasterize_projects
 from .pdal_pipeline import rasterize
+from .preview import preview
 from .survey import survey
 
 
@@ -13,6 +14,7 @@ app = cyclopts.App()
 app.command()(rasterize)
 app.command()(rasterize_projects)
 app.command()(survey)
+app.command()(preview)
 
 
 if __name__ == "__main__":

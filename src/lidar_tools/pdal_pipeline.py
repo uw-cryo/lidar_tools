@@ -928,6 +928,15 @@ def rasterize(
         print("Cleaning up intermediate outputs")
         _cleanup_intermediates(outdir)
 
+    try:
+        from lidar_tools.preview import product_preview
+
+        preview_fn = product_preview(outdir)
+        if preview_fn is not None:
+            print(f"Preview figure: {preview_fn}")
+    except Exception as e:  # a figure failure must never fail a finished run
+        print(f"WARNING: preview figure generation failed: {e}", file=sys.stderr)
+
     print("****Processing complete****")
 
 
