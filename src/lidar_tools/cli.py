@@ -5,6 +5,7 @@ A CLI following https://packaging.python.org/en/latest/guides/creating-command-l
 import cyclopts
 
 from .driver import rasterize_projects
+from .merge import merge
 from .pdal_pipeline import rasterize
 from .preview import preview
 from .survey import survey
@@ -15,6 +16,7 @@ app.command()(rasterize)
 app.command()(rasterize_projects)
 app.command()(survey)
 app.command()(preview)
+app.command()(merge)
 
 
 if __name__ == "__main__":

@@ -84,7 +84,10 @@ def product_preview(
     project_dir = Path(project_dir)
     panels = []
     for suffix, label, kind in _PRODUCT_PANELS:
-        hits = sorted(project_dir.glob(f"*-{suffix}.tif"))
+        # .tif = per-project mosaics, .vrt = merge-stage composites
+        hits = sorted(project_dir.glob(f"*-{suffix}.tif")) or sorted(
+            project_dir.glob(f"*-{suffix}.vrt")
+        )
         if hits:
             panels.append({**_read_decimated(hits[0], max_dim), "label": label, "kind": kind})
     if not panels:
@@ -92,12 +95,14 @@ def product_preview(
     if out_fn is None:
         out_fn = project_dir / "preview.png"
 
-    elev = [
+    elev_parts = [
         np.ma.compressed(p["arr"]) for p in panels if p["kind"] == "elevation"
     ]
-    elev = np.concatenate([e for e in elev if e.size]) if any(e.size for e in elev) else None
+    elev_parts = [e for e in elev_parts if e.size]
     clim = {
-        "elevation": np.percentile(elev, [2, 98]) if elev is not None else (0, 1),
+        "elevation": np.percentile(np.concatenate(elev_parts), [2, 98])
+        if elev_parts
+        else (0, 1),
     }
 
     ncols = 2 if len(panels) > 1 else 1
