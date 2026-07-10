@@ -200,12 +200,61 @@ def build_utm_nad83_2011_3d(utm_epsg: int) -> CRS:
     ).to_3d()
 
 
+WGS84_G1674_EPSG = 9056
+ITRF2020_EPSG = 9990
+
+
+def build_utm_realization_3d(utm_epsg: int, base_epsg: int, base_name: str) -> CRS:
+    """
+    Build a 3D UTM CRS on an arbitrary geographic realization.
+
+    Generalizes the G2139/NAD83(2011) builders for additional output frames
+    (e.g. matching a product delivery's realization for multi-frame
+    validation). Same construction: UTM conversion on the given geographic
+    2D base, promoted to 3D (ellipsoidal heights).
+
+    Parameters
+    ----------
+    utm_epsg
+        WGS84 UTM EPSG code (e.g. 32611) selecting zone/hemisphere only.
+    base_epsg
+        Geographic 2D EPSG code of the target realization (e.g. 9056 for
+        WGS 84 (G1674), 9990 for ITRF2020).
+    base_name
+        Realization name used in the CRS name.
+
+    Returns
+    -------
+    CRS
+        Projected 3D CRS on the requested realization.
+    """
+    label = utm_zone_label(utm_epsg)
+    zone, hemisphere = label[:-1], label[-1]
+    return ProjectedCRS(
+        conversion=UTMConversion(zone, hemisphere=hemisphere),
+        geodetic_crs=CRS.from_epsg(base_epsg),
+        name=f"{base_name} / UTM zone {label}",
+    ).to_3d()
+
+
+def build_utm_g1674_3d(utm_epsg: int) -> CRS:
+    """3D UTM CRS on WGS 84 (G1674) (~ITRF2008; dynamic — stamp an epoch)."""
+    return build_utm_realization_3d(utm_epsg, WGS84_G1674_EPSG, "WGS 84 (G1674)")
+
+
+def build_utm_itrf2020_3d(utm_epsg: int) -> CRS:
+    """3D UTM CRS on ITRF2020 (dynamic — stamp an epoch)."""
+    return build_utm_realization_3d(utm_epsg, ITRF2020_EPSG, "ITRF2020")
+
+
 # Selectable output-datum realizations for the auto-built local-UTM target.
 # key -> (3D UTM builder, filename datum label). Arbitrary output CRSs beyond
 # these are still supported by passing an explicit dst_crs WKT file.
 OUTPUT_DATUM_BUILDERS = {
     "wgs84_g2139": (build_utm_g2139_3d, "WGS84_G2139"),
     "nad83_2011": (build_utm_nad83_2011_3d, "NAD83_2011"),
+    "wgs84_g1674": (build_utm_g1674_3d, "WGS84_G1674"),
+    "itrf2020": (build_utm_itrf2020_3d, "ITRF2020"),
 }
 
 

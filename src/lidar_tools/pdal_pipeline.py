@@ -145,7 +145,9 @@ def rasterize(
     output: str = "/tmp/lidar-tools-output",
     src_crs: str = None,
     dst_crs: str = None,
-    output_datum: Literal["wgs84_g2139", "nad83_2011"] = "wgs84_g2139",
+    output_datum: Literal[
+        "wgs84_g2139", "nad83_2011", "wgs84_g1674", "itrf2020"
+    ] = "wgs84_g2139",
     resolution: float = 1.0,
     dsm_gridding_choice: str = "first_idw",
     products: str = "all",
@@ -160,6 +162,7 @@ def rasterize(
     quiet: Annotated[bool, cyclopts.Parameter(negative="")] = False,
     ept_vertical: Literal["auto", "geoid", "ellipsoid"] = "auto",
     resume: Annotated[bool, cyclopts.Parameter(negative="")] = False,
+    coord_epoch: float = None,
 ) -> None:
     """
     Create a Digital Surface Model (DSM), Digital Terrain Model (DTM) and/or Intensity raster from point cloud data.
@@ -731,6 +734,13 @@ def rasterize(
         out_extent = final_out_extent
         print(src_srs)
         print("Running reprojection sequentially")
+        # An explicit coord_epoch supersedes the forced -ct pipeline for the
+        # 3D height products: -t_coord_epoch and -ct are mutually exclusive
+        # (a fixed pipeline string has no free epoch parameter), and GDAL's
+        # own selection picks the rigorous time-dependent Helmert for the
+        # 3D NAD83(2011)-declared source. preflight_vertical_transform above
+        # still ran as the guard that a rigorous non-ballpark op exists.
+        height_ct_or_none = None if coord_epoch is not None else height_ct
         if "dsm" in requested:
             print("Reprojecting DSM raster")
             dsm_functions.gdal_warp(
@@ -741,7 +751,8 @@ def rasterize(
                 res=resolution,
                 resampling_alogrithm="bilinear",
                 out_extent=out_extent,
-                coordinate_operation=height_ct,
+                coordinate_operation=height_ct_or_none,
+                coord_epoch=coord_epoch,
             )
         if "dtm_no_fill" in requested:
             print("Reprojecting DTM raster")
@@ -753,7 +764,8 @@ def rasterize(
                 res=resolution,
                 resampling_alogrithm="bilinear",
                 out_extent=out_extent,
-                coordinate_operation=height_ct,
+                coordinate_operation=height_ct_or_none,
+                coord_epoch=coord_epoch,
             )
         if "dtm_fill" in requested:
             dsm_functions.gdal_warp(
@@ -764,7 +776,8 @@ def rasterize(
                 res=resolution,
                 resampling_alogrithm="bilinear",
                 out_extent=out_extent,
-                coordinate_operation=height_ct,
+                coordinate_operation=height_ct_or_none,
+                coord_epoch=coord_epoch,
             )
         if "intensity" in requested:
             print("Reprojecting intensity raster")
@@ -841,20 +854,21 @@ def rasterize(
     # DYNAMIC property (intensity is warped to the 2D demotion of the
     # target, whose file SRS reads back as static).
     intensity_warped_2d = input == "EPT_AWS" and out_crs != CRS.from_epsg(3857)
+    epoch_to_stamp = (
+        coord_epoch if coord_epoch is not None else geodesy.DEFAULT_COORDINATE_EPOCH
+    )
     stamped = [
         fn
         for fn in final_products
         if geodesy.set_coordinate_epoch(
             fn,
-            geodesy.DEFAULT_COORDINATE_EPOCH,
+            epoch_to_stamp,
             crs=out_crs.to_2d()
             if (fn == intensity_reproj and intensity_warped_2d)
             else out_crs,
         )
     ]
-    geodesy_record["coordinate_epoch"] = (
-        geodesy.DEFAULT_COORDINATE_EPOCH if stamped else None
-    )
+    geodesy_record["coordinate_epoch"] = epoch_to_stamp if stamped else None
     geodesy_record["epoch_stamped_products"] = [Path(fn).name for fn in stamped]
     _update_processing_metadata(outdir, "geodesy", geodesy_record)
 

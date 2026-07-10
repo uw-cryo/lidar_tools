@@ -1251,6 +1251,7 @@ def gdal_warp(
     dtype: str = 'Float32',
     target_aligned_pixels: bool = True,
     coordinate_operation: str = None,
+    coord_epoch: float = None,
 ) -> None:
     """
     Warp a raster file to a new coordinate reference system and resolution using GDAL.
@@ -1284,6 +1285,15 @@ def gdal_warp(
         NAD83(2011)<->ITRF Helmert via ITRF2014), silently picking a null
         operation instead; pass the pipeline selected by
         geodesy.preflight_vertical_transform to enforce the rigorous path.
+    coord_epoch
+        Target coordinate epoch (decimal year, gdalwarp -t_coord_epoch) for
+        dynamic-frame targets: the time-dependent Helmert is evaluated at
+        this epoch, so the output coordinates ARE at this epoch. Mutually
+        exclusive with coordinate_operation (a forced -ct pipeline has no
+        free epoch parameter — GDAL silently ignores -t_coord_epoch when
+        -ct is set). Requires GDAL's CLI-argument-string code path; the
+        WarpOptions kwargs, transformerOptions, and an osr SRS with
+        SetCoordinateEpoch() all drop the epoch (verified GDAL 3.12).
     Returns
     -------
     None
@@ -1302,26 +1312,55 @@ def gdal_warp(
     resampling_alg = resampling_mapping[resampling_alogrithm]
 
     gdal.SetConfigOption("GDAL_NUM_THREADS", "ALL_CPUS")
-    ds = gdal.Warp(
-        dst_fn,
-        src_fn,
-        resampleAlg=resampling_alg,
-        srcSRS=src_srs,
-        xRes=res,
-        yRes=res,
-        dstSRS=dst_srs,
-        errorThreshold=tolerance,
-        # disable when matching an existing raster grid whose origin is not
-        # a multiple of res (e.g. recovering interrupted-run intermediates)
-        targetAlignedPixels=target_aligned_pixels,
-        coordinateOperation=coordinate_operation,
-        # use directly output format as COG when gaussian overview resampling is implemented upstream in GDAL
-        outputBounds=out_extent,
-        outputType=DTYPE_TO_GDAL.get(dtype),
-        creationOptions=["COMPRESS=LZW", "TILED=YES", "COPY_SRC_OVERVIEWS=YES","BIGTIFF=IF_SAFER"],
-        callback=gdal.TermProgress_nocb,
-        multithread=True,
-    )
+    if coord_epoch is not None:
+        if coordinate_operation is not None:
+            raise ValueError(
+                "coord_epoch and coordinate_operation are mutually exclusive: "
+                "GDAL ignores -t_coord_epoch when a -ct pipeline is forced. "
+                "With coord_epoch set, GDAL selects the operation itself "
+                "(verified to pick the rigorous time-dependent Helmert for "
+                "3D NAD83(2011)-based sources)."
+            )
+        # -t_coord_epoch only survives the CLI-argument string form
+        cli_resampling = {"nearest": "near", "cubic_spline": "cubicspline"}.get(
+            resampling_alogrithm, resampling_alogrithm
+        )
+        opts = (
+            f"-overwrite -r {cli_resampling} -tr {res} {res} -et {tolerance} "
+            f"-ot {dtype} -multi -t_coord_epoch {coord_epoch} "
+            f'-s_srs "{src_srs}" -t_srs "{dst_srs}" '
+            "-co COMPRESS=LZW -co TILED=YES -co COPY_SRC_OVERVIEWS=YES "
+            "-co BIGTIFF=IF_SAFER"
+        )
+        if target_aligned_pixels:
+            opts += " -tap"
+        if out_extent is not None:
+            opts += (f" -te {out_extent[0]} {out_extent[1]}"
+                     f" {out_extent[2]} {out_extent[3]}")
+        print(f"gdal.Warp CLI options: {opts}")
+        ds = gdal.Warp(dst_fn, src_fn, options=opts,
+                       callback=gdal.TermProgress_nocb)
+    else:
+        ds = gdal.Warp(
+            dst_fn,
+            src_fn,
+            resampleAlg=resampling_alg,
+            srcSRS=src_srs,
+            xRes=res,
+            yRes=res,
+            dstSRS=dst_srs,
+            errorThreshold=tolerance,
+            # disable when matching an existing raster grid whose origin is not
+            # a multiple of res (e.g. recovering interrupted-run intermediates)
+            targetAlignedPixels=target_aligned_pixels,
+            coordinateOperation=coordinate_operation,
+            # use directly output format as COG when gaussian overview resampling is implemented upstream in GDAL
+            outputBounds=out_extent,
+            outputType=DTYPE_TO_GDAL.get(dtype),
+            creationOptions=["COMPRESS=LZW", "TILED=YES", "COPY_SRC_OVERVIEWS=YES","BIGTIFF=IF_SAFER"],
+            callback=gdal.TermProgress_nocb,
+            multithread=True,
+        )
     gdal.SetConfigOption("GDAL_NUM_THREADS", None)
     ds.Close()
 
