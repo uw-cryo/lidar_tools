@@ -14,6 +14,9 @@ PROJ_ONLY_BEST_DEFAULT environment variables before GDAL/PROJ are imported.
 """
 
 import re
+import shutil
+import subprocess
+import sys
 from pathlib import Path
 
 import pyproj.network
@@ -331,6 +334,82 @@ def build_3857_navd88_compound() -> CRS:
         name="WGS 84 / Pseudo-Mercator + NAVD88 height",
         components=[CRS.from_epsg(3857), CRS.from_epsg(5703)],
     )
+
+
+def epoch_pinned_pipeline(src_crs, dst_crs, coord_epoch: float,
+                          aoi_bounds=None, require_substrings=()) -> str:
+    """
+    Resolve ONE explicit PROJ pipeline with the target coordinate epoch baked
+    in (``projinfo --t_epoch``), for enforcement via gdalwarp ``-ct``.
+
+    Operation AUTO-selection proved unstable across source datum declarations
+    (LV four-frame validation 2026-07-10): GDAL free selection with
+    ``-t_coord_epoch`` null-tied the horizontal Helmert for WGS84-realization
+    targets, and flipped to null horizontal for ITRF targets when the source
+    compound declared its true NAD83(2011) base. The only robust contract is
+    an explicit pipeline. projinfo emits the top-ranked operation with
+    ``+proj=set +v_4=<epoch>`` bookends, so the time-dependent Helmert is
+    evaluated at the requested epoch without 4D input — usable as a static
+    ``-ct`` string and recordable as provenance.
+
+    NOTE: general-purpose geodesy with no lidar_tools dependencies — a
+    candidate for migration into ``groundcontrol`` when lidar_tools adopts it
+    as a dependency (planned refactor).
+
+    Parameters
+    ----------
+    src_crs, dst_crs
+        CRS object, WKT string, or path to a WKT file.
+    coord_epoch
+        Target coordinate epoch (decimal year).
+    aoi_bounds
+        Optional (west, south, east, north) degrees — passed as
+        ``--bbox`` so area-appropriate operations rank first.
+    require_substrings
+        Substrings that MUST appear in the selected pipeline (e.g.
+        ``["+proj=helmert", "vgridshift"]``) — fail loud on a null or
+        wrong-geoid route instead of producing silently shifted rasters.
+
+    Returns
+    -------
+    str
+        The ``+proj=pipeline ...`` string of the top-ranked operation.
+    """
+    def _wkt(c):
+        if isinstance(c, CRS):
+            return c.to_wkt()
+        p = Path(str(c))
+        if p.exists():
+            return p.read_text()
+        return str(c)
+
+    exe = Path(sys.executable).parent / "projinfo"
+    projinfo = str(exe) if exe.exists() else shutil.which("projinfo")
+    if projinfo is None:
+        raise RuntimeError("projinfo executable not found")
+    cmd = [projinfo, "-s", _wkt(src_crs), "-t", _wkt(dst_crs),
+           "--t_epoch", str(coord_epoch), "--hide-ballpark",
+           "--spatial-test", "intersects", "-o", "PROJ", "--single-line"]
+    if aoi_bounds is not None:
+        w, s, e, n = aoi_bounds
+        cmd += ["--bbox", f"{w},{s},{e},{n}"]
+    out = subprocess.run(cmd, capture_output=True, text=True)
+    if out.returncode != 0:
+        raise RuntimeError(f"projinfo failed: {out.stderr[-500:]}")
+    pipelines = [ln.strip() for ln in out.stdout.splitlines()
+                 if ln.strip().startswith("+proj=pipeline")]
+    if not pipelines:
+        raise RuntimeError(
+            f"projinfo returned no pipeline for {coord_epoch=}: "
+            f"{out.stdout[-500:]}")
+    pipe = pipelines[0]
+    epoch_tag = f"+proj=set +v_4={coord_epoch:g}"
+    missing = [s for s in ([epoch_tag] + list(require_substrings))
+               if s not in pipe]
+    if missing:
+        raise RuntimeError(
+            f"selected pipeline lacks required component(s) {missing}: {pipe}")
+    return pipe
 
 
 def build_ept_3857_navd88_compound(base_epsg: int = NAD83_2011_EPSG) -> CRS:

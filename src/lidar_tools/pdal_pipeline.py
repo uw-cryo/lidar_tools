@@ -736,13 +736,30 @@ def rasterize(
         out_extent = final_out_extent
         print(src_srs)
         print("Running reprojection sequentially")
-        # An explicit coord_epoch supersedes the forced -ct pipeline for the
-        # 3D height products: -t_coord_epoch and -ct are mutually exclusive
-        # (a fixed pipeline string has no free epoch parameter), and GDAL's
-        # own selection picks the rigorous time-dependent Helmert for the
-        # 3D NAD83(2011)-declared source. preflight_vertical_transform above
-        # still ran as the guard that a rigorous non-ballpark op exists.
-        height_ct_or_none = None if coord_epoch is not None else height_ct
+        # An explicit coord_epoch PINS the full operation with the epoch
+        # baked into the -ct pipeline (projinfo --t_epoch). GDAL free
+        # selection with -t_coord_epoch is deliberately NOT used: it proved
+        # unstable across source datum declarations (LV 2026-07-10 — null
+        # horizontal ties for WGS84-realization targets, and for ITRF
+        # targets once the compound source declared its true NAD83 base).
+        if coord_epoch is not None:
+            need = ["+proj=helmert"]
+            if reproject_truth_val:
+                need.append("vgridshift")
+            height_ct = geodesy.epoch_pinned_pipeline(
+                src_srs,
+                dst_crs,
+                coord_epoch,
+                aoi_bounds=aoi_lonlat,
+                require_substrings=need,
+            )
+            print(f"epoch-pinned -ct pipeline: {height_ct}")
+            transform_checks.append(
+                {
+                    "branch": f"epoch-pinned (coord_epoch={coord_epoch})",
+                    "proj_pipeline": height_ct,
+                }
+            )
         if "dsm" in requested:
             print("Reprojecting DSM raster")
             dsm_functions.gdal_warp(
@@ -753,8 +770,7 @@ def rasterize(
                 res=resolution,
                 resampling_alogrithm="bilinear",
                 out_extent=out_extent,
-                coordinate_operation=height_ct_or_none,
-                coord_epoch=coord_epoch,
+                coordinate_operation=height_ct,
             )
         if "dtm_no_fill" in requested:
             print("Reprojecting DTM raster")
@@ -766,8 +782,7 @@ def rasterize(
                 res=resolution,
                 resampling_alogrithm="bilinear",
                 out_extent=out_extent,
-                coordinate_operation=height_ct_or_none,
-                coord_epoch=coord_epoch,
+                coordinate_operation=height_ct,
             )
         if "dtm_fill" in requested:
             dsm_functions.gdal_warp(
@@ -778,8 +793,7 @@ def rasterize(
                 res=resolution,
                 resampling_alogrithm="bilinear",
                 out_extent=out_extent,
-                coordinate_operation=height_ct_or_none,
-                coord_epoch=coord_epoch,
+                coordinate_operation=height_ct,
             )
         if "intensity" in requested:
             print("Reprojecting intensity raster")

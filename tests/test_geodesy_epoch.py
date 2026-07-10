@@ -75,6 +75,28 @@ def test_legacy_wgs84_compound_ambiguity_baseline():
     assert len(_ops(tg)) > 1
 
 
+def test_epoch_pinned_pipeline_lv_itrf2008():
+    """The pinned pipeline must carry the epoch bookends, the survey geoid,
+    and the time-dependent Helmert — the exact contract the warps enforce."""
+    comp = geodesy.build_ept_3857_navd88_compound()
+    dst = geodesy.build_utm_itrf2008_3d(32611)
+    pipe = geodesy.epoch_pinned_pipeline(
+        comp, dst, 2005.0, aoi_bounds=(-115.85, 35.66, -114.85, 36.66),
+        require_substrings=["+proj=helmert", "vgridshift"])
+    assert "+proj=set +v_4=2005" in pipe
+    assert "g2018u0" in pipe
+    assert "+proj=utm +zone=11" in pipe
+
+
+def test_epoch_pinned_pipeline_rejects_missing_component():
+    comp = geodesy.build_ept_3857_navd88_compound()
+    dst = geodesy.build_utm_itrf2008_3d(32611)
+    with pytest.raises(RuntimeError, match="required component"):
+        geodesy.epoch_pinned_pipeline(
+            comp, dst, 2005.0, aoi_bounds=(-115.85, 35.66, -114.85, 36.66),
+            require_substrings=["this_should_not_be_there"])
+
+
 def test_gdal_warp_epoch_and_ct_mutually_exclusive():
     with pytest.raises(ValueError, match="mutually exclusive"):
         dsm_functions.gdal_warp(
