@@ -1366,11 +1366,11 @@ def gdal_warp(
 
 
 
-def gdal_add_overview(raster_fn: str,ensure_cog=True) -> None:
+def gdal_add_overview(raster_fn: str, ensure_cog=True, resampling: str = "AVERAGE") -> None:
     """
-    Add Gaussian overviews to a raster file using GDAL.
+    Add overviews to a raster file using GDAL.
     Converts the raster to a COG,
-        as adding Gaussian overviews added to tiled and compressed rasters does not automatically ensure COG compliance
+        as adding overviews to tiled and compressed rasters does not automatically ensure COG compliance
 
     Parameters
     ----------
@@ -1378,17 +1378,21 @@ def gdal_add_overview(raster_fn: str,ensure_cog=True) -> None:
         Path to the raster file.
     ensure_cog
         Whether to ensure the output raster is a COG, by default True.
+    resampling
+        Overview resampling kernel passed to BuildOverviews, by default "AVERAGE".
+        "GAUSS" introduces a sub-pixel horizontal offset in the overview levels
+        relative to the full-resolution grid — do not use for georeferenced delivery.
 
     Returns
     -------
     None
     This function does not return anything, it writes the output raster to the specified file.
     """
-    print(f"Adding Gaussian overviews to {raster_fn}")
+    print(f"Adding {resampling} overviews to {raster_fn}")
     with gdal.OpenEx(raster_fn, 1, open_options=["IGNORE_COG_LAYOUT_BREAK=YES"]) as ds:
         gdal.SetConfigOption("COMPRESS_OVERVIEW", "DEFLATE")
         ds.BuildOverviews(
-            "GAUSS", [2, 4, 8, 16], callback=gdal.TermProgress_nocb
+            resampling, [2, 4, 8, 16], callback=gdal.TermProgress_nocb
         )
 
     if ensure_cog:
