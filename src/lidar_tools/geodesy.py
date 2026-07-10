@@ -333,6 +333,40 @@ def build_3857_navd88_compound() -> CRS:
     )
 
 
+def build_ept_3857_navd88_compound(base_epsg: int = NAD83_2011_EPSG) -> CRS:
+    """
+    Compound CRS for geoid-referenced EPT data with the TRUE base datum:
+    Pseudo-Mercator on the survey's NAD83-family realization + NAVD88 heights.
+
+    Replaces :func:`build_3857_navd88_compound` (WGS84-based horizontal) as
+    the geoid-branch warp source. Declaring the horizontal as generic WGS 84
+    forces PROJ to reach NAVD88 through WGS84->NAD83(HARN) chains, and the
+    declared-accuracy ranking then prefers GEOID03/NADCON5 routes for some
+    targets (empirically 2-16 cm spatially varying vertical + horizontal
+    error vs GEOID18, LV validation 2026-07-10). With the truthful
+    NAD83(2011)-based horizontal, the NAVD88->ellipsoid candidate set
+    collapses to the survey-consistent GEOID18 operation (single candidate
+    to NAD83(2011) 3D, top-ranked at 0.015 m to ITRF targets).
+
+    Parameters
+    ----------
+    base_epsg
+        Geographic 2D EPSG code of the survey's true horizontal datum
+        (see :func:`build_ept_3857_nad83_2011`).
+
+    Returns
+    -------
+    CRS
+        Compound CRS: Pseudo-Mercator (base-datum based) + NAVD88 height.
+    """
+    horiz = build_ept_3857_nad83_2011(three_d=False, base_epsg=base_epsg)
+    base_name = CRS.from_epsg(base_epsg).name
+    return CompoundCRS(
+        name=f"Pseudo-Mercator ({base_name} based) + NAVD88 height",
+        components=[horiz, CRS.from_epsg(5703)],
+    )
+
+
 def build_ept_3857_nad83_2011(three_d: bool = True, base_epsg: int = NAD83_2011_EPSG) -> CRS:
     """
     Build Pseudo-Mercator on the survey's true NAD83-family base datum,

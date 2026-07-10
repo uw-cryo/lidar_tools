@@ -405,8 +405,8 @@ def rasterize(
             for key, branch, ept_src_crs, grids_hint in [
                 (
                     "geoid",
-                    "geoid (EPSG:3857 + NAVD88 heights)",
-                    geodesy.build_3857_navd88_compound(),
+                    f"geoid (EPSG:3857 as base EPSG:{ept_base_epsg} + NAVD88 heights)",
+                    geodesy.build_ept_3857_navd88_compound(base_epsg=ept_base_epsg),
                     geoid_hint,
                 ),
                 (
@@ -717,10 +717,12 @@ def rasterize(
         ]
         if reproject_truth_val:
             # EPT heights are NAVD88 orthometric: warp with the compound
-            # source SRS so the geoid-to-ellipsoid shift is applied
+            # source SRS (TRUE base datum declared — see
+            # build_ept_3857_navd88_compound) so the geoid-to-ellipsoid
+            # shift uses the survey-consistent geoid route
             src_srs = geodesy.write_crs_file(
-                geodesy.build_3857_navd88_compound(),
-                outdir / "EPT_3857_NAVD88_compound.wkt",
+                geodesy.build_ept_3857_navd88_compound(base_epsg=ept_base_epsg),
+                outdir / f"EPT_3857_base{ept_base_epsg}_NAVD88_compound.wkt",
             )
         else:
             # EPT heights are already ellipsoidal: declare the survey's true
