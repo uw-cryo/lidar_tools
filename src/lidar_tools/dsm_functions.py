@@ -70,6 +70,35 @@ def tap_bounds(site_bounds: tuple | list | np.ndarray, res: int | float) -> list
     ]
 
 
+#: per-dataset ept.json SRS cache (the metadata is immutable per dataset)
+_EPT_SRS_CACHE: dict = {}
+
+
+def _ept_srs_wkt(url: str, attempts: int = 4, backoff_s: float = 2.0) -> str:
+    """Fetch (once) and cache the SRS WKT from an EPT dataset's ept.json.
+
+    S3 occasionally returns a transient non-JSON error body (e.g. 503
+    SlowDown) — retry with backoff instead of crashing a 1000-tile run.
+    """
+    if url in _EPT_SRS_CACHE:
+        return _EPT_SRS_CACHE[url]
+    last_exc = None
+    for i in range(attempts):
+        try:
+            response = requests.get(url, timeout=60)
+            response.raise_for_status()
+            wkt = response.json()["srs"]["wkt"]
+            _EPT_SRS_CACHE[url] = wkt
+            return wkt
+        except Exception as exc:  # transient S3 / network errors
+            last_exc = exc
+            print(f"ept.json fetch attempt {i + 1}/{attempts} failed for "
+                  f"{url}: {exc}", file=sys.stderr)
+            time.sleep(backoff_s * (i + 1))
+    raise RuntimeError(f"could not fetch {url} after {attempts} attempts") \
+        from last_exc
+
+
 def return_readers(
     input_aoi: gpd.GeoDataFrame,
     pointcloud_resolution: float = 1.0,
@@ -192,10 +221,11 @@ def return_readers(
                             "polygon": str(aoi_3857.wkt),
                         }
 
-                        # SRS associated with the 3DEP dataset
-                        response = requests.get(url)
-                        data = response.json()
-                        srs_wkt = data["srs"]["wkt"]
+                        # SRS associated with the 3DEP dataset — cached per
+                        # dataset + retried: this used to issue one S3 GET per
+                        # TILE (1000+ for large AOIs) and a single transient
+                        # non-JSON response (e.g. 503 SlowDown) killed the run
+                        srs_wkt = _ept_srs_wkt(url)
 
                         pointcloud_input_crs.append(CRS.from_wkt(srs_wkt))
                         readers.append(reader)
