@@ -1765,8 +1765,9 @@ def create_tile_pipelines(
         Zero-padded tile index used in filenames.
     output_path
         Run directory; per-tile pipeline JSONs are written to
-        output_path/pipelines/ and per-tile product rasters (plus the cache
-        LAZ and any saved pointclouds) to output_path/tiles/.
+        output_path/pipelines/, per-tile product rasters (and any saved
+        pointclouds) to output_path/tiles/<product>/, and the cache LAZ to
+        output_path/tiles/cache/.
     prefix
         Filename prefix (AOI stem).
     extent
@@ -1817,10 +1818,11 @@ def create_tile_pipelines(
     # Per-tile intermediates live in subdirectories so the run directory
     # holds only final products + provenance (tiles/ and pipelines/ are
     # removed by the post-run cleanup; ~1000-tile runs otherwise leave
-    # thousands of files next to the mosaics).
+    # thousands of files next to the mosaics). Tile rasters are further
+    # split per product (tiles/dsm/, tiles/intensity/, ...; cache LAZ in
+    # tiles/cache/) so recovery/mosaic rebuilds are one unambiguous glob.
     tiles_dir = output_path / "tiles"
     pipelines_dir = output_path / "pipelines"
-    tiles_dir.mkdir(parents=True, exist_ok=True)
     pipelines_dir.mkdir(parents=True, exist_ok=True)
 
     # Group products by identical built filter chain: matching chains share
@@ -1832,7 +1834,9 @@ def create_tile_pipelines(
             **{**specs[name]["pipeline_kwargs"], **(extra_pipeline_kwargs or {})}
         )
         signature = json.dumps(chain, sort_keys=True)
-        outfile = tiles_dir / specs[name]["filename"].format(
+        product_dir = tiles_dir / name
+        product_dir.mkdir(parents=True, exist_ok=True)
+        outfile = product_dir / specs[name]["filename"].format(
             prefix=prefix, tile=tile_id
         )
         writer = create_dem_stage(
@@ -1850,7 +1854,9 @@ def create_tile_pipelines(
     fetch = None
     source_stages = reader_stages
     if use_cache and len(groups) > 1:
-        cache_file = tiles_dir / f"{prefix}_cache_tile_aoi_{tile_id}.laz"
+        cache_dir = tiles_dir / "cache"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        cache_file = cache_dir / f"{prefix}_cache_tile_aoi_{tile_id}.laz"
         cache_writer = {
             "type": "writers.las",
             "filename": str(cache_file),

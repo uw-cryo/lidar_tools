@@ -143,10 +143,10 @@ def _cleanup_intermediates(outdir: Path) -> None:
     """
     Remove per-tile intermediates so the run directory keeps only final
     products, WKT CRS definitions and metadata: per-tile rasters + cache LAZ
-    from tiles/ (cache normally deleted in-task; this is the backstop for
-    hard kills), pipeline JSONs from pipelines/, and top-level *temp.tif
-    mosaics. The subdirectories are removed when emptied — anything else in
-    them (e.g. saved per-tile pointclouds) is deliberately kept.
+    from tiles/<product>/ and tiles/cache/ (cache normally deleted in-task;
+    this is the backstop for hard kills), pipeline JSONs from pipelines/,
+    and top-level *temp.tif mosaics. Emptied subdirectories are removed —
+    anything else in them (e.g. saved per-tile pointclouds) is kept.
     """
     for subdir_name, patterns in (
         ("tiles", ["*_tile_aoi_*.tif*", "*_cache_tile_aoi_*.laz"]),
@@ -154,8 +154,15 @@ def _cleanup_intermediates(outdir: Path) -> None:
     ):
         subdir = outdir / subdir_name
         for pattern in patterns:
-            for file in subdir.glob(pattern):
+            for file in subdir.rglob(pattern):
                 file.unlink()
+        # deepest-first so emptied product subdirs go before tiles/ itself
+        for child in sorted(subdir.rglob("*"), reverse=True):
+            if child.is_dir():
+                try:
+                    child.rmdir()
+                except OSError:
+                    pass  # still holds files we keep
         try:
             subdir.rmdir()
         except OSError:

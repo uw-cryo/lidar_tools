@@ -369,7 +369,7 @@ def _legacy_product_pipelines(reader, outdir, prefix, hag_nn=None,
         "dtm_no_fill": outdir / f"{prefix}_dtm_tile_aoi_no_fill000.tif",
         "dtm_fill": outdir / f"{prefix}_dtm_tile_aoi_fill4_000.tif",
         "intensity": outdir / f"{prefix}_intensity_tile_aoi_000.tif",
-    }
+    }  # legacy (pre-F3) layout: flat, no tiles/<product>/ subdirs
     chains = {
         "dsm": d.create_pdal_pipeline(
             group_filter=dsm_group_filter,
@@ -482,11 +482,13 @@ def test_tile_job_structure_first_idw(tmp_path):
     ]
     assert dsm_int[0]["filename"] == job["fetch"]["cache_file"]
     # legacy tile filenames preserved verbatim (resume + mosaic compat),
-    # organized under tiles/ and pipelines/ subdirectories
+    # organized under per-product tiles/ subdirs and pipelines/
     outputs = job["executions"][0]["outputs"]
-    assert outputs["dsm"].endswith("tiles/aoi_dsm_tile_aoi_000.tif")
-    assert outputs["intensity"].endswith("tiles/aoi_intensity_tile_aoi_000.tif")
-    assert "/tiles/" in job["fetch"]["cache_file"]
+    assert outputs["dsm"].endswith("tiles/dsm/aoi_dsm_tile_aoi_000.tif")
+    assert outputs["intensity"].endswith(
+        "tiles/intensity/aoi_intensity_tile_aoi_000.tif"
+    )
+    assert "/tiles/cache/" in job["fetch"]["cache_file"]
     assert "/pipelines/" in job["fetch"]["pipeline_json"]
     assert all("/pipelines/" in e["pipeline_json"] for e in job["executions"])
     # writer geometry matches create_dem_stage
