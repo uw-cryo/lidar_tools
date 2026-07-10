@@ -202,6 +202,8 @@ def build_utm_nad83_2011_3d(utm_epsg: int) -> CRS:
 
 WGS84_G1674_EPSG = 9056
 ITRF2020_EPSG = 9990
+ITRF2008_EPSG = 8999
+ITRF2014_EPSG = 9000
 
 
 def build_utm_realization_3d(utm_epsg: int, base_epsg: int, base_name: str) -> CRS:
@@ -247,6 +249,27 @@ def build_utm_itrf2020_3d(utm_epsg: int) -> CRS:
     return build_utm_realization_3d(utm_epsg, ITRF2020_EPSG, "ITRF2020")
 
 
+def build_utm_itrf2008_3d(utm_epsg: int) -> CRS:
+    """3D UTM CRS on ITRF2008 (≡ WGS 84 (G1674) to ~cm; dynamic).
+
+    ⚠ Prefer this over the wgs84_g1674 target when coord_epoch is used:
+    with GDAL selecting the operation (no -ct), a WGS84-realization target
+    gets the NULL NAD83<->WGS84 tie HORIZONTALLY (~1.2-1.3 m CONUS error),
+    while the ITRF alias finds the direct time-dependent
+    ITRFxxxx<->NAD83(2011) Helmert (verified empirically, LV T2 2026-07-09).
+    """
+    return build_utm_realization_3d(utm_epsg, ITRF2008_EPSG, "ITRF2008")
+
+
+def build_utm_itrf2014_3d(utm_epsg: int) -> CRS:
+    """3D UTM CRS on ITRF2014 (≡ WGS 84 (G2139) to ~cm; dynamic).
+
+    ⚠ Same GDAL null-tie caveat as build_utm_itrf2008_3d: use this instead
+    of wgs84_g2139 whenever coord_epoch is passed.
+    """
+    return build_utm_realization_3d(utm_epsg, ITRF2014_EPSG, "ITRF2014")
+
+
 # Selectable output-datum realizations for the auto-built local-UTM target.
 # key -> (3D UTM builder, filename datum label). Arbitrary output CRSs beyond
 # these are still supported by passing an explicit dst_crs WKT file.
@@ -255,6 +278,8 @@ OUTPUT_DATUM_BUILDERS = {
     "nad83_2011": (build_utm_nad83_2011_3d, "NAD83_2011"),
     "wgs84_g1674": (build_utm_g1674_3d, "WGS84_G1674"),
     "itrf2020": (build_utm_itrf2020_3d, "ITRF2020"),
+    "itrf2008": (build_utm_itrf2008_3d, "ITRF2008"),
+    "itrf2014": (build_utm_itrf2014_3d, "ITRF2014"),
 }
 
 
