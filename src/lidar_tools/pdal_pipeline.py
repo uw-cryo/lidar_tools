@@ -139,6 +139,31 @@ def _update_processing_metadata(output_dir: Path, section: str, data) -> None:
         yaml.dump(metadata, f, default_flow_style=False, sort_keys=False)
 
 
+def _cleanup_intermediates(outdir: Path) -> None:
+    """
+    Remove per-tile intermediates so the run directory keeps only final
+    products, WKT CRS definitions and metadata: per-tile rasters + cache LAZ
+    from tiles/ (cache normally deleted in-task; this is the backstop for
+    hard kills), pipeline JSONs from pipelines/, and top-level *temp.tif
+    mosaics. The subdirectories are removed when emptied — anything else in
+    them (e.g. saved per-tile pointclouds) is deliberately kept.
+    """
+    for subdir_name, patterns in (
+        ("tiles", ["*_tile_aoi_*.tif*", "*_cache_tile_aoi_*.laz"]),
+        ("pipelines", ["pipeline*.json"]),
+    ):
+        subdir = outdir / subdir_name
+        for pattern in patterns:
+            for file in subdir.glob(pattern):
+                file.unlink()
+        try:
+            subdir.rmdir()
+        except OSError:
+            pass  # missing, or still holds files we keep
+    for file in outdir.glob("*temp.tif"):
+        file.unlink()
+
+
 def rasterize(
     geometry: str,
     input: str = "EPT_AWS",
@@ -613,14 +638,7 @@ def rasterize(
             },
         )
         if cleanup:
-            for pattern in [
-                "*_tile_aoi_*.tif*",
-                "*_cache_tile_aoi_*.laz",
-                "pipeline*.json",
-                "*temp.tif",
-            ]:
-                for file in outdir.glob(pattern):
-                    file.unlink()
+            _cleanup_intermediates(outdir)
         print("****Processing complete (no data)****")
         return
 
@@ -901,18 +919,7 @@ def rasterize(
 
     if cleanup:
         print("Cleaning up intermediate outputs")
-        # match only per-tile outputs (a bare '*tile*' pattern deletes the
-        # final mosaics when the AOI filename contains 'tile'), and keep
-        # *.wkt files: the CRS definition used is provenance for the run
-        # cache LAZ normally deleted in-task; glob is a backstop for hard kills
-        for pattern in [
-            "*_tile_aoi_*.tif*",
-            "*_cache_tile_aoi_*.laz",
-            "pipeline*.json",
-            "*temp.tif",
-        ]:
-            for file in outdir.glob(pattern):
-                file.unlink()
+        _cleanup_intermediates(outdir)
 
     print("****Processing complete****")
 
