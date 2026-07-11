@@ -82,3 +82,113 @@ def test_merge_vrt_is_portable(tmp_path):
     tmp_path.rename(moved)
     arr, _ = _read(moved / "merge" / written[0].name)
     assert (arr[:, 0:20] == 100.0).all()
+
+
+def _make_intensity(fn, valid_cols, dn_lo, dn_hi, size=64):
+    """UInt16 intensity mosaic (nodata 0): a horizontal 'ground' ramp mapped
+    linearly into [dn_lo, dn_hi] within valid_cols — two surveys of the same
+    ground differ only by their linear DN scale."""
+    from osgeo import gdal, osr
+
+    fn.parent.mkdir(parents=True, exist_ok=True)
+    ds = gdal.GetDriverByName("GTiff").Create(str(fn), size, size, 1, gdal.GDT_UInt16)
+    ds.SetGeoTransform((500000, 1, 0, 5270000, 0, -1))
+    srs = osr.SpatialReference()
+    srs.ImportFromWkt(pyproj.CRS.from_epsg(32612).to_wkt())
+    ds.SetSpatialRef(srs)
+    ground = np.tile(np.linspace(0.0, 1.0, size), (size, 1))  # same everywhere
+    arr = np.zeros((size, size), dtype=np.uint16)
+    arr[:, valid_cols] = (dn_lo + ground * (dn_hi - dn_lo))[:, valid_cols].astype(
+        np.uint16
+    )
+    band = ds.GetRasterBand(1)
+    band.SetNoDataValue(0)
+    band.WriteArray(arr)
+    band.GetStatistics(0, 1)
+    ds = None
+
+
+def _make_intensity_batch(tmp_path):
+    """A (10000-40000 DN, cols 0-39) + B (45000-55000 DN, cols 24-63):
+    overlap cols 24-39, same underlying ground ramp."""
+    _make_intensity(
+        tmp_path / "proj_a" / "aoi-intensity_mos.tif", slice(0, 40), 10000, 40000
+    )
+    _make_intensity(
+        tmp_path / "proj_b" / "aoi-intensity_mos.tif", slice(24, 64), 45000, 55000
+    )
+    with open(tmp_path / "batch_status.yaml", "w") as f:
+        yaml.dump(
+            {"projects": {"proj_a": "completed", "proj_b": "completed"}},
+            f,
+            sort_keys=False,
+        )
+
+
+def test_merge_intensity_normalized(tmp_path, monkeypatch):
+    from osgeo import gdal
+
+    monkeypatch.setattr(merge, "MIN_OVERLAP_PX", 100)  # tiny synthetic overlap
+    _make_intensity_batch(tmp_path)
+    written = merge.merge_projects(tmp_path)
+    ds = gdal.OpenEx(str(written[0]))
+    band = ds.GetRasterBand(1)
+    assert gdal.GetDataTypeName(band.DataType) == "Float32"
+    assert band.GetNoDataValue() == merge.NORM_NODATA
+    arr = band.ReadAsArray()
+    valid = arr != merge.NORM_NODATA
+    # values live near the common target range: same-ground matching lets a
+    # source's un-shared terrain extend beyond it (B's brightest ground here
+    # exists only outside the overlap), but a mis-assigned map lands entire
+    # spans away (the basename-collision bug sat 5+ spans below lo)
+    lo, hi = merge.INTENSITY_TARGET
+    span = hi - lo
+    assert valid[:, 0:64].all()  # union coverage
+    assert arr[valid].min() > lo - span
+    assert arr[valid].max() < hi + span
+    # same ground -> same normalized value across the seam: compare the
+    # a-only region (col 20) with the b-only region at the same ground value
+    # via the shared ramp: ground(col) is identical for all rows
+    a_only = arr[:, 20].mean()
+    # ground value at col 20 appears in b-only territory nowhere (cols differ)
+    # so instead check overlap agreement: b was painted only where a is absent,
+    # but the fitted maps must agree in the overlap cols
+    meta = yaml.safe_load((tmp_path / "merge" / "merge_metadata.yaml").read_text())
+    norm = meta["products"]["intensity_mos"]["intensity_normalization"]
+    assert [s["method"] for s in norm["sources"]] == [
+        "global-stretch",
+        "overlap-refined",
+    ]
+    ga, oa = norm["sources"][0]["gain"], norm["sources"][0]["offset"]
+    gb, ob = norm["sources"][1]["gain"], norm["sources"][1]["offset"]
+    # the two linear maps must send the same ground DN pair to ~equal values
+    # (ground g: a-DN = 10000+g*30000, b-DN = 45000+g*10000)
+    for g in (0.4, 0.5, 0.6):
+        va = ga * (10000 + g * 30000) + oa
+        vb = gb * (45000 + g * 10000) + ob
+        assert abs(va - vb) < 0.02 * span, (g, va, vb)
+    assert a_only > lo  # sanity: normalized values live in target space
+
+
+def test_merge_intensity_normalization_off(tmp_path):
+    from osgeo import gdal
+
+    _make_intensity_batch(tmp_path)
+    written = merge.merge_projects(tmp_path, normalize_intensity=False)
+    ds = gdal.OpenEx(str(written[0]))
+    assert gdal.GetDataTypeName(ds.GetRasterBand(1).DataType) == "UInt16"
+    meta = yaml.safe_load((tmp_path / "merge" / "merge_metadata.yaml").read_text())
+    assert "intensity_normalization" not in meta["products"]["intensity_mos"]
+
+
+def test_merge_intensity_single_source_stays_raw(tmp_path):
+    from osgeo import gdal
+
+    _make_intensity(
+        tmp_path / "proj_a" / "aoi-intensity_mos.tif", slice(0, 64), 10000, 40000
+    )
+    with open(tmp_path / "batch_status.yaml", "w") as f:
+        yaml.dump({"projects": {"proj_a": "completed"}}, f, sort_keys=False)
+    written = merge.merge_projects(tmp_path)
+    ds = gdal.OpenEx(str(written[0]))
+    assert gdal.GetDataTypeName(ds.GetRasterBand(1).DataType) == "UInt16"
