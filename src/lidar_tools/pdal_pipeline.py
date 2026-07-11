@@ -921,7 +921,13 @@ def rasterize(
     _update_processing_metadata(
         outdir,
         "run_status",
-        {"state": "completed", "timestamp": datetime.now().isoformat()},
+        {
+            "state": "completed",
+            "timestamp": datetime.now().isoformat(),
+            "tiles_total": num_pipelines,
+            "tiles_empty": n_empty,
+            "tiles_data": data_total,
+        },
     )
 
     if cleanup:
