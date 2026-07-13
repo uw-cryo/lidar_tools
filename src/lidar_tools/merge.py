@@ -28,8 +28,13 @@ PRODUCT_SUFFIXES = (
 #: common target range for normalized intensity (DN-like, arbitrary units)
 INTENSITY_TARGET = (1000.0, 60000.0)
 #: minimum same-ground sample (at the decimated stats grid) to trust an
-#: overlap-fitted refinement over the plain global stretch
-MIN_OVERLAP_PX = 100_000
+#: overlap-fitted refinement over the plain global stretch. Counted on the
+#: max_dim-capped grid, so one decimated pixel covers more ground on a
+#: larger AOI: the same physical overlap that cleared 100k px on the
+#: cal-range batch fell to ~33-93k px on the full Casa Grande AOI and
+#: silently degraded every source to global-stretch. 20k samples keep the
+#: 81-point quantile fit stable while still refusing sliver overlaps.
+MIN_OVERLAP_PX = 20_000
 #: nodata for the Float32 normalized intensity band (0 stays a valid value)
 NORM_NODATA = -9999.0
 
