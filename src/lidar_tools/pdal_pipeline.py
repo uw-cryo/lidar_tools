@@ -33,6 +33,7 @@ from importlib.metadata import version
 
 def _write_processing_metadata(
     output_dir: Path,
+    filename_prefix: str,
     geometry: str,
     input: str,
     output: str,
@@ -105,21 +106,29 @@ def _write_processing_metadata(
     except (subprocess.SubprocessError, OSError):
         metadata["git_commit"] = None
 
-    metadata_file = output_dir / "processing_metadata.yaml"
+    metadata_file = output_dir / f"{filename_prefix}-processing_metadata.yaml"
     with open(metadata_file, "w") as f:
         yaml.dump(metadata, f, default_flow_style=False, sort_keys=False)
 
     print(f"Processing metadata written to {metadata_file}")
 
 
+def _metadata_path(output_dir: Path) -> Path:
+    """The directory's processing-metadata file: <prefix>-processing_metadata
+    .yaml (prefix = AOI + posting + project), falling back to the legacy bare
+    processing_metadata.yaml of pre-2026-07-13 runs."""
+    hits = sorted(Path(output_dir).glob("*-processing_metadata.yaml"))
+    return hits[0] if hits else Path(output_dir) / "processing_metadata.yaml"
+
+
 def _update_processing_metadata(output_dir: Path, section: str, data) -> None:
     """
-    Merge a top-level section into an existing processing_metadata.yaml.
+    Merge a top-level section into an existing processing-metadata file.
 
     Parameters
     ----------
     output_dir
-        Directory containing processing_metadata.yaml.
+        Directory containing the processing-metadata file.
     section
         Top-level key to set or replace.
     data
@@ -129,7 +138,7 @@ def _update_processing_metadata(output_dir: Path, section: str, data) -> None:
     -------
     None
     """
-    metadata_file = Path(output_dir) / "processing_metadata.yaml"
+    metadata_file = _metadata_path(output_dir)
     metadata: dict = {}
     if metadata_file.exists():
         with open(metadata_file) as f:
@@ -145,8 +154,9 @@ def _cleanup_intermediates(outdir: Path) -> None:
     products, WKT CRS definitions and metadata: per-tile rasters + cache LAZ
     from tiles/<product>/ and tiles/cache/ (cache normally deleted in-task;
     this is the backstop for hard kills), pipeline JSONs from pipelines/,
-    and top-level *temp.tif mosaics. Emptied subdirectories are removed —
-    anything else in them (e.g. saved per-tile pointclouds) is kept.
+    top-level *temp.tif mosaics, and the judicious extent polygon (the
+    250 m-buffered AOI used for the point queries — derivable, so pure
+    clutter after a successful run; failed runs keep it for debugging).
     """
     for subdir_name, patterns in (
         ("tiles", ["*_tile_aoi_*.tif*", "*_cache_tile_aoi_*.laz"]),
@@ -169,6 +179,7 @@ def _cleanup_intermediates(outdir: Path) -> None:
             pass  # missing, or still holds files we keep
     for file in outdir.glob("*temp.tif"):
         file.unlink()
+    (outdir / "judicious_extent_polygon.geojson").unlink(missing_ok=True)
 
 
 def rasterize(
@@ -303,14 +314,19 @@ def rasterize(
             )
 
     # Set output filename prefix based on input polygon name + grid posting
-    # (e.g. aoi_1m-DSM_mos.tif / aoi_0.5m-...), so mixed-resolution runs are
-    # distinguishable at a glance
+    # + specific 3DEP project (e.g. aoi_1m_AZ_PimaCo_1_2021-DSM_mos.tif), so
+    # mixed-resolution runs and per-project mosaics pulled out of their
+    # directories stay distinguishable
     outdir.mkdir(parents=True, exist_ok=True)
-    output_prefix = outdir / f"{Path(geometry).stem}_{resolution:g}m"
+    filename_prefix = f"{Path(geometry).stem}_{resolution:g}m"
+    if threedep_project not in (None, "all", "latest"):
+        filename_prefix = f"{filename_prefix}_{threedep_project}"
+    output_prefix = outdir / filename_prefix
 
     # Write processing metadata to YAML file
     _write_processing_metadata(
         output_dir=outdir,
+        filename_prefix=filename_prefix,
         geometry=geometry,
         input=input,
         output=output,

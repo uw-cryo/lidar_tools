@@ -148,22 +148,32 @@ def _read_decimated(fn: Path, max_dim: int) -> dict:
     }
 
 
+def _metadata_file(dirname: Path, kind: str) -> Path | None:
+    """<prefix>-<kind>.yaml in dirname, falling back to the legacy bare
+    <kind>.yaml of pre-2026-07-13 runs; None if neither exists."""
+    hits = sorted(dirname.glob(f"*-{kind}.yaml"))
+    if hits:
+        return hits[0]
+    legacy = dirname / f"{kind}.yaml"
+    return legacy if legacy.exists() else None
+
+
 def _project_metadata_files(project_dir: Path) -> list[Path]:
-    """processing_metadata.yaml files feeding this directory's products —
+    """Processing-metadata files feeding this directory's products —
     the directory's own file, or every source project's for a merge dir."""
-    own = project_dir / "processing_metadata.yaml"
-    if own.exists():
+    own = _metadata_file(project_dir, "processing_metadata")
+    if own is not None:
         return [own]
-    merge_meta = project_dir / "merge_metadata.yaml"
+    merge_meta = _metadata_file(project_dir, "merge_metadata")
     found: list[Path] = []
-    if merge_meta.exists():
+    if merge_meta is not None:
         with open(merge_meta) as f:
             meta = yaml.safe_load(f)
         seen = set()
         for prod in meta.get("products", {}).values():
             for src in prod.get("sources_priority_order", []):
-                fn = Path(src).parent / "processing_metadata.yaml"
-                if fn not in seen and fn.exists():
+                fn = _metadata_file(Path(src).parent, "processing_metadata")
+                if fn is not None and fn not in seen:
                     seen.add(fn)
                     found.append(fn)
     return found

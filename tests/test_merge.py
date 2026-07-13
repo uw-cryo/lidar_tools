@@ -56,7 +56,7 @@ def test_merge_priority_and_union(tmp_path):
     assert (arr[:, 0:20] == 100.0).all()
     assert (arr[:, 20:32] == 200.0).all()  # union: b fills beyond a
     # metadata records the priority order
-    meta = yaml.safe_load((tmp_path / "merge" / "merge_metadata.yaml").read_text())
+    meta = yaml.safe_load((tmp_path / "merge" / "aoi-merge_metadata.yaml").read_text())
     assert meta["priority_order"] == ["proj_a", "proj_b"]
 
 
@@ -82,6 +82,25 @@ def test_merge_vrt_is_portable(tmp_path):
     tmp_path.rename(moved)
     arr, _ = _read(moved / "merge" / written[0].name)
     assert (arr[:, 0:20] == 100.0).all()
+
+
+def test_merge_strips_project_token_from_names(tmp_path):
+    """Per-project sources carry the workunit in their prefix
+    (aoi_1m_proj_a-...); the multi-project composite and its metadata
+    must drop it."""
+    _make_mosaic(tmp_path / "proj_a" / "aoi_1m_proj_a-DSM_mos.tif", 100.0, slice(0, 20))
+    _make_mosaic(tmp_path / "proj_b" / "aoi_1m_proj_b-DSM_mos.tif", 200.0, slice(12, 32))
+    with open(tmp_path / "batch_status.yaml", "w") as f:
+        yaml.dump(
+            {"projects": {"proj_a": "completed", "proj_b": "completed"}},
+            f,
+            sort_keys=False,
+        )
+    written = merge.merge_projects(tmp_path)
+    assert [fn.name for fn in written] == ["aoi_1m-DSM_mos.vrt"]
+    assert (tmp_path / "merge" / "aoi_1m-merge_metadata.yaml").exists()
+    arr, _ = _read(written[0])
+    assert (arr[:, 0:20] == 100.0).all()  # still merges correctly
 
 
 def _make_intensity(fn, valid_cols, dn_lo, dn_hi, size=64):
@@ -153,7 +172,7 @@ def test_merge_intensity_normalized(tmp_path, monkeypatch):
     # ground value at col 20 appears in b-only territory nowhere (cols differ)
     # so instead check overlap agreement: b was painted only where a is absent,
     # but the fitted maps must agree in the overlap cols
-    meta = yaml.safe_load((tmp_path / "merge" / "merge_metadata.yaml").read_text())
+    meta = yaml.safe_load((tmp_path / "merge" / "aoi-merge_metadata.yaml").read_text())
     norm = meta["products"]["intensity_mos"]["intensity_normalization"]
     assert [s["method"] for s in norm["sources"]] == [
         "global-stretch",
@@ -204,7 +223,7 @@ def test_merge_intensity_normalization_off(tmp_path):
     written = merge.merge_projects(tmp_path, normalize_intensity=False)
     ds = gdal.OpenEx(str(written[0]))
     assert gdal.GetDataTypeName(ds.GetRasterBand(1).DataType) == "UInt16"
-    meta = yaml.safe_load((tmp_path / "merge" / "merge_metadata.yaml").read_text())
+    meta = yaml.safe_load((tmp_path / "merge" / "aoi-merge_metadata.yaml").read_text())
     assert "intensity_normalization" not in meta["products"]["intensity_mos"]
 
 

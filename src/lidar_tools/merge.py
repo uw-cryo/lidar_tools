@@ -257,10 +257,12 @@ def merge_projects(
     for suffix in PRODUCT_SUFFIXES:
         # sources in priority order (first = highest priority)
         sources: list[Path] = []
+        source_wus: list[str] = []
         for wu in workunits:
             hits = sorted((batch_dir / wu).glob(f"*-{suffix}.tif"))
             if hits:
                 sources.append(hits[0])
+                source_wus.append(wu)
         if not sources:
             continue
 
@@ -272,7 +274,11 @@ def merge_projects(
                 f"to merge without resampling:\n{detail}"
             )
 
-        out_fn = output_dir / f"{sources[0].name.rsplit('.', 1)[0]}.vrt"
+        # the composite drops the per-project token from the source name
+        # (aoi_1m_AZ_PimaCo_1_2021-DSM_mos.tif -> aoi_1m-DSM_mos.vrt);
+        # sources without the token (older runs) pass through unchanged
+        base = sources[0].name.rsplit(".", 1)[0]
+        out_fn = output_dir / f"{base.replace(f'_{source_wus[0]}-', '-')}.vrt"
         # VRT sources paint in list order (last on top) -> reverse so the
         # highest-priority project wins in overlaps. Build from inside the
         # output dir with relative paths so the VRT stays portable when the
@@ -323,7 +329,10 @@ def merge_projects(
             }
 
     if written:
-        with open(output_dir / "merge_metadata.yaml", "w") as f:
+        # inherit the composite prefix (AOI + posting; product suffixes
+        # carry no '-', so rsplit is safe even for dashed AOI names)
+        prefix = written[0].name.rsplit("-", 1)[0]
+        with open(output_dir / f"{prefix}-merge_metadata.yaml", "w") as f:
             yaml.dump(merge_meta, f, default_flow_style=False, sort_keys=False)
     return written
 
