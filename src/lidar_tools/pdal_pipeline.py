@@ -302,9 +302,11 @@ def rasterize(
                 "replace it or --resume to continue an interrupted run."
             )
 
-    # Set output filename prefix based on input polygon name
+    # Set output filename prefix based on input polygon name + grid posting
+    # (e.g. aoi_1m-DSM_mos.tif / aoi_0.5m-...), so mixed-resolution runs are
+    # distinguishable at a glance
     outdir.mkdir(parents=True, exist_ok=True)
-    output_prefix = outdir / Path(geometry).stem
+    output_prefix = outdir / f"{Path(geometry).stem}_{resolution:g}m"
 
     # Write processing metadata to YAML file
     _write_processing_metadata(
