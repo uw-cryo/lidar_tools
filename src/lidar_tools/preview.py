@@ -238,7 +238,9 @@ def product_preview(
         A rasterize output directory (one project) or a merge directory
         containing *_mos.tif / *_mos.vrt products.
     out_fn
-        Output PNG path, by default <project_dir>/preview.png.
+        Output PNG path, by default <project_dir>/<prefix>-preview.png
+        where prefix is the product filename prefix (AOI name + grid
+        posting, e.g. aoi_1m-preview.png).
     max_dim
         Decimated read size for the long edge, by default 1600 px.
     dpi
@@ -256,19 +258,23 @@ def product_preview(
 
     project_dir = Path(project_dir)
     panels = []
+    prefix = None
     for suffix, label, kind in _PRODUCT_PANELS:
         # .tif = per-project mosaics, .vrt = merge-stage composites
         hits = sorted(project_dir.glob(f"*-{suffix}.tif")) or sorted(
             project_dir.glob(f"*-{suffix}.vrt")
         )
         if hits:
+            if prefix is None:
+                prefix = hits[0].name.rsplit(f"-{suffix}", 1)[0]
             panels.append(
                 {**_read_decimated(hits[0], max_dim), "label": label, "kind": kind}
             )
     if not panels:
         return None
     if out_fn is None:
-        out_fn = project_dir / "preview.png"
+        # inherit the product prefix (AOI name + grid posting)
+        out_fn = project_dir / f"{prefix}-preview.png"
 
     elev_parts = [
         np.ma.compressed(p["arr"]) for p in panels if p["kind"] == "elevation"
