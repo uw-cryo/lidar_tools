@@ -137,15 +137,15 @@ def test_merge_intensity_normalized(tmp_path, monkeypatch):
     assert band.GetNoDataValue() == merge.NORM_NODATA
     arr = band.ReadAsArray()
     valid = arr != merge.NORM_NODATA
-    # values live near the common target range: same-ground matching lets a
-    # source's un-shared terrain extend beyond it (B's brightest ground here
-    # exists only outside the overlap), but a mis-assigned map lands entire
-    # spans away (the basename-collision bug sat 5+ spans below lo)
+    # the LUT clamps every source to the common target range: same-ground
+    # matching would let un-shared terrain extend beyond it (B's brightest
+    # ground exists only outside the overlap) and a mis-assigned map lands
+    # entire spans away (the basename-collision bug sat 5+ spans below lo)
     lo, hi = merge.INTENSITY_TARGET
     span = hi - lo
     assert valid[:, 0:64].all()  # union coverage
-    assert arr[valid].min() > lo - span
-    assert arr[valid].max() < hi + span
+    assert arr[valid].min() >= lo
+    assert arr[valid].max() <= hi
     # same ground -> same normalized value across the seam: compare the
     # a-only region (col 20) with the b-only region at the same ground value
     # via the shared ramp: ground(col) is identical for all rows
@@ -168,6 +168,33 @@ def test_merge_intensity_normalized(tmp_path, monkeypatch):
         vb = gb * (45000 + g * 10000) + ob
         assert abs(va - vb) < 0.02 * span, (g, va, vb)
     assert a_only > lo  # sanity: normalized values live in target space
+
+
+def test_merge_intensity_clamped_outliers_stay_valid(tmp_path, monkeypatch):
+    """A radiometric regime the overlap fit never saw (dark lift block, like
+    the full-AOI PimaCo_2) clamps to the target floor — it must not land
+    spans below the range (washing out every default display stretch) nor
+    hit NORM_NODATA and vanish."""
+    from osgeo import gdal
+
+    monkeypatch.setattr(merge, "MIN_OVERLAP_PX", 100)
+    _make_intensity_batch(tmp_path)
+    # dark block in proj_b's exclusive region, far below its fitted DNs
+    fn = tmp_path / "proj_b" / "aoi-intensity_mos.tif"
+    ds = gdal.OpenEx(str(fn), gdal.OF_UPDATE)
+    band = ds.GetRasterBand(1)
+    arr = band.ReadAsArray()
+    arr[:, 56:64] = 300
+    band.WriteArray(arr)
+    ds = None
+    written = merge.merge_projects(tmp_path)
+    ds_out = gdal.OpenEx(str(written[0]))
+    out = ds_out.GetRasterBand(1).ReadAsArray()
+    lo, hi = merge.INTENSITY_TARGET
+    assert (out[:, 56:64] == lo).all()  # clamped to the floor, still valid
+    valid = out != merge.NORM_NODATA
+    assert valid[:, 0:64].all()  # no holes
+    assert out[valid].max() <= hi
 
 
 def test_merge_intensity_normalization_off(tmp_path):

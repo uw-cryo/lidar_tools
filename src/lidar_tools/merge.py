@@ -116,8 +116,11 @@ def _intensity_normalization(sources: list[Path]) -> list[dict]:
                 qy = np.percentile(composite[overlap], qq)
                 if qx[-1] > qx[0]:
                     g2, o2 = np.polyfit(qx, qy, 1)
-                    gain, offset = g2 * gain, g2 * offset + o2
-                    method = "overlap-refined"
+                    # g2 <= 0 (anti-correlated overlap) would invert the map
+                    # and break the increasing clamp LUT; keep the stretch
+                    if g2 > 0:
+                        gain, offset = g2 * gain, g2 * offset + o2
+                        method = "overlap-refined"
         saturated = float((valid == dtype_max).mean()) if valid.size else 0.0
         if saturated > 0.01:
             print(
@@ -152,7 +155,13 @@ def _apply_vrt_normalization(vrt_fn: Path, params: list[dict]) -> None:
     Rewrite a BuildVRT product as the normalized composite: Float32 band
     (nodata NORM_NODATA — a linear map with gain > 1 would clamp the dark
     tail to 0 = source nodata in a UInt16 band, silently punching holes)
-    and per-ComplexSource ScaleRatio/ScaleOffset from ``params``.
+    and a per-ComplexSource two-point LUT encoding each source's linear map
+    CLAMPED to INTENSITY_TARGET (GDAL LUTs hold their endpoint value outside
+    the table). Unclamped ScaleRatio/ScaleOffset let a source's un-fitted
+    radiometric regimes land entire spans outside the target range (a
+    bimodal lift in the full-AOI PimaCo_2 mapped 13% of its pixels to
+    ~-140k, dragging every default display stretch of the composite), and a
+    valid pixel could map to exactly NORM_NODATA and vanish.
     """
     # keyed by resolved path: basenames collide across projects (same AOI
     # prefix), so the filename alone would assign every source one map
@@ -173,8 +182,14 @@ def _apply_vrt_normalization(vrt_fn: Path, params: list[dict]) -> None:
             else Path(el.text)
         ).resolve()
         p = by_path[key]
-        ET.SubElement(source, "ScaleRatio").text = f"{p['gain']:.10g}"
-        ET.SubElement(source, "ScaleOffset").text = f"{p['offset']:.10g}"
+        # raw DNs whose mapped values hit the target endpoints; the LUT
+        # interpolates linearly between them and clamps beyond
+        src_lo = (INTENSITY_TARGET[0] - p["offset"]) / p["gain"]
+        src_hi = (INTENSITY_TARGET[1] - p["offset"]) / p["gain"]
+        ET.SubElement(source, "LUT").text = (
+            f"{src_lo:.10g}:{INTENSITY_TARGET[0]:g},"
+            f"{src_hi:.10g}:{INTENSITY_TARGET[1]:g}"
+        )
     tree.write(vrt_fn)
 
 
@@ -201,9 +216,10 @@ def merge_projects(
         Where the VRTs are written, by default <batch_dir>/merge.
     normalize_intensity
         When more than one project contributes intensity, map each source
-        onto a common range with one linear scale/offset in the VRT (own
+        onto a common range with one linear map per source in the VRT (own
         robust stretch, refined by a same-ground overlap fit against the
-        higher-priority composite; see _intensity_normalization). Vendors
+        higher-priority composite; see _intensity_normalization), clamped
+        to the target range (see _apply_vrt_normalization). Vendors
         deliver raw amplitude on incompatible scales (gh #34) — an
         unnormalized cross-project composite is unusable. The per-project
         mosaics stay raw; the normalized band is Float32 (nodata -9999).
@@ -300,6 +316,7 @@ def merge_projects(
         if norm_params:
             merge_meta["products"][suffix]["intensity_normalization"] = {
                 "target_range": list(INTENSITY_TARGET),
+                "clamped_to_target": True,
                 "band_dtype": "Float32",
                 "nodata": NORM_NODATA,
                 "sources": norm_params,
@@ -333,8 +350,8 @@ def merge(
     output_dir
         Output directory for the VRTs, by default <batch_dir>/merge.
     normalize_intensity
-        Map each project's intensity onto a common range with per-source
-        linear scale/offset in the merge VRT (vendor amplitude scales are
+        Map each project's intensity onto a common range with a per-source
+        clamped linear map in the merge VRT (vendor amplitude scales are
         incompatible across projects, gh #34); per-project mosaics stay
         raw. Default True.
     """
