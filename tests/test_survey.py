@@ -76,3 +76,81 @@ def test_coverage_gaps():
     empty = survey.summarize_surveys(_wesm(), _aoi()).iloc[0:0]
     gaps = survey.coverage_gaps(empty, _aoi())
     np.testing.assert_allclose(gaps["gap_frac"].sum(), 1.0)
+
+
+def test_fetch_reports_stages_report_files(tmp_path, monkeypatch):
+    """fetch_reports downloads only the included extensions, inventories
+    everything, records the staging in the processing metadata, and re-runs
+    without re-downloading."""
+    import requests
+    import yaml
+
+    pdir = tmp_path / "wu_a"
+    pdir.mkdir()
+    link = (
+        "https://prd-tnm.s3.amazonaws.com/index.html?"
+        "prefix=StagedProducts/Elevation/metadata/PROJ_X/wu_a"
+    )
+    meta_fn = pdir / "aoi_1m_wu_a-processing_metadata.yaml"
+    meta_fn.write_text(
+        yaml.dump({"survey_records": [{"workunit": "wu_a", "metadata_link": link}]})
+    )
+    (tmp_path / "batch_status.yaml").write_text(
+        yaml.dump({"projects": {"wu_a": "completed"}})
+    )
+
+    ns = 'xmlns="http://s3.amazonaws.com/doc/2006-03-01/"'
+    pre = "StagedProducts/Elevation/metadata/PROJ_X/wu_a/"
+    page1 = f"""<?xml version="1.0"?><ListBucketResult {ns}>
+      <IsTruncated>true</IsTruncated>
+      <NextContinuationToken>tok1</NextContinuationToken>
+      <Contents><Key>{pre}reports/QC_Report.pdf</Key><Size>4</Size></Contents>
+      <Contents><Key>{pre}reports/photos/GCP01.jpg</Key><Size>2</Size></Contents>
+    </ListBucketResult>"""
+    page2 = f"""<?xml version="1.0"?><ListBucketResult {ns}>
+      <IsTruncated>false</IsTruncated>
+      <Contents><Key>{pre}reports/Survey_Report.pdf</Key><Size>4</Size></Contents>
+    </ListBucketResult>"""
+
+    class FakeResp:
+        def __init__(self, content):
+            self.content = content
+
+        def raise_for_status(self):
+            pass
+
+        def iter_content(self, n):
+            yield self.content
+
+    calls = []
+
+    def fake_get(url, **kwargs):
+        calls.append(url)
+        if "list-type=2" in url:
+            page = page2 if "continuation-token=tok1" in url else page1
+            return FakeResp(page.encode())
+        assert url == f"https://prd-tnm.s3.amazonaws.com/{pre}reports/QC_Report.pdf" or (
+            url.endswith(".pdf")
+        )
+        return FakeResp(b"%PDF")
+
+    monkeypatch.setattr(requests, "get", fake_get)
+
+    survey.fetch_reports(str(tmp_path))
+
+    outdir = pdir / "vendor_reports"
+    assert (outdir / "reports/QC_Report.pdf").read_bytes() == b"%PDF"
+    assert (outdir / "reports/Survey_Report.pdf").exists()
+    assert not (outdir / "reports/photos/GCP01.jpg").exists()  # excluded ext
+    inventory = (outdir / "remote_inventory.txt").read_text()
+    assert "reports/photos/GCP01.jpg" in inventory  # but never dropped silently
+    meta = yaml.safe_load(meta_fn.read_text())
+    assert meta["vendor_reports"]["remote_objects_total"] == 3
+    assert sorted(meta["vendor_reports"]["files"]) == [
+        "reports/QC_Report.pdf",
+        "reports/Survey_Report.pdf",
+    ]
+    # idempotent: sizes match, so a re-run lists but downloads nothing
+    n_before = len(calls)
+    survey.fetch_reports(str(tmp_path))
+    assert not [c for c in calls[n_before:] if c.endswith(".pdf")]

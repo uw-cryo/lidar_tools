@@ -732,3 +732,174 @@ def survey(
             surveys, aoi_gdf, out_fn=str(outdir / "coverage_map_panels.png")
         )
         print(f"Wrote survey records to {outdir}")
+
+
+def _parse_index_url(index_url: str) -> tuple[str, str]:
+    """
+    Split a TNM "index.html?prefix=" browser link (the form WESM publishes
+    as metadata_link) into the bucket endpoint and the object prefix
+    (trailing slash included).
+    """
+    from urllib.parse import urlsplit
+
+    parts = urlsplit(index_url)
+    prefix = dict(
+        kv.split("=", 1) for kv in parts.query.split("&") if "=" in kv
+    ).get("prefix", "").rstrip("/") + "/"
+    return f"{parts.scheme}://{parts.netloc}", prefix
+
+
+def _s3_list_prefix(index_url: str) -> list[dict]:
+    """
+    List every object under the S3 prefix of a TNM index link. Follows
+    ListObjectsV2 pagination; returns [{"key", "size"}] with keys relative
+    to the prefix.
+    """
+    import xml.etree.ElementTree as ET
+    from urllib.parse import quote
+
+    import requests
+
+    endpoint, prefix = _parse_index_url(index_url)
+    ns = "{http://s3.amazonaws.com/doc/2006-03-01/}"
+    objects: list[dict] = []
+    token = None
+    while True:
+        url = f"{endpoint}/?list-type=2&prefix={quote(prefix)}"
+        if token:
+            url += f"&continuation-token={quote(token)}"
+        resp = requests.get(url, timeout=60)
+        resp.raise_for_status()
+        root = ET.fromstring(resp.content)
+        for obj in root.findall(f"{ns}Contents"):
+            key = obj.findtext(f"{ns}Key")
+            size = obj.findtext(f"{ns}Size")
+            assert key is not None and size is not None, "malformed S3 listing"
+            objects.append({"key": key[len(prefix):], "size": int(size)})
+        if (root.findtext(f"{ns}IsTruncated") or "").lower() != "true":
+            return objects
+        token = root.findtext(f"{ns}NextContinuationToken")
+
+
+def fetch_reports(
+    batch_dir: str,
+    workunits: str | None = None,
+    include: str = ".pdf",
+) -> None:
+    """
+    Stage each project's vendor reports (QA/QC, survey/control, mapping)
+    next to its products.
+
+    3DEP vendor deliverables live under the workunit's staged-metadata S3
+    prefix (the metadata_link recorded in survey_records of the project's
+    processing metadata). Downstream accuracy assessment needs the vendor
+    QC numbers on disk next to the rasters, not behind a browser link, so
+    this fetches the report files into <project>/vendor_reports/
+    (preserving subpaths), writes the full remote listing to
+    remote_inventory.txt in the same directory (nothing is dropped
+    silently), and records the staging in the processing metadata.
+    Already-downloaded files (matching size) are skipped, so re-runs only
+    fill gaps.
+
+    Parameters
+    ----------
+    batch_dir
+        rasterize-projects base directory (per-project subdirectories +
+        batch_status.yaml).
+    workunits
+        Comma-separated project names, default: all projects recorded in
+        batch_status.yaml. Projects without a survey record carrying a
+        metadata_link (e.g. manually ingested vendor rasters) are reported
+        and skipped.
+    include
+        Comma-separated filename extensions to download, by default
+        ".pdf" — the vendor report documents. The staged-metadata prefix
+        also holds bulky non-report payloads (ground-control monument
+        photos, breakline geodatabases); widen deliberately, e.g.
+        ".pdf,.jpg" to add the monument photos.
+
+    Returns
+    -------
+    None
+    """
+    import yaml
+
+    import requests
+
+    batch = Path(batch_dir)
+    if workunits is None:
+        status_fn = batch / "batch_status.yaml"
+        if not status_fn.exists():
+            raise FileNotFoundError(
+                f"{status_fn} not found; pass workunits explicitly."
+            )
+        with open(status_fn) as f:
+            names = list(yaml.safe_load(f)["projects"])
+    else:
+        names = [w.strip() for w in workunits.split(",")]
+    exts = tuple(e.strip().lower() for e in include.split(",") if e.strip())
+
+    for wu in names:
+        pdir = batch / wu
+        meta_hits = sorted(pdir.glob("*-processing_metadata.yaml")) or [
+            pdir / "processing_metadata.yaml"
+        ]
+        meta_fn = meta_hits[0]
+        if not meta_fn.exists():
+            print(f"{wu}: no processing metadata, skipping")
+            continue
+        meta = yaml.safe_load(meta_fn.read_text()) or {}
+        records = meta.get("survey_records") or []
+        link = next(
+            (
+                rec["metadata_link"]
+                for rec in records
+                if rec.get("metadata_link")
+                and rec.get("workunit", wu) == wu
+            ),
+            None,
+        )
+        if link is None:
+            print(f"{wu}: no metadata_link in survey records, skipping")
+            continue
+
+        objects = _s3_list_prefix(link)
+        outdir = pdir / "vendor_reports"
+        outdir.mkdir(parents=True, exist_ok=True)
+        with open(outdir / "remote_inventory.txt", "w") as f:
+            for obj in objects:
+                f.write(f"{obj['size']:>12} {obj['key']}\n")
+        wanted = [
+            obj for obj in objects if obj["key"].lower().endswith(exts)
+        ]
+        fetched = []
+        for obj in wanted:
+            dest = outdir / obj["key"]
+            if dest.exists() and dest.stat().st_size == obj["size"]:
+                fetched.append(obj["key"])
+                continue
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            endpoint, prefix = _parse_index_url(link)
+            resp = requests.get(
+                f"{endpoint}/{prefix}{obj['key']}", timeout=300, stream=True
+            )
+            resp.raise_for_status()
+            tmp = dest.with_suffix(dest.suffix + ".part")
+            with open(tmp, "wb") as f:
+                for chunk in resp.iter_content(1 << 20):
+                    f.write(chunk)
+            tmp.rename(dest)
+            fetched.append(obj["key"])
+        meta["vendor_reports"] = {
+            "source_prefix": link,
+            "directory": outdir.name,
+            "include": list(exts),
+            "files": fetched,
+            "remote_objects_total": len(objects),
+        }
+        with open(meta_fn, "w") as f:
+            yaml.dump(meta, f, default_flow_style=False, sort_keys=False)
+        print(
+            f"{wu}: staged {len(fetched)}/{len(objects)} remote objects "
+            f"({', '.join(exts)}) -> {outdir}"
+        )
