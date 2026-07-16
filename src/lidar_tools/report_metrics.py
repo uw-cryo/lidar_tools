@@ -155,6 +155,19 @@ def parse_usgs_project_report_text(text: str) -> dict:
         if m:  # table is in cm; record meters like everything else
             out[keys[0]] = round(float(m.group(1)) / 100.0, 4)
             out[keys[1]] = round(float(m.group(2)) / 100.0, 4)
+    if "nva_95_pointcloud_m" not in out:
+        # newer template (LBS 2022 era): one 6-column required/tested row
+        # per product, point cloud first then DEM
+        rows = re.findall(
+            r"^\s*(?:N/A|[\d.]+)\s+([\d.]+)\s+(?:N/A|[\d.]+)\s+([\d.]+)\s+"
+            r"(?:N/A|[\d.]+)\s+([\d.]+)\s*$",
+            text.split("Vertical Accuracy Results", 1)[-1],
+            re.M,
+        )
+        for row, kind in zip(rows[:2], ("pointcloud", "dem")):
+            out[f"nva_rmsez_{kind}_m"] = round(float(row[0]) / 100.0, 4)
+            out[f"nva_95_{kind}_m"] = round(float(row[1]) / 100.0, 4)
+            out[f"vva_95th_{kind}_m"] = round(float(row[2]) / 100.0, 4)
     # MM-DD-YYYY -> ISO for direct comparison with the other date sources
     for key in ("collection_start", "collection_end"):
         m = re.fullmatch(r"(\d{2})-(\d{2})-(\d{4})", out.get(key, ""))

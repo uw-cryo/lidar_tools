@@ -140,3 +140,26 @@ def test_parse_usgs_project_report():
     assert out["nva_95_dem_m"] == 0.108
     assert out["vva_95th_pointcloud_m"] == 0.1781
     assert out["vva_95th_dem_m"] == 0.1616
+
+
+USGS_PROJECT_REPORT_V2 = """AZ_SouthWest_D23
+Work Unit Definition: A production block of data defined by the National
+Vertical Accuracy Results
+Lidar   Required                 Required NVA at     Tested NVA at         Required VVA at Tested VVA at
+Point   NVA RMSEz                95% confidence      95% confidence        95th percentile 95th percentile
+Cloud   (cm)                     level (cm)          level (cm)            (cm)            (cm)
+        10.0      4.36           19.6                8.54                  N/A               11.97
+Digital                            Required NVA at     Tested NVA at        Required VVA Tested VVA at
+Model                              95% confidence      95% confidence       at 95th         95th percentile
+          10.0        4.45         19.6                8.73                 30.0             13.35
+"""
+
+
+def test_parse_usgs_project_report_v2_layout():
+    out = report_metrics.parse_usgs_project_report_text(USGS_PROJECT_REPORT_V2)
+    assert out["nva_rmsez_pointcloud_m"] == 0.0436
+    assert out["nva_95_pointcloud_m"] == 0.0854
+    assert out["vva_95th_pointcloud_m"] == 0.1197
+    assert out["nva_rmsez_dem_m"] == 0.0445
+    assert out["nva_95_dem_m"] == 0.0873
+    assert out["vva_95th_dem_m"] == 0.1335

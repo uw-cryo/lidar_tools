@@ -825,6 +825,7 @@ def fetch_reports(
     -------
     None
     """
+    import sys
     import time
 
     import yaml
@@ -886,6 +887,7 @@ def fetch_reports(
         outdir = pdir / "vendor_reports"
         outdir.mkdir(parents=True, exist_ok=True)
         fetched: list[str] = []
+        failed: list[str] = []
         n_remote = 0
         with open(outdir / "remote_inventory.txt", "w") as inv:
             for layer_link, sub, layer_exts in layers:
@@ -904,7 +906,9 @@ def fetch_reports(
                     dest.parent.mkdir(parents=True, exist_ok=True)
                     tmp = dest.with_suffix(dest.suffix + ".part")
                     # long multi-GB staging runs hit transient S3 resets;
-                    # a per-file retry keeps one hiccup from killing the run
+                    # retry each file, and give up on a persistently
+                    # failing object (recorded in `failed`, never fatal)
+                    ok = False
                     for attempt in range(4):
                         try:
                             resp = requests.get(
@@ -916,11 +920,21 @@ def fetch_reports(
                             with open(tmp, "wb") as f:
                                 for chunk in resp.iter_content(1 << 20):
                                     f.write(chunk)
+                            ok = True
                             break
-                        except requests.exceptions.RequestException:
+                        except requests.exceptions.RequestException as e:
                             if attempt == 3:
-                                raise
-                            time.sleep(2 ** (attempt + 1))
+                                print(
+                                    f"WARNING: giving up on "
+                                    f"{sub}{obj['key']} after 4 attempts "
+                                    f"({e})",
+                                    file=sys.stderr,
+                                )
+                            else:
+                                time.sleep(2 ** (attempt + 1))
+                    if not ok:
+                        failed.append(f"{sub}{obj['key']}")
+                        continue
                     tmp.rename(dest)
                     fetched.append(f"{sub}{obj['key']}")
         meta["vendor_reports"] = {
@@ -929,11 +943,14 @@ def fetch_reports(
             "directory": outdir.name,
             "include": list(exts),
             "files": fetched,
+            "failed": failed,
             "remote_objects_total": n_remote,
         }
         with open(meta_fn, "w") as f:
             yaml.dump(meta, f, default_flow_style=False, sort_keys=False)
         print(
-            f"{wu}: staged {len(fetched)}/{n_remote} remote objects "
+            f"{wu}: staged {len(fetched)}/{n_remote} remote objects"
+            + (f" ({len(failed)} FAILED)" if failed else "")
+            + " "
             f"({', '.join(exts)}) -> {outdir}"
         )
