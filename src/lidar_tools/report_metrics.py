@@ -358,37 +358,46 @@ def extract_project_metrics(pdir: Path, workunit: str) -> dict:
     return record
 
 
-# comparison-table rows: (label, function of record -> value)
+def _usgs(r, k1, k2):
+    return _fmt_pair(r.get("usgs_project_report") or {}, k1, k2)
+
+
+# comparison-table rows: (label, function of record -> value). Accuracy
+# metrics appear as USGS-tested / vendor-reported pairs — they disagree
+# in the wild, and the disagreement is information.
 _TABLE_ROWS = [
-    ("acquisition (vendor XML)", lambda r: _fmt_span(r.get("fgdc") or {})),
+    ("acquisition (USGS proj rpt)",
+     lambda r: _fmt_span_usgs(r.get("usgs_project_report") or {})),
     ("acquisition (WESM)", lambda r: _fmt_span_wesm(r.get("wesm") or {})),
-    ("dates consistent", lambda r: r.get("acquisition_dates_consistent")),
+    ("acquisition (vendor XML)", lambda r: _fmt_span(r.get("fgdc") or {})),
+    ("XML dates consistent w/ WESM",
+     lambda r: r.get("acquisition_dates_consistent")),
     ("QL (WESM)", lambda r: (r.get("wesm") or {}).get("ql")),
     ("USGS validation", lambda r: (r.get("usgs_validation") or {}).get("verdict")),
     ("geoid", lambda r: (r.get("usgs_validation") or {}).get("geoid")),
     ("contractor",
      lambda r: (r.get("usgs_project_report") or {}).get("primary_contractor")),
-    ("collection (USGS proj rpt)",
-     lambda r: _fmt_span_usgs(r.get("usgs_project_report") or {})),
-    ("USGS tested NVA 95% PC/DEM [m]",
-     lambda r: _fmt_pair(r.get("usgs_project_report") or {},
-                         "nva_95_pointcloud_m", "nva_95_dem_m")),
-    ("USGS tested VVA 95th PC/DEM [m]",
-     lambda r: _fmt_pair(r.get("usgs_project_report") or {},
-                         "vva_95th_pointcloud_m", "vva_95th_dem_m")),
-    ("NVA RMSEz [m]", lambda r: r["metrics"].get("nva_rmsez_m")),
-    ("NVA 95% [m]", lambda r: r["metrics"].get("nva_95pct_m")),
-    ("VVA 95th [m]", lambda r: r["metrics"].get("vva_95th_m")),
-    ("checkpoints NVA/VVA", lambda r: _fmt_ckpts(r["metrics"])),
-    ("swath relative dz [m]",
+    ("NVA RMSEz [m] USGS PC/DEM",
+     lambda r: _usgs(r, "nva_rmsez_pointcloud_m", "nva_rmsez_dem_m")),
+    ("NVA RMSEz [m] vendor", lambda r: r["metrics"].get("nva_rmsez_m")),
+    ("NVA 95% [m] USGS PC/DEM",
+     lambda r: _usgs(r, "nva_95_pointcloud_m", "nva_95_dem_m")),
+    ("NVA 95% [m] vendor", lambda r: r["metrics"].get("nva_95pct_m")),
+    ("VVA 95th [m] USGS PC/DEM",
+     lambda r: _usgs(r, "vva_95th_pointcloud_m", "vva_95th_dem_m")),
+    ("VVA 95th [m] vendor", lambda r: r["metrics"].get("vva_95th_m")),
+    ("checkpoints NVA/VVA (vendor)", lambda r: _fmt_ckpts(r["metrics"])),
+    ("swath relative dz [m] (vendor)",
      lambda r: r["metrics"].get("swath_relative_dz_mean_m")),
-    ("horiz RMSEr [m]", lambda r: r["metrics"].get("horizontal_rmser_m")),
-    ("horiz 95% [m]", lambda r: r["metrics"].get("horizontal_acc95_m")),
-    ("ANPD [pls/m2]", lambda r: r["metrics"].get("anpd_ppsm")),
-    ("first-return density [p/m2]",
+    ("horiz RMSEr [m] (vendor)",
+     lambda r: r["metrics"].get("horizontal_rmser_m")),
+    ("horiz 95% [m] (vendor)",
+     lambda r: r["metrics"].get("horizontal_acc95_m")),
+    ("ANPD [pls/m2] (vendor)", lambda r: r["metrics"].get("anpd_ppsm")),
+    ("first-return density [p/m2] (vendor)",
      lambda r: r["metrics"].get("first_return_density_ppsm")
      or r["metrics"].get("measured_density_ppsm")),
-    ("mean spacing [m]",
+    ("mean point spacing [m]",
      lambda r: (r.get("derived") or {}).get("first_return_mean_spacing_m")),
 ]
 
