@@ -936,6 +936,28 @@ def rasterize(
     for raster_fn in final_products:
         dsm_functions.gdal_add_overview(raster_fn)
 
+    # per-project valid-data footprint for downstream coverage/seam QA;
+    # DSM preferred (fullest return coverage), else the first product made
+    footprint_source = next(
+        product_reproj[name]
+        for name in ["dsm", "dtm_fill", "dtm_no_fill", "intensity"]
+        if name in requested
+    )
+    footprint_fn = f"{output_prefix}-footprint.gpkg"
+    try:  # a footprint failure must never fail a finished run
+        dsm_functions.raster_footprint(footprint_source, footprint_fn)
+        _update_processing_metadata(
+            outdir,
+            "footprint",
+            {
+                "file": Path(footprint_fn).name,
+                "source": Path(footprint_source).name,
+            },
+        )
+        print(f"Valid-data footprint: {footprint_fn}")
+    except Exception as e:
+        print(f"WARNING: footprint generation failed: {e}", file=sys.stderr)
+
     _update_processing_metadata(
         outdir,
         "run_status",

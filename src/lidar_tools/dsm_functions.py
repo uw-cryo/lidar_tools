@@ -1437,6 +1437,49 @@ def gdal_add_overview(raster_fn: str, ensure_cog=True, resampling: str = "AVERAG
         rename_rasters(str(temp_fn), raster_fn)
 
 
+def raster_footprint(
+    raster_fn: str, out_fn: str, simplify_px: float = 32.0
+) -> str:
+    """
+    Write the valid-data footprint of a raster as a polygon GeoPackage in
+    the raster CRS. Ships with every per-project mosaic so downstream QA
+    (cross-project dz maps, seam attribution) can draw each project's
+    actual coverage without re-deriving it from the ~GB rasters.
+
+    Parameters
+    ----------
+    raster_fn
+        Path to the raster; its nodata value defines "valid".
+    out_fn
+        Output GeoPackage path (overwritten if present).
+    simplify_px
+        Douglas-Peucker tolerance in full-resolution pixels, by default 32
+        (~32 m at 1 m posting — plenty for map overlays, and it keeps the
+        vertex count of a hole-riddled mosaic edge sane).
+
+    Returns
+    -------
+    str
+        The written GeoPackage path.
+    """
+    with gdal.OpenEx(raster_fn) as ds:
+        gt = ds.GetGeoTransform()
+        # trace a decimated overview when available: footprint fidelity is
+        # bounded by the simplify tolerance anyway, and full-resolution
+        # polygonization of a production mosaic takes minutes vs seconds
+        ovr = min(3, ds.GetRasterBand(1).GetOverviewCount() - 1)
+        Path(out_fn).unlink(missing_ok=True)
+        gdal.Footprint(
+            str(out_fn),
+            ds,
+            format="GPKG",
+            layerName="footprint",
+            ovr=ovr if ovr >= 0 else None,
+            simplify=abs(gt[1]) * simplify_px,
+        )
+    return out_fn
+
+
 def create_lpc_pipeline(
     local_laz_dir: str,
     target_wkt: str,

@@ -147,6 +147,29 @@ def test_gdal_warp_tap_false_reproduces_exact_extent(tmp_path):
     assert (ds.RasterXSize, ds.RasterYSize) == (40, 40)
 
 
+def test_raster_footprint_traces_valid_data(tmp_path):
+    """Footprint polygon covers exactly the valid half of the raster, in
+    the raster CRS (nodata columns excluded)."""
+    from osgeo import gdal
+
+    fn = tmp_path / "toy-DSM_mos.tif"
+    _make_const_uint16_raster(fn, size=100, res=0.5)
+    with gdal.OpenEx(str(fn), gdal.GA_Update) as ds:
+        arr = ds.GetRasterBand(1).ReadAsArray()
+        arr[:, 50:] = 0  # nodata
+        ds.GetRasterBand(1).WriteArray(arr)
+
+    out = lidar_tools.dsm_functions.raster_footprint(
+        str(fn), str(tmp_path / "toy-footprint.gpkg"), simplify_px=1
+    )
+    gf = gpd.read_file(out)
+    assert gf.crs.to_epsg() == 3857
+    # valid half = 100 rows x 50 cols at 0.5 m = 50 m x 25 m
+    assert abs(gf.area.sum() - 1250.0) < 30
+    minx, _, maxx, _ = gf.total_bounds
+    assert maxx <= -13615000 + 25 + 1e-6  # nodata half excluded
+
+
 def test_datum_shift_required():
     import pytest
 
