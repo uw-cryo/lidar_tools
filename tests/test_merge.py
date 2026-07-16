@@ -84,6 +84,22 @@ def test_merge_vrt_is_portable(tmp_path):
     assert (arr[:, 0:20] == 100.0).all()
 
 
+def test_merge_vrt_read_only_and_remergeable(tmp_path):
+    """Finished VRTs are read-only so a stale GDAL reader flushing PAM
+    statistics cannot rewrite the XML behind our back (Casa Grande,
+    2026-07-15); a re-merge must still be able to replace them."""
+    import stat
+
+    _make_batch(tmp_path)
+    written = merge.merge_projects(tmp_path)
+    mode = written[0].stat().st_mode
+    assert not (mode & (stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH))
+    # a re-merge with a new priority order overwrites the read-only VRT
+    written = merge.merge_projects(tmp_path, workunits=["proj_b", "proj_a"])
+    arr, _ = _read(written[0])
+    assert (arr[:, 12:32] == 200.0).all()
+
+
 def test_merge_strips_project_token_from_names(tmp_path):
     """Per-project sources carry the workunit in their prefix
     (aoi_1m_proj_a-...); the multi-project composite and its metadata
