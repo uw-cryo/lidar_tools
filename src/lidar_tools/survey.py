@@ -825,6 +825,8 @@ def fetch_reports(
     -------
     None
     """
+    import time
+
     import yaml
 
     import requests
@@ -900,16 +902,25 @@ def fetch_reports(
                         fetched.append(f"{sub}{obj['key']}")
                         continue
                     dest.parent.mkdir(parents=True, exist_ok=True)
-                    resp = requests.get(
-                        f"{endpoint}/{layer_prefix}{obj['key']}",
-                        timeout=600,
-                        stream=True,
-                    )
-                    resp.raise_for_status()
                     tmp = dest.with_suffix(dest.suffix + ".part")
-                    with open(tmp, "wb") as f:
-                        for chunk in resp.iter_content(1 << 20):
-                            f.write(chunk)
+                    # long multi-GB staging runs hit transient S3 resets;
+                    # a per-file retry keeps one hiccup from killing the run
+                    for attempt in range(4):
+                        try:
+                            resp = requests.get(
+                                f"{endpoint}/{layer_prefix}{obj['key']}",
+                                timeout=600,
+                                stream=True,
+                            )
+                            resp.raise_for_status()
+                            with open(tmp, "wb") as f:
+                                for chunk in resp.iter_content(1 << 20):
+                                    f.write(chunk)
+                            break
+                        except requests.exceptions.RequestException:
+                            if attempt == 3:
+                                raise
+                            time.sleep(2 ** (attempt + 1))
                     tmp.rename(dest)
                     fetched.append(f"{sub}{obj['key']}")
         meta["vendor_reports"] = {

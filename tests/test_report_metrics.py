@@ -109,3 +109,34 @@ def test_parse_three_column_density_and_swath_precision():
     m, _ = report_metrics.parse_report_text(THREE_COL_DENSITY, "r.pdf")
     assert m["measured_density_ppsm"] == 9.64  # achieved column, not planned
     assert m["swath_relative_dz_mean_m"] == 0.011
+
+
+USGS_PROJECT_REPORT = """AZ_PimaCounty_2021_B21
+Project Definition: The entire collection for a contracted area.
+Work Unit Definition: A production block of data defined by the National
+Project Information
+Lidar Base Specification: 2020 Revision A                Primary Contractor: NV5 Geospatial, Inc
+Las Version: 1.4                                         Contract Mechanism: GPSC
+P Method: 7 - Linear-Mode Lidar
+Collection Start Date: 09-27-2021                        Collection End Date: 11-20-2021
+Vertical Accuracy Results
+Non-Vegetated Vertical Accuracy
+                                                                  19.6       10.70        19.6           10.80
+95-Percent Confidence Level
+Vegetated Vertical Accuracy
+                                                                  N/A        17.81        30.0           16.16
+95th Percentile
+"""
+
+
+def test_parse_usgs_project_report():
+    out = report_metrics.parse_usgs_project_report_text(USGS_PROJECT_REPORT)
+    assert out["primary_contractor"] == "NV5 Geospatial, Inc"
+    assert out["lidar_base_spec"] == "2020 Revision A"
+    assert out["p_method"] == "7 - Linear-Mode Lidar"
+    assert out["collection_start"] == "2021-09-27"
+    assert out["collection_end"] == "2021-11-20"
+    assert out["nva_95_pointcloud_m"] == 0.107
+    assert out["nva_95_dem_m"] == 0.108
+    assert out["vva_95th_pointcloud_m"] == 0.1781
+    assert out["vva_95th_dem_m"] == 0.1616

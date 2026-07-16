@@ -119,6 +119,50 @@ def parse_usgs_validation_text(text: str) -> dict:
     return out
 
 
+def parse_usgs_project_report_text(text: str) -> dict:
+    """
+    Parse the standardized USGS project report (LBS 2020+): contractor,
+    spec, P-method, authoritative collection dates, and the TESTED
+    NVA/VVA table (required/tested cm for point cloud and DEM). This is
+    the one cross-vendor-comparable accuracy source; vendor-report values
+    can disagree with it (observed at Casa Grande) and both are kept.
+    """
+    out = {}
+    for key, pat in {
+        "primary_contractor": r"Primary Contractor:\s*([^\n]+?)\s*$",
+        "lidar_base_spec": r"Lidar Base Specification:\s*(.+?)(?:\s{2,}|\n)",
+        "p_method": r"P Method:\s*([^\n]+?)\s*$",
+        "collection_start": r"Collection Start Date:\s*([\d-]+)",
+        "collection_end": r"Collection End Date:\s*([\d-]+)",
+    }.items():
+        m = re.search(pat, text, re.M)
+        if m:
+            out[key] = m.group(1).strip()
+    for label, keys in [
+        ("Non-Vegetated Vertical Accuracy",
+         ("nva_95_pointcloud_m", "nva_95_dem_m")),
+        ("Vegetated Vertical Accuracy",
+         ("vva_95th_pointcloud_m", "vva_95th_dem_m")),
+    ]:
+        # ^-anchored: "Non-Vegetated ..." contains "Vegetated ..." as a
+        # substring, so an unanchored VVA search re-matches the NVA row
+        m = re.search(
+            rf"^\s*{label}\s*\n\s*(?:N/A|[\d.]+)\s+([\d.]+)\s+"
+            rf"(?:N/A|[\d.]+)\s+([\d.]+)",
+            text,
+            re.M,
+        )
+        if m:  # table is in cm; record meters like everything else
+            out[keys[0]] = round(float(m.group(1)) / 100.0, 4)
+            out[keys[1]] = round(float(m.group(2)) / 100.0, 4)
+    # MM-DD-YYYY -> ISO for direct comparison with the other date sources
+    for key in ("collection_start", "collection_end"):
+        m = re.fullmatch(r"(\d{2})-(\d{2})-(\d{4})", out.get(key, ""))
+        if m:
+            out[key] = f"{m.group(3)}-{m.group(1)}-{m.group(2)}"
+    return out
+
+
 #: labeled numeric patterns tried against every PDF's text; group names
 #: become metric keys. Values in meters / points-per-square-meter.
 _METRIC_PATTERNS: list[tuple[str, str]] = [
@@ -262,6 +306,11 @@ def extract_project_metrics(pdir: Path, workunit: str) -> dict:
             usgs_validation = parse_usgs_validation_text(text)
             usgs_validation["source"] = rel
             continue
+        if "Vertical Accuracy Results" in text and "Work Unit Definition" in text:
+            usgs_project = parse_usgs_project_report_text(text)
+            usgs_project["source"] = rel
+            record["usgs_project_report"] = usgs_project
+            continue
         got, ev = parse_report_text(text, rel)
         for key, val in got.items():
             metrics.setdefault(key, val)
@@ -304,6 +353,16 @@ _TABLE_ROWS = [
     ("QL (WESM)", lambda r: (r.get("wesm") or {}).get("ql")),
     ("USGS validation", lambda r: (r.get("usgs_validation") or {}).get("verdict")),
     ("geoid", lambda r: (r.get("usgs_validation") or {}).get("geoid")),
+    ("contractor",
+     lambda r: (r.get("usgs_project_report") or {}).get("primary_contractor")),
+    ("collection (USGS proj rpt)",
+     lambda r: _fmt_span_usgs(r.get("usgs_project_report") or {})),
+    ("USGS tested NVA 95% PC/DEM [m]",
+     lambda r: _fmt_pair(r.get("usgs_project_report") or {},
+                         "nva_95_pointcloud_m", "nva_95_dem_m")),
+    ("USGS tested VVA 95th PC/DEM [m]",
+     lambda r: _fmt_pair(r.get("usgs_project_report") or {},
+                         "vva_95th_pointcloud_m", "vva_95th_dem_m")),
     ("NVA RMSEz [m]", lambda r: r["metrics"].get("nva_rmsez_m")),
     ("NVA 95% [m]", lambda r: r["metrics"].get("nva_95pct_m")),
     ("VVA 95th [m]", lambda r: r["metrics"].get("vva_95th_m")),
@@ -329,6 +388,16 @@ def _fmt_span(d):
 def _fmt_span_wesm(d):
     a, b = d.get("collect_start"), d.get("collect_end")
     return f"{str(a)[:10]} - {str(b)[:10]}" if a and b else None
+
+
+def _fmt_span_usgs(d):
+    a, b = d.get("collection_start"), d.get("collection_end")
+    return f"{a} - {b}" if a and b else None
+
+
+def _fmt_pair(d, k1, k2):
+    a, b = d.get(k1), d.get(k2)
+    return f"{a:g}/{b:g}" if a is not None and b is not None else None
 
 
 def _fmt_ckpts(m):
