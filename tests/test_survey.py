@@ -132,7 +132,10 @@ def test_fetch_reports_stages_report_files(tmp_path, monkeypatch):
         calls.append(url)
         if "list-type=2" in url:
             if "vertical_accuracy" in url:
-                page = listing((f"{proj}vertical_accuracy/USGS/VA.gpkg", 3))
+                page = listing(
+                    (f"{proj}vertical_accuracy/USGS/VA.gpkg", 3),
+                    (f"{proj}vertical_accuracy/contractor_provided/jpg/M1.JPG", 9),
+                )
             elif "delimiter" in url:  # project level, non-recursive
                 page = listing((f"{proj}USGS_PROJ_X_Project_Report.pdf", 4))
             elif "continuation-token=tok1" in url:
@@ -147,6 +150,7 @@ def test_fetch_reports_stages_report_files(tmp_path, monkeypatch):
             return FakeResp(page.encode())
         if url.endswith(".gpkg"):
             return FakeResp(b"GPK")
+        assert not url.lower().endswith(".jpg")  # photos never downloaded
         assert url.endswith(".pdf")
         return FakeResp(b"%PDF")
 
@@ -159,12 +163,15 @@ def test_fetch_reports_stages_report_files(tmp_path, monkeypatch):
     assert (outdir / "reports/Survey_Report.pdf").exists()
     assert not (outdir / "reports/photos/GCP01.jpg").exists()  # excluded ext
     assert (outdir / "project_level/USGS_PROJ_X_Project_Report.pdf").exists()
-    # the vertical_accuracy tree is staged whole (no extension filter)
+    # the vertical_accuracy tree is staged whole minus monument photos
     assert (outdir / "project_level/vertical_accuracy/USGS/VA.gpkg").exists()
+    assert not (
+        outdir / "project_level/vertical_accuracy/contractor_provided/jpg/M1.JPG"
+    ).exists()
     inventory = (outdir / "remote_inventory.txt").read_text()
     assert "reports/photos/GCP01.jpg" in inventory  # never dropped silently
     meta = yaml.safe_load(meta_fn.read_text())
-    assert meta["vendor_reports"]["remote_objects_total"] == 5
+    assert meta["vendor_reports"]["remote_objects_total"] == 6
     assert sorted(meta["vendor_reports"]["files"]) == [
         "project_level/USGS_PROJ_X_Project_Report.pdf",
         "project_level/vertical_accuracy/USGS/VA.gpkg",

@@ -877,12 +877,16 @@ def fetch_reports(
         proj_prefix = wu_prefix.rstrip("/").rsplit("/", 1)[0] + "/"
         proj_link = f"{endpoint}/index.html?prefix={proj_prefix}"
         va_link = f"{endpoint}/index.html?prefix={proj_prefix}vertical_accuracy/"
-        # (prefix, dest subdir, extension filter — None = everything; the
-        # vertical_accuracy tree is curated point data, take all of it)
+        # (prefix, dest subdir, extension filter, exclusions). The
+        # vertical_accuracy tree is curated point data — take all of it
+        # EXCEPT checkpoint monument photos: AZ_SouthWest_D23 carries
+        # 3,227 jpgs = 25.3 GB against 0.06 GB of actual control data.
+        # The photos stay listed in remote_inventory.txt.
         layers = [
-            (link, "", exts),
-            (proj_link, "project_level/", exts),
-            (va_link, "project_level/vertical_accuracy/", None),
+            (link, "", exts, ()),
+            (proj_link, "project_level/", exts, ()),
+            (va_link, "project_level/vertical_accuracy/", None,
+             (".jpg", ".jpeg", ".png")),
         ]
         outdir = pdir / "vendor_reports"
         outdir.mkdir(parents=True, exist_ok=True)
@@ -890,14 +894,17 @@ def fetch_reports(
         failed: list[str] = []
         n_remote = 0
         with open(outdir / "remote_inventory.txt", "w") as inv:
-            for layer_link, sub, layer_exts in layers:
+            for layer_link, sub, layer_exts, layer_skip in layers:
                 objects = _s3_list_prefix(layer_link, recursive=sub != "project_level/")
                 n_remote += len(objects)
                 _, layer_prefix = _parse_index_url(layer_link)
                 for obj in objects:
                     inv.write(f"{obj['size']:>12} {sub}{obj['key']}\n")
                 for obj in objects:
-                    if layer_exts and not obj["key"].lower().endswith(layer_exts):
+                    key_lower = obj["key"].lower()
+                    if layer_exts and not key_lower.endswith(layer_exts):
+                        continue
+                    if layer_skip and key_lower.endswith(layer_skip):
                         continue
                     dest = outdir / sub / obj["key"]
                     if dest.exists() and dest.stat().st_size == obj["size"]:
