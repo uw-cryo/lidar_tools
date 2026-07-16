@@ -79,9 +79,10 @@ def test_coverage_gaps():
 
 
 def test_fetch_reports_stages_report_files(tmp_path, monkeypatch):
-    """fetch_reports downloads only the included extensions, inventories
-    everything, records the staging in the processing metadata, and re-runs
-    without re-downloading."""
+    """fetch_reports downloads only the included extensions from the
+    workunit prefix, stages the project-level report and the full
+    vertical_accuracy tree, inventories everything, records the staging in
+    the processing metadata, and re-runs without re-downloading."""
     import requests
     import yaml
 
@@ -101,16 +102,19 @@ def test_fetch_reports_stages_report_files(tmp_path, monkeypatch):
 
     ns = 'xmlns="http://s3.amazonaws.com/doc/2006-03-01/"'
     pre = "StagedProducts/Elevation/metadata/PROJ_X/wu_a/"
-    page1 = f"""<?xml version="1.0"?><ListBucketResult {ns}>
-      <IsTruncated>true</IsTruncated>
-      <NextContinuationToken>tok1</NextContinuationToken>
-      <Contents><Key>{pre}reports/QC_Report.pdf</Key><Size>4</Size></Contents>
-      <Contents><Key>{pre}reports/photos/GCP01.jpg</Key><Size>2</Size></Contents>
-    </ListBucketResult>"""
-    page2 = f"""<?xml version="1.0"?><ListBucketResult {ns}>
-      <IsTruncated>false</IsTruncated>
-      <Contents><Key>{pre}reports/Survey_Report.pdf</Key><Size>4</Size></Contents>
-    </ListBucketResult>"""
+    proj = "StagedProducts/Elevation/metadata/PROJ_X/"
+
+    def listing(*contents, truncated=False, token=""):
+        rows = "".join(
+            f"<Contents><Key>{k}</Key><Size>{s}</Size></Contents>"
+            for k, s in contents
+        )
+        nxt = f"<NextContinuationToken>{token}</NextContinuationToken>" if token else ""
+        return (
+            f'<?xml version="1.0"?><ListBucketResult {ns}>'
+            f"<IsTruncated>{str(truncated).lower()}</IsTruncated>{nxt}{rows}"
+            "</ListBucketResult>"
+        )
 
     class FakeResp:
         def __init__(self, content):
@@ -127,11 +131,23 @@ def test_fetch_reports_stages_report_files(tmp_path, monkeypatch):
     def fake_get(url, **kwargs):
         calls.append(url)
         if "list-type=2" in url:
-            page = page2 if "continuation-token=tok1" in url else page1
+            if "vertical_accuracy" in url:
+                page = listing((f"{proj}vertical_accuracy/USGS/VA.gpkg", 3))
+            elif "delimiter" in url:  # project level, non-recursive
+                page = listing((f"{proj}USGS_PROJ_X_Project_Report.pdf", 4))
+            elif "continuation-token=tok1" in url:
+                page = listing((f"{pre}reports/Survey_Report.pdf", 4))
+            else:
+                page = listing(
+                    (f"{pre}reports/QC_Report.pdf", 4),
+                    (f"{pre}reports/photos/GCP01.jpg", 2),
+                    truncated=True,
+                    token="tok1",
+                )
             return FakeResp(page.encode())
-        assert url == f"https://prd-tnm.s3.amazonaws.com/{pre}reports/QC_Report.pdf" or (
-            url.endswith(".pdf")
-        )
+        if url.endswith(".gpkg"):
+            return FakeResp(b"GPK")
+        assert url.endswith(".pdf")
         return FakeResp(b"%PDF")
 
     monkeypatch.setattr(requests, "get", fake_get)
@@ -142,15 +158,23 @@ def test_fetch_reports_stages_report_files(tmp_path, monkeypatch):
     assert (outdir / "reports/QC_Report.pdf").read_bytes() == b"%PDF"
     assert (outdir / "reports/Survey_Report.pdf").exists()
     assert not (outdir / "reports/photos/GCP01.jpg").exists()  # excluded ext
+    assert (outdir / "project_level/USGS_PROJ_X_Project_Report.pdf").exists()
+    # the vertical_accuracy tree is staged whole (no extension filter)
+    assert (outdir / "project_level/vertical_accuracy/USGS/VA.gpkg").exists()
     inventory = (outdir / "remote_inventory.txt").read_text()
-    assert "reports/photos/GCP01.jpg" in inventory  # but never dropped silently
+    assert "reports/photos/GCP01.jpg" in inventory  # never dropped silently
     meta = yaml.safe_load(meta_fn.read_text())
-    assert meta["vendor_reports"]["remote_objects_total"] == 3
+    assert meta["vendor_reports"]["remote_objects_total"] == 5
     assert sorted(meta["vendor_reports"]["files"]) == [
+        "project_level/USGS_PROJ_X_Project_Report.pdf",
+        "project_level/vertical_accuracy/USGS/VA.gpkg",
         "reports/QC_Report.pdf",
         "reports/Survey_Report.pdf",
     ]
     # idempotent: sizes match, so a re-run lists but downloads nothing
     n_before = len(calls)
     survey.fetch_reports(str(tmp_path))
-    assert not [c for c in calls[n_before:] if c.endswith(".pdf")]
+    assert not [
+        c for c in calls[n_before:]
+        if c.endswith(".pdf") or c.endswith(".gpkg")
+    ]

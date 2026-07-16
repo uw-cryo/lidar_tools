@@ -749,11 +749,12 @@ def _parse_index_url(index_url: str) -> tuple[str, str]:
     return f"{parts.scheme}://{parts.netloc}", prefix
 
 
-def _s3_list_prefix(index_url: str) -> list[dict]:
+def _s3_list_prefix(index_url: str, recursive: bool = True) -> list[dict]:
     """
-    List every object under the S3 prefix of a TNM index link. Follows
-    ListObjectsV2 pagination; returns [{"key", "size"}] with keys relative
-    to the prefix.
+    List objects under the S3 prefix of a TNM index link (only the
+    prefix's own level when recursive=False). Follows ListObjectsV2
+    pagination; returns [{"key", "size"}] with keys relative to the
+    prefix.
     """
     import xml.etree.ElementTree as ET
     from urllib.parse import quote
@@ -766,6 +767,8 @@ def _s3_list_prefix(index_url: str) -> list[dict]:
     token = None
     while True:
         url = f"{endpoint}/?list-type=2&prefix={quote(prefix)}"
+        if not recursive:
+            url += "&delimiter=%2F"
         if token:
             url += f"&continuation-token={quote(token)}"
         resp = requests.get(url, timeout=60)
@@ -863,43 +866,63 @@ def fetch_reports(
             print(f"{wu}: no metadata_link in survey records, skipping")
             continue
 
-        objects = _s3_list_prefix(link)
+        endpoint, wu_prefix = _parse_index_url(link)
+        # workunit reports + the project level one up: the project-wide
+        # USGS report and the vertical_accuracy/ checkpoint data (measured
+        # per-point errors, shared across the project's workunits) live
+        # there, not under the workunit
+        proj_prefix = wu_prefix.rstrip("/").rsplit("/", 1)[0] + "/"
+        proj_link = f"{endpoint}/index.html?prefix={proj_prefix}"
+        va_link = f"{endpoint}/index.html?prefix={proj_prefix}vertical_accuracy/"
+        # (prefix, dest subdir, extension filter — None = everything; the
+        # vertical_accuracy tree is curated point data, take all of it)
+        layers = [
+            (link, "", exts),
+            (proj_link, "project_level/", exts),
+            (va_link, "project_level/vertical_accuracy/", None),
+        ]
         outdir = pdir / "vendor_reports"
         outdir.mkdir(parents=True, exist_ok=True)
-        with open(outdir / "remote_inventory.txt", "w") as f:
-            for obj in objects:
-                f.write(f"{obj['size']:>12} {obj['key']}\n")
-        wanted = [
-            obj for obj in objects if obj["key"].lower().endswith(exts)
-        ]
-        fetched = []
-        for obj in wanted:
-            dest = outdir / obj["key"]
-            if dest.exists() and dest.stat().st_size == obj["size"]:
-                fetched.append(obj["key"])
-                continue
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            endpoint, prefix = _parse_index_url(link)
-            resp = requests.get(
-                f"{endpoint}/{prefix}{obj['key']}", timeout=300, stream=True
-            )
-            resp.raise_for_status()
-            tmp = dest.with_suffix(dest.suffix + ".part")
-            with open(tmp, "wb") as f:
-                for chunk in resp.iter_content(1 << 20):
-                    f.write(chunk)
-            tmp.rename(dest)
-            fetched.append(obj["key"])
+        fetched: list[str] = []
+        n_remote = 0
+        with open(outdir / "remote_inventory.txt", "w") as inv:
+            for layer_link, sub, layer_exts in layers:
+                objects = _s3_list_prefix(layer_link, recursive=sub != "project_level/")
+                n_remote += len(objects)
+                _, layer_prefix = _parse_index_url(layer_link)
+                for obj in objects:
+                    inv.write(f"{obj['size']:>12} {sub}{obj['key']}\n")
+                for obj in objects:
+                    if layer_exts and not obj["key"].lower().endswith(layer_exts):
+                        continue
+                    dest = outdir / sub / obj["key"]
+                    if dest.exists() and dest.stat().st_size == obj["size"]:
+                        fetched.append(f"{sub}{obj['key']}")
+                        continue
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    resp = requests.get(
+                        f"{endpoint}/{layer_prefix}{obj['key']}",
+                        timeout=600,
+                        stream=True,
+                    )
+                    resp.raise_for_status()
+                    tmp = dest.with_suffix(dest.suffix + ".part")
+                    with open(tmp, "wb") as f:
+                        for chunk in resp.iter_content(1 << 20):
+                            f.write(chunk)
+                    tmp.rename(dest)
+                    fetched.append(f"{sub}{obj['key']}")
         meta["vendor_reports"] = {
             "source_prefix": link,
+            "project_prefix": proj_link,
             "directory": outdir.name,
             "include": list(exts),
             "files": fetched,
-            "remote_objects_total": len(objects),
+            "remote_objects_total": n_remote,
         }
         with open(meta_fn, "w") as f:
             yaml.dump(meta, f, default_flow_style=False, sort_keys=False)
         print(
-            f"{wu}: staged {len(fetched)}/{len(objects)} remote objects "
+            f"{wu}: staged {len(fetched)}/{n_remote} remote objects "
             f"({', '.join(exts)}) -> {outdir}"
         )
