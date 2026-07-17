@@ -51,6 +51,18 @@ def test_summarize_surveys_no_intersection():
     assert out.empty
 
 
+def test_record_from_wesm():
+    import pytest
+
+    wesm = _wesm()
+    rec = survey.record_from_wesm(wesm, "A")
+    assert rec["workunit"] == "A"
+    assert rec["ql"] == "QL 1"
+    assert rec["vert_crs"] == "5703"
+    with pytest.raises(ValueError, match="not found"):
+        survey.record_from_wesm(wesm, "NOPE")
+
+
 def test_coverage_gaps():
     # only collection A (west half) selected: east half is a gap
     selected = survey.summarize_surveys(_wesm().iloc[[0]], _aoi())

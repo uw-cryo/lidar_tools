@@ -15,7 +15,7 @@ os.environ.setdefault("PROJ_NETWORK", "ON")
 # off => heights silently wrong by the ~31 m geoid undulation in CONUS)
 os.environ.setdefault("PROJ_ONLY_BEST_DEFAULT", "YES")
 
-from lidar_tools import dsm_functions, geodesy
+from lidar_tools import dsm_functions, geodesy, survey
 from pyproj import CRS
 from shapely.geometry.polygon import orient as _orient
 import numpy as np
@@ -337,6 +337,39 @@ def rasterize(
     else:
         filter_high_noise = False
         filter_low_noise = False
+
+    # Per-survey record (WESM): pinned into processing metadata and used to
+    # drive datum handling — declared horizontal realization (base datum for
+    # the EPT null-tie interpretation) and production geoid model. Only
+    # available when a specific workunit was requested; 'latest'/'all' runs
+    # fall back to the NAD83(2011)+best-geoid defaults.
+    survey_record = None
+    ept_base_epsg = geodesy.NAD83_2011_EPSG
+    geoid_hint = None
+    if input == "EPT_AWS" and process_specific_3dep_survey is not None:
+        try:
+            survey_record = survey.workunit_record(gdf, process_specific_3dep_survey)
+        except Exception as e:
+            print(
+                f"WARNING: could not fetch the WESM record for "
+                f"'{process_specific_3dep_survey}' ({e}); using default datum "
+                "handling (NAD83(2011), best available geoid)",
+                file=sys.stderr,
+            )
+        if survey_record is not None:
+            _update_processing_metadata(outdir, "survey_records", [survey_record])
+            if survey_record.get("horiz_crs"):
+                # hard-errors on non-NAD83-family (e.g. Pacific-plate PA11)
+                ept_base_epsg = geodesy.geographic_base_epsg(
+                    survey_record["horiz_crs"]
+                )
+            geoid_hint = geodesy.geoid_grid_hint(survey_record.get("geoid"))
+            print(
+                f"Survey record pinned: {process_specific_3dep_survey} "
+                f"(base datum EPSG:{ept_base_epsg}, geoid "
+                f"{survey_record.get('geoid')}, ql {survey_record.get('ql')})"
+            )
+
     # TODO: create EPT for local laz for common workflow? https://github.com/uw-cryo/lidar_tools/issues/14#issuecomment-3076045321
     # SB note: The main reason for seperate EPT and local laz pipelines is the difference in projection handling, not much due to difference in file formats.
     # Fail fast, before hours of tile compute, if PROJ cannot rigorously
@@ -353,13 +386,39 @@ def rasterize(
             # applies is decided empirically (or by ept_vertical) after
             # mosaicking. The selected PROJ pipelines are enforced at the
             # final warps (gdalwarp -ct).
-            for key, branch, ept_src_crs in [
-                ("geoid", "geoid (EPSG:3857 + NAVD88 heights)", geodesy.build_3857_navd88_compound()),
-                ("ellipsoid", "ellipsoid (EPSG:3857 as NAD83(2011) 3D)", geodesy.build_ept_3857_nad83_2011()),
+            for key, branch, ept_src_crs, grids_hint in [
+                (
+                    "geoid",
+                    "geoid (EPSG:3857 + NAVD88 heights)",
+                    geodesy.build_3857_navd88_compound(),
+                    geoid_hint,
+                ),
+                (
+                    "ellipsoid",
+                    f"ellipsoid (EPSG:3857 as base EPSG:{ept_base_epsg} 3D)",
+                    geodesy.build_ept_3857_nad83_2011(base_epsg=ept_base_epsg),
+                    None,
+                ),
             ]:
-                record = geodesy.preflight_vertical_transform(
-                    ept_src_crs, out_crs, aoi_bounds=aoi_lonlat
-                )
+                try:
+                    record = geodesy.preflight_vertical_transform(
+                        ept_src_crs,
+                        out_crs,
+                        aoi_bounds=aoi_lonlat,
+                        prefer_grids=grids_hint,
+                    )
+                except RuntimeError:
+                    if grids_hint is None:
+                        raise
+                    print(
+                        f"WARNING: no transformation using the survey's "
+                        f"declared geoid ('{grids_hint}') is available; "
+                        "falling back to the best available geoid model",
+                        file=sys.stderr,
+                    )
+                    record = geodesy.preflight_vertical_transform(
+                        ept_src_crs, out_crs, aoi_bounds=aoi_lonlat
+                    )
                 record["branch"] = branch
                 transform_checks.append(record)
                 ept_checks[key] = record
@@ -628,13 +687,13 @@ def rasterize(
                 outdir / "EPT_3857_NAVD88_compound.wkt",
             )
         else:
-            # EPT heights are already NAD83(2011) ellipsoidal: declare the
-            # true datum (3D) so the ITRF<->NAD83(2011) Helmert applies to
-            # positions and heights, instead of a null relabel that leaves
-            # outputs ~1.3 m horizontal / ~0.9 m vertical off in CONUS
+            # EPT heights are already ellipsoidal: declare the survey's true
+            # base datum (3D) so the ITRF Helmert applies to positions and
+            # heights, instead of a null relabel that leaves outputs
+            # ~1.3 m horizontal / ~0.9 m vertical off in CONUS
             src_srs = geodesy.write_crs_file(
-                geodesy.build_ept_3857_nad83_2011(),
-                outdir / "EPT_3857_NAD83_2011_3D.wkt",
+                geodesy.build_ept_3857_nad83_2011(base_epsg=ept_base_epsg),
+                outdir / f"EPT_3857_base{ept_base_epsg}_3D.wkt",
             )
         out_extent = final_out_extent
         print(src_srs)
@@ -683,18 +742,22 @@ def rasterize(
             # dz, truncating UInt16 DNs). Still declare the NAD83(2011)
             # datum so the horizontal Helmert matches the height products.
             intensity_src_srs = geodesy.write_crs_file(
-                geodesy.build_ept_3857_nad83_2011(three_d=False),
-                outdir / "EPT_3857_NAD83_2011_2D.wkt",
+                geodesy.build_ept_3857_nad83_2011(
+                    three_d=False, base_epsg=ept_base_epsg
+                ),
+                outdir / f"EPT_3857_base{ept_base_epsg}_2D.wkt",
             )
             intensity_dst_srs = geodesy.write_crs_file(
                 out_crs.to_2d(),
                 outdir / (Path(str(dst_crs)).stem + "_2D.wkt"),
             )
-            # GDAL will not route the horizontal-only NAD83(2011)->target
+            # GDAL will not route the horizontal-only NAD83-family->target
             # transform through the ITRF Helmert on its own (it silently
             # selects the null tie): enforce the pipeline pyproj selects
             intensity_check = geodesy.preflight_vertical_transform(
-                geodesy.build_ept_3857_nad83_2011(three_d=False),
+                geodesy.build_ept_3857_nad83_2011(
+                    three_d=False, base_epsg=ept_base_epsg
+                ),
                 out_crs.to_2d(),
                 aoi_bounds=aoi_lonlat,
             )
