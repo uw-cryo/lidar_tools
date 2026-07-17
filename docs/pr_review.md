@@ -45,8 +45,11 @@ a reviewer who has worked in that area.
 3. **Adversarial agent review** (both, before marking ready):
    - **Claude Code**: from the branch, run `/code-review` locally at **high
      effort**. Have it review the full PR diff against main.
-   - **GitHub Copilot**: open the PR (draft is fine) and request a Copilot
-     review from the Reviewers panel.
+   - **GitHub Copilot**: requested automatically once the repo ruleset is
+     enabled (Settings -> Rules -> ruleset on `main` -> "Request pull request
+     review from Copilot"; this is the default for all new PRs). Until then,
+     request it manually from the Reviewers panel when opening the PR (draft
+     is fine).
 
 4. **Triage the findings.** Sort every finding into one of two lists and post
    them as a single PR comment:
