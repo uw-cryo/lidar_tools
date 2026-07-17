@@ -139,6 +139,38 @@ def _update_processing_metadata(output_dir: Path, section: str, data) -> None:
         yaml.dump(metadata, f, default_flow_style=False, sort_keys=False)
 
 
+def _cleanup_intermediates(outdir: Path) -> None:
+    """
+    Remove per-tile intermediates so the run directory keeps only final
+    products, WKT CRS definitions and metadata: per-tile rasters + cache LAZ
+    from tiles/<product>/ and tiles/cache/ (cache normally deleted in-task;
+    this is the backstop for hard kills), pipeline JSONs from pipelines/,
+    and top-level *temp.tif mosaics. Emptied subdirectories are removed —
+    anything else in them (e.g. saved per-tile pointclouds) is kept.
+    """
+    for subdir_name, patterns in (
+        ("tiles", ["*_tile_aoi_*.tif*", "*_cache_tile_aoi_*.laz"]),
+        ("pipelines", ["pipeline*.json"]),
+    ):
+        subdir = outdir / subdir_name
+        for pattern in patterns:
+            for file in subdir.rglob(pattern):
+                file.unlink()
+        # deepest-first so emptied product subdirs go before tiles/ itself
+        for child in sorted(subdir.rglob("*"), reverse=True):
+            if child.is_dir():
+                try:
+                    child.rmdir()
+                except OSError:
+                    pass  # still holds files we keep
+        try:
+            subdir.rmdir()
+        except OSError:
+            pass  # missing, or still holds files we keep
+    for file in outdir.glob("*temp.tif"):
+        file.unlink()
+
+
 def rasterize(
     geometry: str,
     input: str = "EPT_AWS",
@@ -613,14 +645,7 @@ def rasterize(
             },
         )
         if cleanup:
-            for pattern in [
-                "*_tile_aoi_*.tif*",
-                "*_cache_tile_aoi_*.laz",
-                "pipeline*.json",
-                "*temp.tif",
-            ]:
-                for file in outdir.glob(pattern):
-                    file.unlink()
+            _cleanup_intermediates(outdir)
         print("****Processing complete (no data)****")
         return
 
@@ -896,23 +921,27 @@ def rasterize(
     _update_processing_metadata(
         outdir,
         "run_status",
-        {"state": "completed", "timestamp": datetime.now().isoformat()},
+        {
+            "state": "completed",
+            "timestamp": datetime.now().isoformat(),
+            "tiles_total": num_pipelines,
+            "tiles_empty": n_empty,
+            "tiles_data": data_total,
+        },
     )
 
     if cleanup:
         print("Cleaning up intermediate outputs")
-        # match only per-tile outputs (a bare '*tile*' pattern deletes the
-        # final mosaics when the AOI filename contains 'tile'), and keep
-        # *.wkt files: the CRS definition used is provenance for the run
-        # cache LAZ normally deleted in-task; glob is a backstop for hard kills
-        for pattern in [
-            "*_tile_aoi_*.tif*",
-            "*_cache_tile_aoi_*.laz",
-            "pipeline*.json",
-            "*temp.tif",
-        ]:
-            for file in outdir.glob(pattern):
-                file.unlink()
+        _cleanup_intermediates(outdir)
+
+    try:
+        from lidar_tools.preview import product_preview
+
+        preview_fn = product_preview(outdir)
+        if preview_fn is not None:
+            print(f"Preview figure: {preview_fn}")
+    except Exception as e:  # a figure failure must never fail a finished run
+        print(f"WARNING: preview figure generation failed: {e}", file=sys.stderr)
 
     print("****Processing complete****")
 

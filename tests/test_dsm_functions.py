@@ -369,7 +369,7 @@ def _legacy_product_pipelines(reader, outdir, prefix, hag_nn=None,
         "dtm_no_fill": outdir / f"{prefix}_dtm_tile_aoi_no_fill000.tif",
         "dtm_fill": outdir / f"{prefix}_dtm_tile_aoi_fill4_000.tif",
         "intensity": outdir / f"{prefix}_intensity_tile_aoi_000.tif",
-    }
+    }  # legacy (pre-F3) layout: flat, no tiles/<product>/ subdirs
     chains = {
         "dsm": d.create_pdal_pipeline(
             group_filter=dsm_group_filter,
@@ -481,10 +481,16 @@ def test_tile_job_structure_first_idw(tmp_path):
         "writers.gdal",
     ]
     assert dsm_int[0]["filename"] == job["fetch"]["cache_file"]
-    # legacy tile filenames preserved verbatim (resume + mosaic compat)
+    # legacy tile filenames preserved verbatim (resume + mosaic compat),
+    # organized under per-product tiles/ subdirs and pipelines/
     outputs = job["executions"][0]["outputs"]
-    assert outputs["dsm"].endswith("aoi_dsm_tile_aoi_000.tif")
-    assert outputs["intensity"].endswith("aoi_intensity_tile_aoi_000.tif")
+    assert outputs["dsm"].endswith("tiles/dsm/aoi_dsm_tile_aoi_000.tif")
+    assert outputs["intensity"].endswith(
+        "tiles/intensity/aoi_intensity_tile_aoi_000.tif"
+    )
+    assert "/tiles/cache/" in job["fetch"]["cache_file"]
+    assert "/pipelines/" in job["fetch"]["pipeline_json"]
+    assert all("/pipelines/" in e["pipeline_json"] for e in job["executions"])
     # writer geometry matches create_dem_stage
     assert dsm_int[-2]["origin_x"] == _TILE_EXTENT[0]
     assert dsm_int[-2]["width"] == 20 and dsm_int[-2]["height"] == 20
@@ -964,7 +970,7 @@ def test_execute_tile_job_empty_tile(tmp_path, capsys):
     assert result["empty"] is True
     assert all(fn is None for fn in result["outputs"].values())
     # no product tiles written, cache cleaned up
-    assert not list(tmp_path.glob("*_tile_aoi_*.tif"))
+    assert not list(tmp_path.glob("**/*_tile_aoi_*.tif"))
     assert not Path(job["fetch"]["cache_file"]).exists()
     # no spurious ERROR about invalid rasters
     assert "invalid raster" not in capsys.readouterr().err
