@@ -827,6 +827,7 @@ def fetch_reports(
     -------
     None
     """
+    import os
     import sys
     import time
 
@@ -913,7 +914,13 @@ def fetch_reports(
                         fetched.append(f"{sub}{obj['key']}")
                         continue
                     dest.parent.mkdir(parents=True, exist_ok=True)
-                    tmp = dest.with_suffix(dest.suffix + ".part")
+                    # pid-unique temp name: overlapping runs (an orphaned
+                    # session's fetch still downloading) must not share a
+                    # .part inode — one run's rename removes the path and
+                    # the other's rename then crashes the whole staging
+                    tmp = dest.with_suffix(
+                        f"{dest.suffix}.part{os.getpid()}"
+                    )
                     # long multi-GB staging runs hit transient S3 resets;
                     # retry each file, and give up on a persistently
                     # failing object (recorded in `failed`, never fatal)
@@ -942,6 +949,7 @@ def fetch_reports(
                             else:
                                 time.sleep(2 ** (attempt + 1))
                     if not ok:
+                        tmp.unlink(missing_ok=True)
                         failed.append(f"{sub}{obj['key']}")
                         continue
                     tmp.rename(dest)

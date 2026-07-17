@@ -175,6 +175,9 @@ def test_fetch_reports_stages_report_files(tmp_path, monkeypatch):
     ).exists()
     inventory = (outdir / "remote_inventory.txt").read_text()
     assert "reports/photos/GCP01.jpg" in inventory  # never dropped silently
+    # no temp files linger, and the pid-unique naming means an overlapping
+    # run (orphaned session) can never rename this run's .part from under it
+    assert not list(outdir.rglob("*.part*"))
     meta = yaml.safe_load(meta_fn.read_text())
     assert meta["vendor_reports"]["remote_objects_total"] == 7
     assert sorted(meta["vendor_reports"]["files"]) == [
