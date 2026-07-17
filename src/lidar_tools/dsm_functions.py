@@ -70,6 +70,35 @@ def tap_bounds(site_bounds: tuple | list | np.ndarray, res: int | float) -> list
     ]
 
 
+#: per-dataset ept.json SRS cache (the metadata is immutable per dataset)
+_EPT_SRS_CACHE: dict = {}
+
+
+def _ept_srs_wkt(url: str, attempts: int = 4, backoff_s: float = 2.0) -> str:
+    """Fetch (once) and cache the SRS WKT from an EPT dataset's ept.json.
+
+    S3 occasionally returns a transient non-JSON error body (e.g. 503
+    SlowDown) — retry with backoff instead of crashing a 1000-tile run.
+    """
+    if url in _EPT_SRS_CACHE:
+        return _EPT_SRS_CACHE[url]
+    last_exc = None
+    for i in range(attempts):
+        try:
+            response = requests.get(url, timeout=60)
+            response.raise_for_status()
+            wkt = response.json()["srs"]["wkt"]
+            _EPT_SRS_CACHE[url] = wkt
+            return wkt
+        except Exception as exc:  # transient S3 / network errors
+            last_exc = exc
+            print(f"ept.json fetch attempt {i + 1}/{attempts} failed for "
+                  f"{url}: {exc}", file=sys.stderr)
+            time.sleep(backoff_s * (i + 1))
+    raise RuntimeError(f"could not fetch {url} after {attempts} attempts") \
+        from last_exc
+
+
 def return_readers(
     input_aoi: gpd.GeoDataFrame,
     pointcloud_resolution: float = 1.0,
@@ -192,10 +221,11 @@ def return_readers(
                             "polygon": str(aoi_3857.wkt),
                         }
 
-                        # SRS associated with the 3DEP dataset
-                        response = requests.get(url)
-                        data = response.json()
-                        srs_wkt = data["srs"]["wkt"]
+                        # SRS associated with the 3DEP dataset — cached per
+                        # dataset + retried: this used to issue one S3 GET per
+                        # TILE (1000+ for large AOIs) and a single transient
+                        # non-JSON response (e.g. 503 SlowDown) killed the run
+                        srs_wkt = _ept_srs_wkt(url)
 
                         pointcloud_input_crs.append(CRS.from_wkt(srs_wkt))
                         readers.append(reader)
@@ -1251,6 +1281,7 @@ def gdal_warp(
     dtype: str = 'Float32',
     target_aligned_pixels: bool = True,
     coordinate_operation: str = None,
+    coord_epoch: float = None,
 ) -> None:
     """
     Warp a raster file to a new coordinate reference system and resolution using GDAL.
@@ -1284,6 +1315,15 @@ def gdal_warp(
         NAD83(2011)<->ITRF Helmert via ITRF2014), silently picking a null
         operation instead; pass the pipeline selected by
         geodesy.preflight_vertical_transform to enforce the rigorous path.
+    coord_epoch
+        Target coordinate epoch (decimal year, gdalwarp -t_coord_epoch) for
+        dynamic-frame targets: the time-dependent Helmert is evaluated at
+        this epoch, so the output coordinates ARE at this epoch. Mutually
+        exclusive with coordinate_operation (a forced -ct pipeline has no
+        free epoch parameter — GDAL silently ignores -t_coord_epoch when
+        -ct is set). Requires GDAL's CLI-argument-string code path; the
+        WarpOptions kwargs, transformerOptions, and an osr SRS with
+        SetCoordinateEpoch() all drop the epoch (verified GDAL 3.12).
     Returns
     -------
     None
@@ -1302,36 +1342,65 @@ def gdal_warp(
     resampling_alg = resampling_mapping[resampling_alogrithm]
 
     gdal.SetConfigOption("GDAL_NUM_THREADS", "ALL_CPUS")
-    ds = gdal.Warp(
-        dst_fn,
-        src_fn,
-        resampleAlg=resampling_alg,
-        srcSRS=src_srs,
-        xRes=res,
-        yRes=res,
-        dstSRS=dst_srs,
-        errorThreshold=tolerance,
-        # disable when matching an existing raster grid whose origin is not
-        # a multiple of res (e.g. recovering interrupted-run intermediates)
-        targetAlignedPixels=target_aligned_pixels,
-        coordinateOperation=coordinate_operation,
-        # use directly output format as COG when gaussian overview resampling is implemented upstream in GDAL
-        outputBounds=out_extent,
-        outputType=DTYPE_TO_GDAL.get(dtype),
-        creationOptions=["COMPRESS=LZW", "TILED=YES", "COPY_SRC_OVERVIEWS=YES","BIGTIFF=IF_SAFER"],
-        callback=gdal.TermProgress_nocb,
-        multithread=True,
-    )
+    if coord_epoch is not None:
+        if coordinate_operation is not None:
+            raise ValueError(
+                "coord_epoch and coordinate_operation are mutually exclusive: "
+                "GDAL ignores -t_coord_epoch when a -ct pipeline is forced. "
+                "With coord_epoch set, GDAL selects the operation itself "
+                "(verified to pick the rigorous time-dependent Helmert for "
+                "3D NAD83(2011)-based sources)."
+            )
+        # -t_coord_epoch only survives the CLI-argument string form
+        cli_resampling = {"nearest": "near", "cubic_spline": "cubicspline"}.get(
+            resampling_alogrithm, resampling_alogrithm
+        )
+        opts = (
+            f"-overwrite -r {cli_resampling} -tr {res} {res} -et {tolerance} "
+            f"-ot {dtype} -multi -t_coord_epoch {coord_epoch} "
+            f'-s_srs "{src_srs}" -t_srs "{dst_srs}" '
+            "-co COMPRESS=LZW -co TILED=YES -co COPY_SRC_OVERVIEWS=YES "
+            "-co BIGTIFF=IF_SAFER"
+        )
+        if target_aligned_pixels:
+            opts += " -tap"
+        if out_extent is not None:
+            opts += (f" -te {out_extent[0]} {out_extent[1]}"
+                     f" {out_extent[2]} {out_extent[3]}")
+        print(f"gdal.Warp CLI options: {opts}")
+        ds = gdal.Warp(dst_fn, src_fn, options=opts,
+                       callback=gdal.TermProgress_nocb)
+    else:
+        ds = gdal.Warp(
+            dst_fn,
+            src_fn,
+            resampleAlg=resampling_alg,
+            srcSRS=src_srs,
+            xRes=res,
+            yRes=res,
+            dstSRS=dst_srs,
+            errorThreshold=tolerance,
+            # disable when matching an existing raster grid whose origin is not
+            # a multiple of res (e.g. recovering interrupted-run intermediates)
+            targetAlignedPixels=target_aligned_pixels,
+            coordinateOperation=coordinate_operation,
+            # use directly output format as COG when gaussian overview resampling is implemented upstream in GDAL
+            outputBounds=out_extent,
+            outputType=DTYPE_TO_GDAL.get(dtype),
+            creationOptions=["COMPRESS=LZW", "TILED=YES", "COPY_SRC_OVERVIEWS=YES","BIGTIFF=IF_SAFER"],
+            callback=gdal.TermProgress_nocb,
+            multithread=True,
+        )
     gdal.SetConfigOption("GDAL_NUM_THREADS", None)
     ds.Close()
 
 
 
-def gdal_add_overview(raster_fn: str,ensure_cog=True) -> None:
+def gdal_add_overview(raster_fn: str, ensure_cog=True, resampling: str = "AVERAGE") -> None:
     """
-    Add Gaussian overviews to a raster file using GDAL.
+    Add overviews to a raster file using GDAL.
     Converts the raster to a COG,
-        as adding Gaussian overviews added to tiled and compressed rasters does not automatically ensure COG compliance
+        as adding overviews to tiled and compressed rasters does not automatically ensure COG compliance
 
     Parameters
     ----------
@@ -1339,17 +1408,21 @@ def gdal_add_overview(raster_fn: str,ensure_cog=True) -> None:
         Path to the raster file.
     ensure_cog
         Whether to ensure the output raster is a COG, by default True.
+    resampling
+        Overview resampling kernel passed to BuildOverviews, by default "AVERAGE".
+        "GAUSS" introduces a sub-pixel horizontal offset in the overview levels
+        relative to the full-resolution grid — do not use for georeferenced delivery.
 
     Returns
     -------
     None
     This function does not return anything, it writes the output raster to the specified file.
     """
-    print(f"Adding Gaussian overviews to {raster_fn}")
+    print(f"Adding {resampling} overviews to {raster_fn}")
     with gdal.OpenEx(raster_fn, 1, open_options=["IGNORE_COG_LAYOUT_BREAK=YES"]) as ds:
         gdal.SetConfigOption("COMPRESS_OVERVIEW", "DEFLATE")
         ds.BuildOverviews(
-            "GAUSS", [2, 4, 8, 16], callback=gdal.TermProgress_nocb
+            resampling, [2, 4, 8, 16], callback=gdal.TermProgress_nocb
         )
 
     if ensure_cog:
