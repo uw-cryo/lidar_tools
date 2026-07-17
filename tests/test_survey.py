@@ -144,12 +144,15 @@ def test_fetch_reports_stages_report_files(tmp_path, monkeypatch):
                 page = listing(
                     (f"{pre}reports/QC_Report.pdf", 4),
                     (f"{pre}reports/photos/GCP01.jpg", 2),
+                    (f"{pre}reports/vendor_provided_xml/WU_CPC.xml", 6),
                     truncated=True,
                     token="tok1",
                 )
             return FakeResp(page.encode())
         if url.endswith(".gpkg"):
             return FakeResp(b"GPK")
+        if url.endswith(".xml"):
+            return FakeResp(b"<xml/>")
         assert not url.lower().endswith(".jpg")  # photos never downloaded
         assert url.endswith(".pdf")
         return FakeResp(b"%PDF")
@@ -161,6 +164,8 @@ def test_fetch_reports_stages_report_files(tmp_path, monkeypatch):
     outdir = pdir / "vendor_reports"
     assert (outdir / "reports/QC_Report.pdf").read_bytes() == b"%PDF"
     assert (outdir / "reports/Survey_Report.pdf").exists()
+    # FGDC metadata XML staged by default: report-metrics layer 1 needs it
+    assert (outdir / "reports/vendor_provided_xml/WU_CPC.xml").exists()
     assert not (outdir / "reports/photos/GCP01.jpg").exists()  # excluded ext
     assert (outdir / "project_level/USGS_PROJ_X_Project_Report.pdf").exists()
     # the vertical_accuracy tree is staged whole minus monument photos
@@ -171,17 +176,18 @@ def test_fetch_reports_stages_report_files(tmp_path, monkeypatch):
     inventory = (outdir / "remote_inventory.txt").read_text()
     assert "reports/photos/GCP01.jpg" in inventory  # never dropped silently
     meta = yaml.safe_load(meta_fn.read_text())
-    assert meta["vendor_reports"]["remote_objects_total"] == 6
+    assert meta["vendor_reports"]["remote_objects_total"] == 7
     assert sorted(meta["vendor_reports"]["files"]) == [
         "project_level/USGS_PROJ_X_Project_Report.pdf",
         "project_level/vertical_accuracy/USGS/VA.gpkg",
         "reports/QC_Report.pdf",
         "reports/Survey_Report.pdf",
+        "reports/vendor_provided_xml/WU_CPC.xml",
     ]
     # idempotent: sizes match, so a re-run lists but downloads nothing
     n_before = len(calls)
     survey.fetch_reports(str(tmp_path))
     assert not [
         c for c in calls[n_before:]
-        if c.endswith(".pdf") or c.endswith(".gpkg")
+        if c.endswith((".pdf", ".gpkg", ".xml"))
     ]

@@ -16,9 +16,11 @@ Both default to the projects in `batch_status.yaml`; pass
 For each project, using the `metadata_link` already pinned in the
 project's processing metadata (WESM survey record):
 
-- **Workunit prefix** (`.pdf` by default, `--include` to widen): vendor
-  mapping/project reports, USGS data-validation report, QC report
-  suites, POS/GNSS trajectory reports.
+- **Workunit prefix** (`.pdf,.xml` by default, `--include` to widen):
+  vendor mapping/project reports, USGS data-validation report, QC
+  report suites, POS/GNSS trajectory reports, plus the small FGDC
+  metadata XMLs (`vendor_provided_xml/`) that report-metrics parses
+  for acquisition dates and compliance statements.
 - **Project level** (one directory up, shared across workunits): the
   standardized `USGS_<project>_Project_Report.pdf` — the document the
   per-workunit validation reports defer to for measured accuracy.

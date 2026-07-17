@@ -787,7 +787,7 @@ def _s3_list_prefix(index_url: str, recursive: bool = True) -> list[dict]:
 def fetch_reports(
     batch_dir: str,
     workunits: str | None = None,
-    include: str = ".pdf",
+    include: str = ".pdf,.xml",
 ) -> None:
     """
     Stage each project's vendor reports (QA/QC, survey/control, mapping)
@@ -816,10 +816,12 @@ def fetch_reports(
         and skipped.
     include
         Comma-separated filename extensions to download, by default
-        ".pdf" — the vendor report documents. The staged-metadata prefix
-        also holds bulky non-report payloads (ground-control monument
-        photos, breakline geodatabases); widen deliberately, e.g.
-        ".pdf,.jpg" to add the monument photos.
+        ".pdf,.xml" — the vendor report documents plus the FGDC metadata
+        XMLs that report-metrics parses for acquisition dates and
+        compliance statements (a handful of small files per workunit).
+        The staged-metadata prefix also holds bulky non-report payloads
+        (ground-control monument photos, breakline geodatabases); widen
+        deliberately, e.g. ".pdf,.xml,.jpg" to add the monument photos.
 
     Returns
     -------
