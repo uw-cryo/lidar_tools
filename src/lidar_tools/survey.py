@@ -732,3 +732,242 @@ def survey(
             surveys, aoi_gdf, out_fn=str(outdir / "coverage_map_panels.png")
         )
         print(f"Wrote survey records to {outdir}")
+
+
+def _parse_index_url(index_url: str) -> tuple[str, str]:
+    """
+    Split a TNM "index.html?prefix=" browser link (the form WESM publishes
+    as metadata_link) into the bucket endpoint and the object prefix
+    (trailing slash included).
+    """
+    from urllib.parse import urlsplit
+
+    parts = urlsplit(index_url)
+    prefix = dict(
+        kv.split("=", 1) for kv in parts.query.split("&") if "=" in kv
+    ).get("prefix", "").rstrip("/") + "/"
+    return f"{parts.scheme}://{parts.netloc}", prefix
+
+
+def _s3_list_prefix(index_url: str, recursive: bool = True) -> list[dict]:
+    """
+    List objects under the S3 prefix of a TNM index link (only the
+    prefix's own level when recursive=False). Follows ListObjectsV2
+    pagination; returns [{"key", "size"}] with keys relative to the
+    prefix.
+    """
+    import xml.etree.ElementTree as ET
+    from urllib.parse import quote
+
+    import requests
+
+    endpoint, prefix = _parse_index_url(index_url)
+    ns = "{http://s3.amazonaws.com/doc/2006-03-01/}"
+    objects: list[dict] = []
+    token = None
+    while True:
+        url = f"{endpoint}/?list-type=2&prefix={quote(prefix)}"
+        if not recursive:
+            url += "&delimiter=%2F"
+        if token:
+            url += f"&continuation-token={quote(token)}"
+        resp = requests.get(url, timeout=60)
+        resp.raise_for_status()
+        root = ET.fromstring(resp.content)
+        for obj in root.findall(f"{ns}Contents"):
+            key = obj.findtext(f"{ns}Key")
+            size = obj.findtext(f"{ns}Size")
+            assert key is not None and size is not None, "malformed S3 listing"
+            objects.append({"key": key[len(prefix):], "size": int(size)})
+        if (root.findtext(f"{ns}IsTruncated") or "").lower() != "true":
+            return objects
+        token = root.findtext(f"{ns}NextContinuationToken")
+
+
+def fetch_reports(
+    batch_dir: str,
+    workunits: str | None = None,
+    include: str = ".pdf,.xml",
+) -> None:
+    """
+    Stage each project's vendor reports (QA/QC, survey/control, mapping)
+    next to its products.
+
+    3DEP vendor deliverables live under the workunit's staged-metadata S3
+    prefix (the metadata_link recorded in survey_records of the project's
+    processing metadata). Downstream accuracy assessment needs the vendor
+    QC numbers on disk next to the rasters, not behind a browser link, so
+    this fetches the report files into <project>/vendor_reports/
+    (preserving subpaths), writes the full remote listing to
+    remote_inventory.txt in the same directory (nothing is dropped
+    silently), and records the staging in the processing metadata.
+    Already-downloaded files (matching size) are skipped, so re-runs only
+    fill gaps.
+
+    Parameters
+    ----------
+    batch_dir
+        rasterize-projects base directory (per-project subdirectories +
+        batch_status.yaml).
+    workunits
+        Comma-separated project names, default: all projects recorded in
+        batch_status.yaml. Projects without a survey record carrying a
+        metadata_link (e.g. manually ingested vendor rasters) are reported
+        and skipped.
+    include
+        Comma-separated filename extensions to download, by default
+        ".pdf,.xml" — the vendor report documents plus the FGDC metadata
+        XMLs that report-metrics parses for acquisition dates and
+        compliance statements (a handful of small files per workunit).
+        The staged-metadata prefix also holds bulky non-report payloads
+        (ground-control monument photos, breakline geodatabases); widen
+        deliberately, e.g. ".pdf,.xml,.jpg" to add the monument photos.
+
+    Returns
+    -------
+    None
+    """
+    import os
+    import sys
+    import time
+
+    import yaml
+
+    import requests
+
+    batch = Path(batch_dir)
+    if workunits is None:
+        status_fn = batch / "batch_status.yaml"
+        if not status_fn.exists():
+            raise FileNotFoundError(
+                f"{status_fn} not found; pass workunits explicitly."
+            )
+        with open(status_fn) as f:
+            names = list(yaml.safe_load(f)["projects"])
+    else:
+        names = [w.strip() for w in workunits.split(",")]
+    exts = tuple(e.strip().lower() for e in include.split(",") if e.strip())
+
+    for wu in names:
+        pdir = batch / wu
+        meta_hits = sorted(pdir.glob("*-processing_metadata.yaml")) or [
+            pdir / "processing_metadata.yaml"
+        ]
+        meta_fn = meta_hits[0]
+        if not meta_fn.exists():
+            print(f"{wu}: no processing metadata, skipping")
+            continue
+        meta = yaml.safe_load(meta_fn.read_text()) or {}
+        records = meta.get("survey_records") or []
+        link = next(
+            (
+                rec["metadata_link"]
+                for rec in records
+                if rec.get("metadata_link")
+                and rec.get("workunit", wu) == wu
+            ),
+            None,
+        )
+        if link is None:
+            print(f"{wu}: no metadata_link in survey records, skipping")
+            continue
+
+        endpoint, wu_prefix = _parse_index_url(link)
+        # workunit reports + the project level one up: the project-wide
+        # USGS report and the vertical_accuracy/ checkpoint data (measured
+        # per-point errors, shared across the project's workunits) live
+        # there, not under the workunit
+        proj_prefix = wu_prefix.rstrip("/").rsplit("/", 1)[0] + "/"
+        proj_link = f"{endpoint}/index.html?prefix={proj_prefix}"
+        va_link = f"{endpoint}/index.html?prefix={proj_prefix}vertical_accuracy/"
+        # (prefix, dest subdir, extension filter, exclusions). The
+        # vertical_accuracy tree is curated point data — take all of it
+        # EXCEPT checkpoint monument photos: AZ_SouthWest_D23 carries
+        # 3,227 jpgs = 25.3 GB against 0.06 GB of actual control data.
+        # The photos stay listed in remote_inventory.txt.
+        layers = [
+            (link, "", exts, ()),
+            (proj_link, "project_level/", exts, ()),
+            (va_link, "project_level/vertical_accuracy/", None,
+             (".jpg", ".jpeg", ".png")),
+        ]
+        outdir = pdir / "vendor_reports"
+        outdir.mkdir(parents=True, exist_ok=True)
+        fetched: list[str] = []
+        failed: list[str] = []
+        n_remote = 0
+        with open(outdir / "remote_inventory.txt", "w") as inv:
+            for layer_link, sub, layer_exts, layer_skip in layers:
+                objects = _s3_list_prefix(layer_link, recursive=sub != "project_level/")
+                n_remote += len(objects)
+                _, layer_prefix = _parse_index_url(layer_link)
+                for obj in objects:
+                    inv.write(f"{obj['size']:>12} {sub}{obj['key']}\n")
+                for obj in objects:
+                    key_lower = obj["key"].lower()
+                    if layer_exts and not key_lower.endswith(layer_exts):
+                        continue
+                    if layer_skip and key_lower.endswith(layer_skip):
+                        continue
+                    dest = outdir / sub / obj["key"]
+                    if dest.exists() and dest.stat().st_size == obj["size"]:
+                        fetched.append(f"{sub}{obj['key']}")
+                        continue
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    # pid-unique temp name: overlapping runs (an orphaned
+                    # session's fetch still downloading) must not share a
+                    # .part inode — one run's rename removes the path and
+                    # the other's rename then crashes the whole staging
+                    tmp = dest.with_suffix(
+                        f"{dest.suffix}.part{os.getpid()}"
+                    )
+                    # long multi-GB staging runs hit transient S3 resets;
+                    # retry each file, and give up on a persistently
+                    # failing object (recorded in `failed`, never fatal)
+                    ok = False
+                    for attempt in range(4):
+                        try:
+                            resp = requests.get(
+                                f"{endpoint}/{layer_prefix}{obj['key']}",
+                                timeout=600,
+                                stream=True,
+                            )
+                            resp.raise_for_status()
+                            with open(tmp, "wb") as f:
+                                for chunk in resp.iter_content(1 << 20):
+                                    f.write(chunk)
+                            ok = True
+                            break
+                        except requests.exceptions.RequestException as e:
+                            if attempt == 3:
+                                print(
+                                    f"WARNING: giving up on "
+                                    f"{sub}{obj['key']} after 4 attempts "
+                                    f"({e})",
+                                    file=sys.stderr,
+                                )
+                            else:
+                                time.sleep(2 ** (attempt + 1))
+                    if not ok:
+                        tmp.unlink(missing_ok=True)
+                        failed.append(f"{sub}{obj['key']}")
+                        continue
+                    tmp.rename(dest)
+                    fetched.append(f"{sub}{obj['key']}")
+        meta["vendor_reports"] = {
+            "source_prefix": link,
+            "project_prefix": proj_link,
+            "directory": outdir.name,
+            "include": list(exts),
+            "files": fetched,
+            "failed": failed,
+            "remote_objects_total": n_remote,
+        }
+        with open(meta_fn, "w") as f:
+            yaml.dump(meta, f, default_flow_style=False, sort_keys=False)
+        print(
+            f"{wu}: staged {len(fetched)}/{n_remote} remote objects"
+            + (f" ({len(failed)} FAILED)" if failed else "")
+            + " "
+            f"({', '.join(exts)}) -> {outdir}"
+        )

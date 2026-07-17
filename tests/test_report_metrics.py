@@ -1,0 +1,165 @@
+"""Pattern-layer tests against real (abbreviated) vendor report excerpts —
+one per observed format family — so vendor-format drift shows up as a
+test failure, not silent non-extraction."""
+
+from lidar_tools import report_metrics
+
+
+FGDC_XML = """<metadata><idinfo><timeperd><timeinfo><rngdates>
+<begdate>20230618</begdate><enddate>20230722</enddate>
+</rngdates></timeinfo></timeperd></idinfo>
+<dataqual><posacc><vertacc>
+<vertaccr>produced to meet ASPRS ... for a 10-cm RMSEz Vertical Accuracy Class.</vertaccr>
+</vertacc><horizpa>
+<horizpar>for a ___ (cm) RMSEx / RMSEy Horizontal Accuracy Class = +/- ___ cm.</horizpar>
+</horizpa></posacc></dataqual></metadata>"""
+
+
+def test_parse_fgdc_xml_dates_and_unfilled_template():
+    out = report_metrics.parse_fgdc_xml(FGDC_XML)
+    assert out["acquisition_start"] == "2023-06-18"
+    assert out["acquisition_end"] == "2023-07-22"
+    assert out["unfilled_template_fields"]  # the "___" blanks are surfaced
+
+
+GEIGER_TABLE = """
+                               Aggregate Nominal Pulse Spacing (m)              0.23
+                               Aggregate Nominal Pulse Density (pls/m2)            18.4
+             Broad Land Cover Type # of Points RMSEz 95% Confidence Level 95th Percentile
+               NVA of Point Cloud      129      0.051      0.100
+               VVA of Bare Earth       101      0.053                          0.107
+"""
+
+
+def test_parse_geiger_style_tables():
+    m, ev = report_metrics.parse_report_text(GEIGER_TABLE, "vendor.pdf")
+    assert m["anpd_ppsm"] == 18.4
+    assert m["anps_m"] == 0.23
+    assert m["nva_rmsez_m"] == 0.051
+    assert m["nva_95pct_m"] == 0.100
+    assert m["vva_95th_m"] == 0.107
+    assert m["n_nva"] == 129 and m["n_vva"] == 101
+    assert all(e["file"] == "vendor.pdf" and e["line"] for e in ev)
+
+
+TARGET_MEASURED_TABLE = """
+                                           Target        Measured          Point Count
+                       Raw NVA            0.196 m          0.1058              191
+                         NVA              0.196 m          0.1656              191
+                         VVA              0.294 m          0.1466              138
+                         RMSEr
+                                                                                0.1078 m
+                          ACCr
+                                                                                 0.19 m
+                       Density                            9.66 pts / m2
+"""
+
+
+def test_parse_target_measured_style_tables():
+    m, _ = report_metrics.parse_report_text(TARGET_MEASURED_TABLE, "r.pdf")
+    assert m["nva_95pct_m"] == 0.1656  # final NVA row, not the raw row
+    assert m["vva_95th_m"] == 0.1466
+    assert m["horizontal_rmser_m"] == 0.1078
+    assert m["horizontal_acc95_m"] == 0.19
+    assert m["measured_density_ppsm"] == 9.66
+
+
+MARS_QC = """
+Aggregate                     90,703,674,128                    17,593,412,570             5.156/0.479               0.440/1.444
+Non-vegetated Vertical Accuracy (NVA) RMSE(z)                                                  0.039/0.128 PASS
+Non-vegetated Vertical Accuracy (NVA) at the 95% Confidence Level +/-                          0.077/0.252 PASS
+"""
+
+
+def test_parse_mars_qc_style():
+    m, _ = report_metrics.parse_report_text(MARS_QC, "qc.pdf")
+    assert m["first_return_density_ppsm"] == 5.156
+    assert m["nva_rmsez_m"] == 0.039
+    assert m["nva_95pct_m"] == 0.077
+
+
+USGS_VALIDATION = """              Data Validation Report
+from the National Geospatial Technical Operations Center in
+  Based on this review, the delivered data is EXPECTED
+     TO MEET 3D Elevation Program requirements.
+Quality Level: 1                          P-Method: 15 - Geiger Mode Lidar
+Horizontal EPSG Code: 6341                Vertical EPSG Code: 5703    Geoid Model: GEOID 18
+Mechanism: GPSC                           Lidar Base Spec: 2.1
+"""
+
+
+def test_parse_usgs_validation():
+    out = report_metrics.parse_usgs_validation_text(USGS_VALIDATION)
+    assert out["quality_level"] == "1"
+    assert out["lidar_base_spec"] == "2.1"
+    assert out["p_method"] == "15 - Geiger Mode Lidar"
+    assert out["geoid"] == "GEOID 18"
+    assert out["verdict"] == "EXPECTED TO MEET"
+
+
+THREE_COL_DENSITY = """
+                    Average Point
+   Density                               4.7 pts / m2           8 pts / m2          9.64pts / m2
+The average (mean) line to line relative vertical accuracy for the AZ project
+was 0.035 feet (0.011 meters).
+"""
+
+
+def test_parse_three_column_density_and_swath_precision():
+    m, _ = report_metrics.parse_report_text(THREE_COL_DENSITY, "r.pdf")
+    assert m["measured_density_ppsm"] == 9.64  # achieved column, not planned
+    assert m["swath_relative_dz_mean_m"] == 0.011
+
+
+USGS_PROJECT_REPORT = """AZ_PimaCounty_2021_B21
+Project Definition: The entire collection for a contracted area.
+Work Unit Definition: A production block of data defined by the National
+Project Information
+Lidar Base Specification: 2020 Revision A                Primary Contractor: NV5 Geospatial, Inc
+Las Version: 1.4                                         Contract Mechanism: GPSC
+P Method: 7 - Linear-Mode Lidar
+Collection Start Date: 09-27-2021                        Collection End Date: 11-20-2021
+Vertical Accuracy Results
+Non-Vegetated Vertical Accuracy
+                                                                  19.6       10.70        19.6           10.80
+95-Percent Confidence Level
+Vegetated Vertical Accuracy
+                                                                  N/A        17.81        30.0           16.16
+95th Percentile
+"""
+
+
+def test_parse_usgs_project_report():
+    out = report_metrics.parse_usgs_project_report_text(USGS_PROJECT_REPORT)
+    assert out["primary_contractor"] == "NV5 Geospatial, Inc"
+    assert out["lidar_base_spec"] == "2020 Revision A"
+    assert out["p_method"] == "7 - Linear-Mode Lidar"
+    assert out["collection_start"] == "2021-09-27"
+    assert out["collection_end"] == "2021-11-20"
+    assert out["nva_95_pointcloud_m"] == 0.107
+    assert out["nva_95_dem_m"] == 0.108
+    assert out["vva_95th_pointcloud_m"] == 0.1781
+    assert out["vva_95th_dem_m"] == 0.1616
+
+
+USGS_PROJECT_REPORT_V2 = """AZ_SouthWest_D23
+Work Unit Definition: A production block of data defined by the National
+Vertical Accuracy Results
+Lidar   Required                 Required NVA at     Tested NVA at         Required VVA at Tested VVA at
+Point   NVA RMSEz                95% confidence      95% confidence        95th percentile 95th percentile
+Cloud   (cm)                     level (cm)          level (cm)            (cm)            (cm)
+        10.0      4.36           19.6                8.54                  N/A               11.97
+Digital                            Required NVA at     Tested NVA at        Required VVA Tested VVA at
+Model                              95% confidence      95% confidence       at 95th         95th percentile
+          10.0        4.45         19.6                8.73                 30.0             13.35
+"""
+
+
+def test_parse_usgs_project_report_v2_layout():
+    out = report_metrics.parse_usgs_project_report_text(USGS_PROJECT_REPORT_V2)
+    assert out["nva_rmsez_pointcloud_m"] == 0.0436
+    assert out["nva_95_pointcloud_m"] == 0.0854
+    assert out["vva_95th_pointcloud_m"] == 0.1197
+    assert out["nva_rmsez_dem_m"] == 0.0445
+    assert out["nva_95_dem_m"] == 0.0873
+    assert out["vva_95th_dem_m"] == 0.1335
