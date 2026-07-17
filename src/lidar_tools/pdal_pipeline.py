@@ -4,13 +4,12 @@ Create and exectute PDAL pipelines
 
 import os
 import re
+import sys
 from dask.distributed import Client, progress, fire_and_forget
 
-# Needs to happen before importing GDAL/PDAL
-os.environ["PROJ_NETWORK"] = (
-    "ON"  # Ensure this is 'ON' to get shift grids over the internet
-)
-# print(f"PROJ_NETWORK is {os.environ['PROJ_NETWORK']}")
+# Needs to happen before importing GDAL/PDAL. PROJ fetches datum shift grids
+# over the internet; respect an explicit user setting (e.g. PROJ_NETWORK=OFF).
+os.environ.setdefault("PROJ_NETWORK", "ON")
 
 from lidar_tools import dsm_functions
 from pyproj import CRS
@@ -327,6 +326,10 @@ def rasterize(
             raster_resolution=resolution
         )
 
+    # BuildVRT opens every tile at once during mosaicking; the default soft
+    # open-file limit fails for large AOIs (issue #43)
+    dsm_functions.raise_file_limit()
+
     # TODO: refactor into function
     num_pipelines = len(dsm_pipeline_list)
     if num_process == 1:
@@ -401,6 +404,39 @@ def rasterize(
             final_intensity_fn_list = run_parallel(intensity_pipeline_list)
 
     print("****Processing complete for all tiles****")
+
+    # Tile accounting: failed tiles are excluded from the mosaics below, so
+    # report them loudly instead of silently producing products with holes
+    tile_counts = {}
+    if products == "all" or products == "dsm":
+        tile_counts["DSM"] = (len(final_dsm_fn_list), len(dsm_pipeline_list))
+    if products == "all" or products == "dtm":
+        tile_counts["DTM_no_fill"] = (
+            len(final_dtm_no_fill_fn_list),
+            len(dtm_no_fill_pipeline_list),
+        )
+        tile_counts["DTM_fill"] = (
+            len(final_dtm_fill_fn_list),
+            len(dtm_fill_pipeline_list),
+        )
+    if products == "all" or products == "intensity":
+        tile_counts["intensity"] = (
+            len(final_intensity_fn_list),
+            len(intensity_pipeline_list),
+        )
+    summary = ", ".join(
+        f"{name}: {ok}/{total}" for name, (ok, total) in tile_counts.items()
+    )
+    n_failed = sum(total - ok for ok, total in tile_counts.values())
+    if n_failed:
+        print(
+            f"WARNING: {n_failed} tile pipelines failed or produced invalid "
+            f"rasters (valid/total {summary}). Final mosaics will contain gaps; "
+            "see ERROR messages above for the failing pipelines.",
+            file=sys.stderr,
+        )
+    else:
+        print(f"All tile pipelines produced valid rasters ({summary})")
 
     # Mosaicing
     # ===========
@@ -520,10 +556,15 @@ def rasterize(
                 )
             if products == "all" or products == "intensity":
                 print("Reprojecting intensity raster")
+                # Intensity values are not heights: warp with the horizontal-only
+                # source SRS. Passing the compound 3857+NAVD88 src_srs makes
+                # gdal.Warp apply the geoid/ellipsoid vertical shift to the
+                # single-band intensity values themselves (~-30 m in CONUS,
+                # values below the undulation clamp to 0 = nodata).
                 dsm_functions.gdal_warp(
                     intensity_mos_fn,
                     intensity_reproj,
-                    src_srs,
+                    "EPSG:3857",
                     dst_crs,
                     res=resolution,
                     dtype="UInt16",
@@ -554,7 +595,10 @@ def rasterize(
 
     if cleanup:
         print("Cleaning up intermediate outputs")
-        for pattern in ["*tile*.tif*","pipeline*.json", "*temp.tif", "*.wkt"]:
+        # match only per-tile outputs (a bare '*tile*' pattern deletes the
+        # final mosaics when the AOI filename contains 'tile'), and keep
+        # *.wkt files: the CRS definition used is provenance for the run
+        for pattern in ["*_tile_aoi_*.tif*", "pipeline*.json", "*temp.tif"]:
             for file in outdir.glob(pattern):
                 file.unlink()
 

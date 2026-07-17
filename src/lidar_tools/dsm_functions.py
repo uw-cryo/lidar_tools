@@ -13,6 +13,7 @@ import rioxarray
 import pystac_client
 import numpy as np
 import json
+import sys
 from pathlib import Path
 
 # import planetary_computer
@@ -21,8 +22,6 @@ import pdal
 import odc.stac
 import os
 import copy
-import warnings
-import glob
 
 gdal.UseExceptions()
 
@@ -247,25 +246,25 @@ def return_lpc_bounds(lpc: str, output_crs: CRS = None) -> list:
          The bounds of the point cloud in the format [xmin, ymin, xmax, ymax].
     """
     pipeline = pdal.Reader(lpc).pipeline()
-    pipeline.execute()
-
-    pdal_bounds = pipeline.quickinfo["readers.las"]["bounds"]
-    # print(pdal_bounds)
+    # quickinfo reads header metadata only; do not execute the pipeline here
+    # (a full execute loads every point into memory just to read bounds)
+    quickinfo = pipeline.quickinfo["readers.las"]
+    pdal_bounds = quickinfo["bounds"]
     minx, miny, maxx, maxy = (
         pdal_bounds["minx"],
         pdal_bounds["miny"],
         pdal_bounds["maxx"],
         pdal_bounds["maxy"],
     )
-    # print(f"Bounds of the point cloud: {minx}, {miny}, {maxx}, {maxy}")
+    output_bounds = [minx, miny, maxx, maxy]
     if output_crs is not None:
-        if CRS.from_wkt(pipeline.srswkt2) != output_crs:
+        src_crs = CRS.from_wkt(quickinfo["srs"]["compoundwkt"])
+        if not isinstance(output_crs, CRS):
+            output_crs = CRS.from_user_input(output_crs)
+        if src_crs != output_crs:
             output_bounds = transform_bounds(
-                CRS.from_wkt(pipeline.srswkt2), output_crs, minx, miny, maxx, maxy
+                src_crs, output_crs, minx, miny, maxx, maxy
             )
-
-    else:
-        output_bounds = [minx, miny, maxx, maxy]
     pipeline = None
     return output_bounds
 
@@ -603,12 +602,44 @@ DTYPE_TO_GDAL = {
     "CFloat32": gdal.GDT_CFloat32,
     "CFloat64": gdal.GDT_CFloat64,
 }
+def raise_file_limit(max_soft: int = 65536) -> int:
+    """
+    Raise the process soft open-file limit (RLIMIT_NOFILE) toward the hard limit.
+
+    gdal.BuildVRT opens every tile simultaneously during mosaicking, which
+    exceeds default soft limits (often 256-1024) for large AOIs (issue #43).
+
+    Parameters
+    ----------
+    max_soft
+        Upper bound on the requested soft limit, by default 65536.
+
+    Returns
+    -------
+    int
+        The resulting soft limit, or -1 if it could not be determined/raised.
+    """
+    try:
+        import resource
+
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        target = max_soft if hard == resource.RLIM_INFINITY else min(hard, max_soft)
+        if target > soft:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (target, hard))
+            print(f"Raised open-file limit (RLIMIT_NOFILE) from {soft} to {target}")
+            soft = target
+        return soft
+    except Exception as e:
+        print(f"Could not raise open-file limit: {e}", file=sys.stderr)
+        return -1
+
+
 def raster_mosaic(
     img_list: list,
     outfn: str,
     cog: bool = False,
     out_extent: list = None,
-    
+
 ) -> None:
     """
     Given a list of input images, mosaic them into a COG raster by using vrt and gdal_translate
@@ -647,14 +678,20 @@ def raster_mosaic(
             outfn,
             vrt_fn,
             projWin=out_extent,
-            creationOptions=["COMPRESS=LZW", "TILED=YES"],
-            callback=gdal.TermProgress_nocb,    
+            creationOptions=["COMPRESS=LZW", "TILED=YES", "BIGTIFF=IF_SAFER"],
+            callback=gdal.TermProgress_nocb,
         )
 
     else:
         print(out_extent)
+        # tiled + compressed intermediates enable multithreaded warping and
+        # avoid very large uncompressed temp mosaics (issue #12 discussion)
         gdal.Translate(
-            outfn, vrt_fn, projWin=out_extent, callback=gdal.TermProgress_nocb,
+            outfn,
+            vrt_fn,
+            projWin=out_extent,
+            creationOptions=["COMPRESS=LZW", "TILED=YES", "BIGTIFF=IF_SAFER"],
+            callback=gdal.TermProgress_nocb,
         )
     # delete vrt
     os.remove(vrt_fn)
@@ -1008,23 +1045,69 @@ def confirm_3dep_vertical(raster_fn: str, bare_diff_tolerance: float = 3.0) -> b
     ## Mask out bare and sparse vegetation class
     bare_sparse_mask = worldcover_da_masked == 60
     dem_diff_bare = dem_diff.where(bare_sparse_mask, np.nan)
-    median_diff = np.nanmedian(dem_diff_bare.values)
-    print(
-        f"Observed difference between COP30 EGM2008 and 3DEP LiDAR DSM over bareground and sparse vegetation surfaces is {median_diff:.2f} m"
+    valid_count = int(np.isfinite(dem_diff_bare.values).sum())
+    median_diff = (
+        float(np.nanmedian(dem_diff_bare.values)) if valid_count else float("nan")
     )
-    if np.abs(median_diff) <= bare_diff_tolerance:
+    print(
+        f"Observed difference between COP30 EGM2008 and 3DEP LiDAR DSM over bareground and sparse vegetation surfaces is {median_diff:.2f} m ({valid_count} valid pixels)"
+    )
+    out = datum_shift_required(
+        median_diff, valid_count, tolerance=bare_diff_tolerance
+    )
+    if out:
         # this means that both COP30 and 3DEP LiDAR DSM are with respect to geoid
         print(
             "Looks like the 3DEP height estimates are with respect to geoid, will apply vertical datum shift to return heights with respect to ellipsoid"
         )
-        out = True
     else:
         # this means that 3DEP LiDAR DSM is with respect to ellipsoid
         print(
             "Looks like the 3DEP height estimates are already with respect to ellipsoid, geoid to ellipsoid transformation will not be attempted"
         )
-        out = False
     return out
+
+
+def datum_shift_required(
+    median_diff: float,
+    valid_count: int,
+    tolerance: float = 3.0,
+    min_valid_pixels: int = 100,
+) -> bool:
+    """
+    Decide whether heights are geoid-referenced from a DSM-minus-COP30 sample.
+
+    Parameters
+    ----------
+    median_diff
+        Median of (lidar DSM - COP30/EGM2008) over bare/sparse-vegetation pixels.
+    valid_count
+        Number of valid pixels contributing to the median.
+    tolerance
+        Median within +/- tolerance meters means geoid-referenced, by default 3.0.
+    min_valid_pixels
+        Minimum sample size for a reliable decision, by default 100.
+
+    Returns
+    -------
+    bool
+        True if a geoid-to-ellipsoid datum shift is required.
+
+    Raises
+    ------
+    ValueError
+        If the sample is empty or too small to decide. A silent wrong choice
+        here produces a ~-30 m vertical error in CONUS, so never guess.
+    """
+    if valid_count < min_valid_pixels or np.isnan(median_diff):
+        raise ValueError(
+            f"Vertical datum check failed: only {valid_count} valid bare/sparse-vegetation "
+            "(ESA WorldCover class 60) pixels overlap the DSM and COP30 - cannot reliably "
+            "determine whether heights are geoid- or ellipsoid-referenced for this AOI. "
+            "Provide the source CRS explicitly (src_crs) or use per-survey WESM metadata "
+            "instead of this empirical check."
+        )
+    return abs(median_diff) <= tolerance
 
 
 def check_raster_validity(raster_fn: str) -> bool:
@@ -1061,6 +1144,7 @@ def gdal_warp(
     resampling_alogrithm: str = "bilinear",
     out_extent: list = None,
     dtype: str = 'Float32',
+    target_aligned_pixels: bool = True,
 ) -> None:
     """
     Warp a raster file to a new coordinate reference system and resolution using GDAL.
@@ -1084,6 +1168,9 @@ def gdal_warp(
     dtype
         Data type for the output raster, by default 'Float32'.
         Common options include 'Byte', 'UInt16', 'Int16', 'UInt32', 'Int32', 'Float32', 'Float64'.
+    target_aligned_pixels
+        Align output grid to multiples of res (gdalwarp -tap), by default True.
+        Set False to reproduce an existing grid via out_extent whose origin is not a multiple of res.
     Returns
     -------
     None
@@ -1111,7 +1198,9 @@ def gdal_warp(
         yRes=res,
         dstSRS=dst_srs,
         errorThreshold=tolerance,
-        targetAlignedPixels=True,
+        # disable when matching an existing raster grid whose origin is not
+        # a multiple of res (e.g. recovering interrupted-run intermediates)
+        targetAlignedPixels=target_aligned_pixels,
         # use directly output format as COG when gaussian overview resampling is implemented upstream in GDAL
         outputBounds=out_extent,
         outputType=DTYPE_TO_GDAL.get(dtype),
@@ -1228,7 +1317,7 @@ def create_lpc_pipeline(
             str(lpc),
             input_crs=input_crs,
             output_crs=target_wkt,
-            pointcloud_resolution=1.0,
+            pointcloud_resolution=raster_resolution,
             aoi_bounds=aoi_bounds,
             buffer_value=buffer_value,
         )
@@ -1475,9 +1564,6 @@ def create_ept_3dep_pipeline(
     #Should check that this is EPSG:4326 (default for geojson)
     gdf = gpd.read_file(extent_polygon)
 
-    # specify the output CRS of DEMs
-    with open(target_wkt, "r") as f:
-        OUTPUT_CRS = " ".join(f.read().replace("\n", "").split())
     # fetch the readers for the pointclouds
     readers, POINTCLOUD_CRS, extents, original_extents = return_readers(
         gdf,
@@ -1717,27 +1803,31 @@ def execute_pdal_pipeline(pdal_pipeline_path: str) -> str:
     output_fn
         The filename of the output raster is successfully saved, otherwise None is returned
     """
+    # Policy: never silently drop tiles. Failures return None (the caller
+    # accounts for and reports them) with a loud stderr message here.
     try:
-        with warnings.catch_warnings():
-            warnings.filterwarnings("error", category=RuntimeWarning)
         with open(pdal_pipeline_path) as f:
             pipelineDict = json.load(f)
-            # maybe more robust to check for {'type': 'writers.gdal'}...
-            outfile = pipelineDict["pipeline"][-1]["filename"]
+        # maybe more robust to check for {'type': 'writers.gdal'}...
+        outfile = pipelineDict["pipeline"][-1]["filename"]
 
-            pipeline = pdal.Pipeline(json.dumps(pipelineDict))
-            print(f"Executing {pdal_pipeline_path}")
-            pipeline.execute()
-            pipeline = None
+        pipeline = pdal.Pipeline(json.dumps(pipelineDict))
+        print(f"Executing {pdal_pipeline_path}")
+        pipeline.execute()
+        pipeline = None
         if check_raster_validity(outfile):
             return outfile
-        else:
-            return None
-    except Exception as e:
-        print(f"An error occurred while executing the PDAL pipeline: {e}")
+        print(
+            f"ERROR: pipeline {pdal_pipeline_path} produced an invalid raster "
+            f"(missing CRS or unreadable): {outfile}",
+            file=sys.stderr,
+        )
         return None
-    except RuntimeWarning as rw:
-        print(f"PDAL RuntimeWarning: {rw}")
+    except Exception as e:
+        print(
+            f"ERROR: PDAL pipeline {pdal_pipeline_path} failed: {e}",
+            file=sys.stderr,
+        )
         return None
     
 

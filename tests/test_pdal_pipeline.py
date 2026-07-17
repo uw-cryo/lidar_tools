@@ -1,7 +1,6 @@
 import lidar_tools
 import geopandas as gpd
 from shapely.geometry import Polygon
-import pyproj
 import numpy as np
 import pytest
 

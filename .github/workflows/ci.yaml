@@ -23,6 +23,24 @@ jobs:
           cache: true
           frozen: true
 
+      - name: Lint (ruff check)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          pixi run lint
+
+      - name: Typecheck (mypy, error-count baseline)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          pixi run typecheck > mypy.log || true
+          tail -5 mypy.log
+          count=$(grep -oE 'Found [0-9]+ error' mypy.log | grep -oE '[0-9]+' || echo 0)
+          baseline=$(cat .mypy-baseline-count)
+          echo "mypy errors: $count (baseline: $baseline)"
+          if [ "$count" -gt "$baseline" ]; then
+            echo "::error::New mypy errors introduced ($count > baseline $baseline). Fix them or, if legitimately unavoidable, update .mypy-baseline-count."
+            exit 1
+          fi
+
       # TODO: create separate action for running workflows
       - name: Run Pytest
         run: |

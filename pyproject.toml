@@ -55,6 +55,15 @@ lidar-tools = "lidar_tools.cli:app"
 [tool.ruff.lint.per-file-ignores]
 "pdal_pipeline.py" = ["E402"]
 
+[tool.mypy]
+# Baseline: implicit Optional (x: str = None) is pervasive; allowed until the
+# dedicated mechanical `x: str | None` sweep lands (tracked in plan Phase 4).
+# New code should write explicit Optional types.
+implicit_optional = true
+# the geo stack ships no type stubs
+ignore_missing_imports = true
+disable_error_code = ["import-untyped"]
+
 [tool.pixi.workspace]
 channels = ["conda-forge"]
 platforms = ["linux-64", "osx-arm64", "osx-64"]
@@ -69,7 +78,10 @@ example = "lidar-tools rasterize --geometry notebooks/uw-campus.geojson --output
 [tool.pixi.feature.dev.tasks]
 test = "pytest"
 typecheck = "mypy src/lidar_tools/"
-lint = "ruff check src/lidar_tools/ --fix ; ruff format"
+# check-only (CI-safe); use 'fix' and 'format' to apply changes locally
+lint = "ruff check src/lidar_tools/ scripts/ tests/"
+fix = "ruff check src/lidar_tools/ scripts/ tests/ --fix"
+format = "ruff format src/lidar_tools/ scripts/ tests/"
 test-example-ept = "time lidar-tools rasterize --geometry notebooks/uw-campus.geojson --output /tmp/lidar-tools-test/ept"
 test-example-local = "time lidar-tools rasterize --geometry notebooks/uw-campus.geojson --input ~/Data/lidar_tools/WA_KingCounty_2021_B21 --output /tmp/lidar-tools-test/local"
 test-example-nocleanup = "time lidar-tools rasterize --quiet --num-process 4 --no-cleanup --geometry notebooks/uw-campus.geojson --output /tmp/lidar-tools-test/uwcampus-nocleanup"
