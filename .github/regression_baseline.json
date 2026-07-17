@@ -1,0 +1,17 @@
+{
+  "mypy": {
+    "src/lidar_tools/dsm_functions.py": 61,
+    "src/lidar_tools/filter_percentile.py": 1,
+    "src/lidar_tools/pdal_pipeline.py": 15
+  },
+  "ruff_check": {
+    "src/lidar_tools/dsm_functions.py": 2,
+    "tests/test_dsm_functions.py": 1,
+    "tests/test_pdal_pipeline.py": 1
+  },
+  "ruff_format_would_reformat": [
+    "src/lidar_tools/dsm_functions.py",
+    "src/lidar_tools/filter_percentile.py",
+    "src/lidar_tools/pdal_pipeline.py"
+  ]
+}

@@ -7,7 +7,33 @@ on:
     branches:
       - main
 
+# Superseded runs on the same PR/branch are cancelled to keep CI turnaround
+# sane while the feature-branch backlog merges.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
+  # Lint + typecheck regression gate: fails only on NEW mypy/ruff findings
+  # relative to the checked-in baseline (.github/regression_baseline.json),
+  # never on the known pre-existing ones. See docs/pr_review.md.
+  quality:
+    name: Lint + typecheck regression gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: prefix-dev/setup-pixi@v0.9.3
+        with:
+          environments: dev
+          manifest-path: pyproject.toml
+          cache: true
+          frozen: true
+
+      - name: mypy + ruff regression gate
+        run: |
+          pixi run -e dev check-regressions
+
   test:
     runs-on: ${{ matrix.os }}
     strategy:

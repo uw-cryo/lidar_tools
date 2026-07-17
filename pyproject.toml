@@ -82,6 +82,10 @@ typecheck = "mypy src/lidar_tools/"
 lint = "ruff check src/lidar_tools/ scripts/ tests/"
 fix = "ruff check src/lidar_tools/ scripts/ tests/ --fix"
 format = "ruff format src/lidar_tools/ scripts/ tests/"
+# Regression gates: fail only on NEW mypy/ruff findings vs the checked-in
+# baseline (.github/regression_baseline.json). CI runs check-regressions.
+check-regressions = "python .github/scripts/check_regressions.py"
+update-baselines = "python .github/scripts/check_regressions.py --update"
 test-example-ept = "time lidar-tools rasterize --geometry notebooks/uw-campus.geojson --output /tmp/lidar-tools-test/ept"
 test-example-local = "time lidar-tools rasterize --geometry notebooks/uw-campus.geojson --input ~/Data/lidar_tools/WA_KingCounty_2021_B21 --output /tmp/lidar-tools-test/local"
 test-example-nocleanup = "time lidar-tools rasterize --quiet --num-process 4 --no-cleanup --geometry notebooks/uw-campus.geojson --output /tmp/lidar-tools-test/uwcampus-nocleanup"
