@@ -1050,3 +1050,44 @@ def test_gdal_add_overview_alignment(tmp_path):
             ox, oy = center_of_mass(arr, px * size / ovr.XSize, -px * size / ovr.YSize)
             assert abs(ox - bx) < 0.25 * px
             assert abs(oy - by) < 0.25 * px
+
+
+def test_return_readers_injected_index_offline(monkeypatch):
+    import shapely
+
+    # a preloaded EPT index must be used as-is: no network fetch of the
+    # hobu index, readers built for the (already-resolved) resource name
+    aoi = gpd.GeoDataFrame(
+        geometry=[shapely.box(-115.005, 36.0, -115.0, 36.004)], crs="EPSG:4326"
+    )
+    ept_index = gpd.GeoDataFrame(
+        {"name": ["TEST_EPT_RESOURCE"], "count": [42]},
+        geometry=[shapely.box(-115.01, 35.99, -114.99, 36.01)],
+        crs="EPSG:4326",
+    )
+    monkeypatch.setattr(
+        lidar_tools.dsm_functions,
+        "_ept_srs_wkt",
+        lambda url: pyproj.CRS.from_epsg(3857).to_wkt(),
+    )
+    monkeypatch.setattr(
+        lidar_tools.dsm_functions.gpd,
+        "read_file",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("hobu index fetched despite injected ept_index_gdf")
+        ),
+    )
+    readers, crs_list, extents, original_extents = (
+        lidar_tools.dsm_functions.return_readers(
+            aoi,
+            pointcloud_resolution=1,
+            tile_size_km=1,
+            buffer_value=5,
+            return_specific_3dep_survey="TEST_EPT_RESOURCE",
+            ept_index_gdf=ept_index,
+        )
+    )
+    assert readers, "no readers built from injected index"
+    assert all("TEST_EPT_RESOURCE" in r["filename"] for r in readers)
+    assert all(c.to_epsg() == 3857 for c in crs_list)
+    assert len(readers) == len(extents) == len(original_extents)
