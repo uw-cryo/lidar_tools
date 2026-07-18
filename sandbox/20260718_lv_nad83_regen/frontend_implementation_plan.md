@@ -21,15 +21,19 @@ P2 partially (skeleton + tests), P3–P4 are designs with implementation notes.
 
 Problem (measured): exact `==` join resolves only 45.4% of the 2,277-resource
 EPT archive against canonical WESM workunit names; 4-tier normalization reaches
-96.2% with zero ambiguity (`ept_wesm_mapping.csv`). Live blocker:
+98.2% with zero ambiguity (`ept_wesm_mapping.csv`; the review's F1 fix — hyphen
+folding instead of a one-sided `ARRA-` strip — added the 46 ARRA pairs over the
+originally reported 96.2%). Live blocker:
 `NV_LasVegas_QL2_2016` → EPT `USGS_LPC_NV_LasVegas_QL2_2016_LAS_2018`.
 
 Design:
 - `survey.normalize_ept_name(name, tier)` + `survey.resolve_ept_resource(
   workunit, ept_gdf)` → `{"ept_name", "tier", "candidates"}`.
   Tiers: 1 exact → 2 casefold → 3 strip `^USGS_LPC_` / `_LAS_\d{4}$` →
-  4 strip `^ARRA-` + hyphen↔underscore. Multiple same-tier candidates
-  (re-released builds): prefer exact name, then larger `count`.
+  4 hyphen↔underscore folding (subsumes `ARRA-`/`ARRA_` drift; the prefix is
+  never stripped — review F1). Multiple same-tier candidates
+  (re-released builds): larger `count` wins (an exact-name candidate always
+  short-circuits at tier 1 — review F7).
   Unresolvable → `LookupError` with the spatially-nearby names in the message
   (hard-fail; never silent 0 readers). Spatial-gate tier for the ~3.8% rename
   tail is a P2 hook (`resolve_ept_resource(..., wesm_geom=...)`) — omitted from
