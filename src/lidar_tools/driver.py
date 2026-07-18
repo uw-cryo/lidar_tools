@@ -60,6 +60,7 @@ def rasterize_projects(
     dst_crs: str = None,
     output_datum: Literal["wgs84_g2139", "nad83_2011"] = "wgs84_g2139",
     ept_vertical: Literal["auto", "geoid", "ellipsoid"] = "auto",
+    geoid_override: Literal["declared", "best-available"] = "declared",
 ) -> None:
     """
     Run rasterize once per workunit into per-project subdirectories that
@@ -103,6 +104,10 @@ def rasterize_projects(
         Vertical interpretation override passed through to rasterize
         (applies to every project in the batch; use per-project runs when
         collections need different overrides).
+    geoid_override
+        Passed through to rasterize: 'declared' (default) hard-fails when
+        a survey's declared production geoid cannot be used;
+        'best-available' consciously accepts model substitution.
 
     Returns
     -------
@@ -143,6 +148,7 @@ def rasterize_projects(
                 cleanup=cleanup,
                 quiet=quiet,
                 ept_vertical=ept_vertical,
+                geoid_override=geoid_override,
                 resume=resume and outdir.exists(),
             )
             # a clean return is NOT proof of products: a 0-reader run
