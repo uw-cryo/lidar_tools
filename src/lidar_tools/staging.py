@@ -88,22 +88,39 @@ def grid_origin(zone: int, square: str, northing_hint: float) -> tuple[float, fl
 
 
 def band_northing(band: str) -> float:
-    """Approximate northing of a latitude band's midpoint (cycle hint only)."""
+    """
+    Approximate northing of a latitude band's midpoint (row-cycle hint
+    only). Southern bands (C-M) use the UTM-south false northing
+    (10,000,000 - |lat|*k) — e.g. band L (American Samoa) sits near
+    8.67e6, NOT 1.33e6; getting this wrong silently shifts the decoded
+    grid by whole 2,000-km row cycles.
+    """
     lat_mid = -80 + _BAND_LETTERS.index(band.upper()) * 8 + 4
-    return abs(lat_mid) * 110_946.0
+    if lat_mid < 0:
+        return 10_000_000.0 + lat_mid * 110_946.0
+    return lat_mid * 110_946.0
 
 
-def decode_tile_footprints(urls: list[str], utm_epsg: int) -> gpd.GeoDataFrame:
+def decode_tile_footprints(urls: list[str], utm_epsg: int = None) -> gpd.GeoDataFrame:
     """
     Build 1-km tile footprints for staged-LPC LAZ URLs from their grid ids.
+
+    The grid ids are ALWAYS in the USGS national grid's own UTM zone
+    (encoded in the id), regardless of the workunit's declared
+    ``horiz_crs`` — a State-Plane workunit still tiles on UTM.
 
     Parameters
     ----------
     urls
         Tile URLs or filenames (e.g. from ``0_file_download_links.txt``).
+        All parseable ids must share one zone+hemisphere per call (group
+        by zone upstream — see `count_links_tiles_in_bbox`).
     utm_epsg
-        Projected CRS of the tile grid — use the workunit's declared
-        ``horiz_crs`` (WESM), e.g. 6340 for NAD83(2011) / UTM 11N.
+        Projected CRS to stamp on the footprints. Default None derives
+        NAD83(2011) UTM north (EPSG 6329+zone) from the grid ids; an
+        explicit CRS must be a UTM CRS whose zone and hemisphere MATCH
+        the ids (a ``13S...`` id under EPSG:6340 would otherwise decode
+        to plausible but wrong zone-11 coordinates — ValueError instead).
 
     Returns
     -------
@@ -111,11 +128,45 @@ def decode_tile_footprints(urls: list[str], utm_epsg: int) -> gpd.GeoDataFrame:
         One row per parseable URL: ``gridid``, ``url``, box geometry.
         Unparseable names are dropped (count them upstream if needed).
     """
+    parsed = [(url, g) for url in urls if (g := parse_grid_id(url))]
+    if not parsed:
+        crs = f"EPSG:{utm_epsg}" if utm_epsg else None
+        return gpd.GeoDataFrame({"gridid": [], "url": []}, geometry=[], crs=crs)
+
+    zones = {g["zone"] for _, g in parsed}
+    souths = {g["band"] <= "M" for _, g in parsed}
+    if len(zones) > 1 or len(souths) > 1:
+        raise ValueError(
+            f"grid ids span multiple UTM zones/hemispheres ({sorted(zones)}); "
+            "decode each zone separately"
+        )
+    zone, south = zones.pop(), souths.pop()
+
+    if utm_epsg is None:
+        if south:
+            raise ValueError(
+                "no default CRS for southern-hemisphere grid ids — pass the "
+                "workunit's UTM-south EPSG explicitly (e.g. NAD83(PA11) zone 2S)"
+            )
+        utm_epsg = 6329 + zone  # NAD83(2011) / UTM north
+    else:
+        from pyproj import CRS as _CRS
+
+        crs_zone = _CRS.from_epsg(utm_epsg).utm_zone  # e.g. '11N', None if not UTM
+        if crs_zone is None:
+            raise ValueError(
+                f"EPSG:{utm_epsg} is not a UTM CRS; staged-LPC grid ids decode "
+                "on the UTM lattice only"
+            )
+        if int(crs_zone[:-1]) != zone or (crs_zone[-1] == "S") != south:
+            raise ValueError(
+                f"grid ids are UTM zone {zone}{'S' if south else 'N'} but "
+                f"EPSG:{utm_epsg} is zone {crs_zone} — refusing to decode "
+                "into the wrong zone"
+            )
+
     rows = []
-    for url in urls:
-        g = parse_grid_id(url)
-        if g is None:
-            continue
+    for url, g in parsed:
         x0, y0 = grid_origin(g["zone"], g["square"], band_northing(g["band"]))
         x0 += g["e"] * 100
         y0 += g["n"] * 100
@@ -126,8 +177,32 @@ def decode_tile_footprints(urls: list[str], utm_epsg: int) -> gpd.GeoDataFrame:
                 "geometry": shapely.box(x0, y0, x0 + 1000, y0 + 1000),
             }
         )
-    return gpd.GeoDataFrame(rows, crs=f"EPSG:{utm_epsg}") if rows else \
-        gpd.GeoDataFrame({"gridid": [], "url": []}, geometry=[], crs=f"EPSG:{utm_epsg}")
+    return gpd.GeoDataFrame(rows, crs=f"EPSG:{utm_epsg}")
+
+
+def count_links_tiles_in_bbox(links: list[str], aoi_gdf: gpd.GeoDataFrame) -> int:
+    """
+    Count links-file tiles whose decoded footprints intersect the AOI's
+    bounding box — the same spatial scope as the bbox-filtered TESM read,
+    so `reconcile_tile_sources` compares like with like (an AOI-clipped
+    TESM count vs a FULL-workunit links count would flag every workunit
+    that extends beyond the AOI as \"TESM incomplete\").
+
+    Ids are grouped by UTM zone and each group is decoded in its own zone
+    CRS with the AOI bbox transformed to match.
+    """
+    by_zone: dict[tuple, list] = {}
+    for url in links:
+        g = parse_grid_id(url)
+        if g is None:
+            continue
+        by_zone.setdefault((g["zone"], g["band"] <= "M"), []).append(url)
+    total = 0
+    for (_zone, _south), group in by_zone.items():
+        fp = decode_tile_footprints(group)  # northern default; southern raises
+        bounds = aoi_gdf.to_crs(fp.crs).total_bounds
+        total += int(fp.intersects(shapely.box(*bounds)).sum())
+    return total
 
 
 def load_tesm_tiles(aoi_gdf: gpd.GeoDataFrame, tesm_source: str = TESM_URL) -> gpd.GeoDataFrame:
@@ -168,26 +243,56 @@ def fetch_links_file(lpc_link: str, opener=None) -> list[str]:
     return [line.strip() for line in text.splitlines() if line.strip()]
 
 
-def reconcile_tile_sources(workunit: str, tesm_count: int, links_count: int) -> dict:
+def reconcile_tile_sources(
+    workunit: str,
+    tesm_count: int,
+    links_count: int | None,
+    scope: str = "aoi_bbox",
+) -> dict:
     """
-    Compare the TESM index against the links-file truth for one workunit.
-    Returns a verdict dict with a human-readable ``warning`` (or None).
+    Compare the TESM index against the links-file truth for one workunit,
+    over a SINGLE stated spatial scope (both counts must be clipped the
+    same way — see `count_links_tiles_in_bbox`).
+
+    ``links_count=None`` means the links file could not be fetched — a
+    different fact from "no staged LAZ" (0), and the verdicts keep them
+    apart. Returns ``{status, warning, ...}``; ``warning`` is None only
+    when the two sources agree.
     """
     verdict = {
         "workunit": workunit,
+        "scope": scope,
         "tesm_tiles": int(tesm_count),
-        "links_tiles": int(links_count),
+        "links_tiles": None if links_count is None else int(links_count),
+        "status": "consistent",
         "warning": None,
     }
-    if links_count and not tesm_count:
+    if links_count is None:
+        verdict["status"] = "links-unavailable"
+        verdict["warning"] = (
+            "links file could not be fetched — staged-LAZ truth unknown "
+            "(NOT the same as 'no staged LAZ'); retry before trusting TESM"
+        )
+    elif not links_count and not tesm_count:
+        verdict["status"] = "no-tiles"
+    elif links_count and not tesm_count:
+        verdict["status"] = "tesm-missing"
         verdict["warning"] = (
             "TESM has NO tiles for this workunit although staged LAZ exists "
             "(index lags publication — use links-file/grid-decode footprints)"
         )
-    elif links_count and tesm_count and tesm_count < 0.95 * links_count:
+    elif tesm_count < 0.95 * links_count:
+        verdict["status"] = "tesm-incomplete"
         verdict["warning"] = (
             f"TESM tile count ({tesm_count}) well below links file "
-            f"({links_count}) — index incomplete for this area"
+            f"({links_count}) in scope {scope} — index incomplete here"
+        )
+    elif links_count < 0.95 * tesm_count:
+        verdict["status"] = "links-behind-tesm"
+        verdict["warning"] = (
+            f"links file ({links_count}) well below TESM ({tesm_count}) in "
+            f"scope {scope} — stale TESM after republication, or a partial "
+            "links fetch; verify before selecting tiles"
         )
     return verdict
 
@@ -214,6 +319,9 @@ def build_site_manifest(
     tesm_counts = tesm_counts or {}
     links_counts = links_counts or {}
     manifest = {
+        # bump on any breaking schema change; consumers (rasterize-projects,
+        # probes) must check this before reading
+        "manifest_version": 1,
         "created": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "aoi": str(aoi_path),
         "output_dir": str(output_dir),
@@ -236,8 +344,9 @@ def build_site_manifest(
             except LookupError as e:
                 rec["ept"] = {"error": str(e)}
         if wu in tesm_counts or wu in links_counts:
+            # links value None = fetch attempted and failed (distinct from 0)
             rec["tiles"] = reconcile_tile_sources(
-                wu, tesm_counts.get(wu, 0), links_counts.get(wu, 0)
+                wu, tesm_counts.get(wu, 0), links_counts.get(wu)
             )
         rec["lpc_cache"] = str(Path(output_dir) / "lpc_cache" / wu)
         manifest["workunits"][wu] = rec
@@ -257,13 +366,14 @@ def load_site_manifest(path: str) -> dict:
 
 def prepare(
     geometry: str,
-    workunits: str,
     output: str,
+    workunits: str = None,
 ) -> dict:
     """
     Stage discovery metadata for an AOI and write
     ``<output>/site_manifest.yaml``: pinned WESM records, EPT name
-    resolution per workunit, TESM-vs-links tile reconciliation, and the
+    resolution per workunit, TESM-vs-links tile reconciliation (all
+    counts clipped to the AOI bounding box — one stated scope), and the
     staged-LAZ cache layout — everything the batch and the pre-run probes
     need, fetched once.
 
@@ -271,16 +381,20 @@ def prepare(
     ----------
     geometry
         Path to the AOI polygon.
-    workunits
-        Comma-separated WESM workunit names (as for rasterize-projects).
     output
         Batch output directory (manifest lands next to batch_status.yaml).
+    workunits
+        Comma-separated WESM workunit names (as for rasterize-projects).
+        Default: every workunit whose WESM polygon intersects the AOI.
     """
-    wu_list = [w.strip() for w in str(workunits).split(",") if w.strip()]
-    if not wu_list:
-        raise ValueError("No workunits given")
     aoi = gpd.read_file(geometry)
     wesm = survey.load_wesm(aoi)
+    if workunits is None:
+        wu_list = sorted(wesm["workunit"].astype(str))
+    else:
+        wu_list = [w.strip() for w in str(workunits).split(",") if w.strip()]
+    if not wu_list:
+        raise ValueError("No workunits given and none intersect the AOI")
     ept = survey.load_ept_resources()
     tesm_counts: dict = {}
     links_counts: dict = {}
@@ -292,9 +406,18 @@ def prepare(
     for wu in wu_list:
         try:
             rec = survey.record_from_wesm(wesm, wu)
-            if rec.get("lpc_link"):
-                links_counts[wu] = len(fetch_links_file(rec["lpc_link"]))
+        except ValueError:
+            continue  # not in WESM: recorded as an error by the manifest
+        if not rec.get("lpc_link"):
+            continue  # no staged LPC tree at all: nothing to reconcile
+        try:
+            links = fetch_links_file(rec["lpc_link"])
+            # same spatial scope as the bbox-filtered TESM read above —
+            # comparing an AOI-clipped TESM count against a full-workunit
+            # links count would flag every AOI-spanning workunit
+            links_counts[wu] = count_links_tiles_in_bbox(links, aoi)
         except Exception as e:
+            links_counts[wu] = None  # attempted and failed != zero tiles
             print(f"WARNING: links file unavailable for {wu} ({e})")
     manifest = build_site_manifest(
         geometry, wu_list, wesm, output,

@@ -50,6 +50,49 @@ def test_decode_tile_footprints():
     assert gdf.iloc[0].geometry.bounds == (487000.0, 4094000.0, 488000.0, 4095000.0)
 
 
+def test_decode_tile_footprints_zone_guards():
+    import pytest
+
+    urls_z11 = ["https://x/USGS_LPC_NV_Southern_D23_11SMA870940.laz"]
+    # auto-derive: zone 11 north -> NAD83(2011)/UTM 11N
+    auto = staging.decode_tile_footprints(urls_z11)
+    assert auto.crs.to_epsg() == 6340
+    # a zone-13 id must NOT decode into a zone-11 CRS (plausible wrong coords)
+    with pytest.raises(ValueError, match="zone"):
+        staging.decode_tile_footprints(
+            ["https://x/USGS_LPC_CO_Foo_13SDB123456.laz"], utm_epsg=6340
+        )
+    # non-UTM CRS refused (State-Plane horiz_crs is not the tile lattice)
+    with pytest.raises(ValueError, match="not a UTM"):
+        staging.decode_tile_footprints(urls_z11, utm_epsg=6521)
+    # mixed zones in one call refused
+    with pytest.raises(ValueError, match="multiple"):
+        staging.decode_tile_footprints(
+            urls_z11 + ["https://x/USGS_LPC_CO_Foo_13SDB123456.laz"]
+        )
+
+
+def test_band_northing_southern_hemisphere():
+    # band L (~14S, American Samoa): UTM-south false northing ~8.67e6 —
+    # NOT ~1.33e6 (that error silently shifts whole 2,000-km row cycles)
+    assert abs(staging.band_northing("L") - 8_668_648) < 50_000
+    # northern bands unchanged: band S (~36N) near 4.0e6
+    assert abs(staging.band_northing("S") - 3_994_056) < 50_000
+
+
+def test_count_links_tiles_in_bbox_scope():
+    # AOI box around square MA tile 870940 (SW 487000,4094000 in zone 11)
+    aoi = gpd.GeoDataFrame(
+        geometry=[shapely.box(487100, 4094100, 487900, 4094900)], crs="EPSG:6340"
+    )
+    links = [
+        "https://x/USGS_LPC_NV_Southern_D23_11SMA870940.laz",  # intersects
+        "https://x/USGS_LPC_NV_Southern_D23_11SPA090340.laz",  # ~120 km away
+        "https://x/not_a_tile.txt",
+    ]
+    assert staging.count_links_tiles_in_bbox(links, aoi) == 1
+
+
 def test_attach_workunits_joins_by_id_not_name():
     tesm = gpd.GeoDataFrame(
         {
@@ -75,9 +118,24 @@ def test_attach_workunits_joins_by_id_not_name():
 def test_reconcile_tile_sources_flags_index_lag():
     # the Southern_4 case: staged LAZ exists, TESM has nothing
     v = staging.reconcile_tile_sources("WU", tesm_count=0, links_count=10626)
+    assert v["status"] == "tesm-missing"
     assert v["warning"] and "lags" in v["warning"]
     ok = staging.reconcile_tile_sources("WU", tesm_count=195, links_count=195)
-    assert ok["warning"] is None
+    assert ok["status"] == "consistent" and ok["warning"] is None
+
+
+def test_reconcile_tile_sources_distinguishes_failure_modes():
+    # links fetch failed is NOT "no staged LAZ" — a reader must be able to
+    # tell them apart
+    v = staging.reconcile_tile_sources("WU", tesm_count=500, links_count=None)
+    assert v["status"] == "links-unavailable"
+    assert v["links_tiles"] is None and "retry" in v["warning"]
+    # stale TESM after republication (or partial links fetch): tesm >> links
+    v = staging.reconcile_tile_sources("WU", tesm_count=5000, links_count=200)
+    assert v["status"] == "links-behind-tesm" and v["warning"]
+    # genuinely nothing staged, nothing indexed
+    v = staging.reconcile_tile_sources("WU", tesm_count=0, links_count=0)
+    assert v["status"] == "no-tiles" and v["warning"] is None
 
 
 def test_fetch_links_file_injectable_opener():
@@ -120,6 +178,8 @@ def test_build_site_manifest_roundtrip(tmp_path):
         links_counts={"WU_A": 100, "WU_B": 42},
     )
     a, b = manifest["workunits"]["WU_A"], manifest["workunits"]["WU_B"]
+    # versioned schema: consumers gate on this before reading anything else
+    assert manifest["manifest_version"] == 1
     # the WESM pin and the declared geoid ride along untouched
     assert a["wesm"]["geoid"] == "GEOID18"
     assert (a["ept"]["ept_name"], a["ept"]["tier"]) == ("USGS_LPC_WU_A_LAS_2018", 3)
