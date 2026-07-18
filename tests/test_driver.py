@@ -99,3 +99,25 @@ def test_rasterize_projects_flags_no_data_runs(tmp_path, aoi_file, monkeypatch, 
     err = capsys.readouterr().err
     assert "WU_A" in err and "WITHOUT products" in err
     assert "1/2" in err  # end-of-batch warning names the count
+
+
+def test_rasterize_projects_warns_on_unreadable_metadata(
+    tmp_path, aoi_file, monkeypatch, capsys
+):
+    from pathlib import Path
+
+    def fake_rasterize(**kw):
+        outdir = Path(kw["output"])
+        outdir.mkdir(parents=True, exist_ok=True)
+        # corrupt YAML: the run returned cleanly but its status is unreadable
+        (outdir / "aoi_1m_WU_A-processing_metadata.yaml").write_text("{::not yaml")
+
+    monkeypatch.setattr(driver, "rasterize", fake_rasterize)
+    outbase = tmp_path / "batch"
+    driver.rasterize_projects(aoi_file, "WU_A", str(outbase))
+    status = yaml.safe_load((outbase / "batch_status.yaml").read_text())
+    # still counted completed (the run itself succeeded) ...
+    assert status["projects"]["WU_A"] == "completed"
+    # ... but the operator is told the products could not be verified
+    err = capsys.readouterr().err
+    assert "unreadable processing metadata" in err
