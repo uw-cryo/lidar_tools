@@ -206,8 +206,9 @@ def test_resolve_ept_resource_tiers():
                 "NV_LasVegasValley_2010",
                 "USGS_LPC_NV_LasVegas_QL2_2016_LAS_2018",
                 "AK_Fairbanks-NSBorough_2010",
+                "ARRA-AK_EkluntaGlacier_2010",
             ],
-            "count": [10, 20, 30, 40],
+            "count": [10, 20, 30, 40, 50],
         }
     )
     # tier 1: exact
@@ -225,12 +226,23 @@ def test_resolve_ept_resource_tiers():
     # tier 4: hyphen/underscore drift (WESM legacy names are underscored caps)
     r = survey.resolve_ept_resource("AK_FAIRBANKS_NSBOROUGH_2010", ept)
     assert (r["ept_name"], r["tier"]) == ("AK_Fairbanks-NSBorough_2010", 4)
+    # tier 4 must also cover the ARRA drift: WESM spells the funding prefix
+    # ARRA_ (underscore), the EPT build spells it ARRA- (hyphen) — hyphen
+    # folding on BOTH sides resolves the pair without stripping the prefix
+    r = survey.resolve_ept_resource("ARRA_AK_EKLUNTAGLACIER_2010", ept)
+    assert (r["ept_name"], r["tier"]) == ("ARRA-AK_EkluntaGlacier_2010", 4)
+    # and the un-stripped prefix must NOT capture an unrelated workunit
+    import pytest
+
+    with pytest.raises(LookupError):
+        survey.resolve_ept_resource("AK_EKLUNTAGLACIER_2010", ept)
 
 
-def test_resolve_ept_resource_prefers_exact_then_count():
+def test_resolve_ept_resource_count_tiebreak_and_tier_precedence():
     import pandas as pd
 
-    # re-released build: same workunit reachable at the same tier twice
+    # re-released build: same workunit reachable at the same tier twice ->
+    # the larger build wins the tie
     ept = pd.DataFrame(
         {
             "name": [
@@ -243,7 +255,8 @@ def test_resolve_ept_resource_prefers_exact_then_count():
     r = survey.resolve_ept_resource("X_Co_2016", ept)
     assert r["ept_name"] == "USGS_LPC_X_Co_2016_LAS_2018"  # larger build
     assert sorted(r["candidates"]) == sorted(ept["name"])
-    # an exact-name build always wins over a larger re-release
+    # tier precedence: an exact-name build short-circuits at tier 1, so a
+    # larger re-release at a later tier is never even considered
     ept2 = pd.DataFrame(
         {"name": ["X_Co_2016", "USGS_LPC_X_Co_2016_LAS_2018"], "count": [5, 500]}
     )

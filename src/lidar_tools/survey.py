@@ -136,19 +136,22 @@ def normalize_ept_name(name: str, tier: int) -> str:
     tiered name join (apply the SAME tier to both sides before comparing).
 
     Tiers (cumulative): 1 identity; 2 casefold; 3 also strip the FTP-era
-    ``USGS_LPC_`` prefix and ``_LAS_<year>`` suffix; 4 also strip the
-    ``ARRA-`` funding prefix and fold hyphens to underscores.
+    ``USGS_LPC_`` prefix and ``_LAS_<year>`` suffix; 4 also fold hyphens
+    to underscores. Hyphen folding subsumes the ``ARRA-`` (EPT) vs
+    ``ARRA_`` (WESM) funding-prefix drift; the prefix itself is never
+    stripped — stripping only one side loses every ARRA pair, and
+    stripping both would let ``ARRA-X`` capture an unrelated ``X``.
 
     Archive-wide resolution measured 2026-07-18 (2,277 EPT names x 3,260
     WESM workunits): tier 1 45.4%, +tier 2 57.8%, +tier 3 92.5%,
-    +tier 4 96.2%, with zero ambiguous mappings at every tier.
+    +tier 4 98.2% (incl. the 46 ARRA pairs), with zero ambiguous
+    mappings at every tier.
     """
     n = name
     if tier >= 3:
         n = re.sub(r"^USGS_LPC_", "", n)
         n = re.sub(r"_LAS_\d{4}$", "", n)
     if tier >= 4:
-        n = re.sub(r"^ARRA-", "", n, flags=re.IGNORECASE)
         n = n.replace("-", "_")
     if tier >= 2:
         n = n.casefold()
@@ -195,11 +198,9 @@ def resolve_ept_resource(workunit: str, ept_gdf) -> dict:
         if not candidates:
             continue
         # re-released builds can leave one workunit with several EPT
-        # resources: prefer the exact-name build, then the larger one
-        chosen = sorted(
-            candidates,
-            key=lambda n: (n != workunit, -(counts.get(n) or 0), n),
-        )[0]
+        # resources at the same tier: prefer the larger build. (An
+        # exact-name candidate cannot reach here — it resolves at tier 1.)
+        chosen = sorted(candidates, key=lambda n: (-(counts.get(n) or 0), n))[0]
         return {
             "workunit": workunit,
             "ept_name": chosen,
