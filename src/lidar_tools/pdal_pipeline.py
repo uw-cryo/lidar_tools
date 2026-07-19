@@ -436,6 +436,37 @@ def rasterize(
                 f"{survey_record.get('geoid')}, ql {survey_record.get('ql')})"
             )
 
+    # EPT resource names are frozen at entwine-build time and drift from
+    # current WESM workunit names; resolve the alias once, loudly, before
+    # any tiling — a bare == join silently yields 0 readers for most of
+    # the pre-2018 archive. The WESM record above keeps the workunit name;
+    # only the reader join uses the resolved EPT name.
+    ept_index_gdf = None
+    if input == "EPT_AWS" and process_specific_3dep_survey is not None:
+        ept_index_gdf = survey.load_ept_resources()
+        ept_resolution = survey.resolve_ept_resource(
+            process_specific_3dep_survey, ept_index_gdf
+        )
+        resolved_ept_name = ept_resolution["ept_name"]
+        print(
+            f"EPT resource resolved: {process_specific_3dep_survey} -> "
+            f"{resolved_ept_name} (tier {ept_resolution['tier']}, "
+            f"{len(ept_resolution['candidates'])} candidate(s))"
+        )
+        boundary = ept_index_gdf[ept_index_gdf["name"] == resolved_ept_name]
+        intersects_aoi = bool(
+            boundary.to_crs(gdf.crs).intersects(gdf.union_all()).any()
+        )
+        if not intersects_aoi:
+            print(
+                f"NOTE: resolved EPT boundary for {resolved_ept_name} does "
+                "not intersect the AOI; expecting a no-data outcome",
+                file=sys.stderr,
+            )
+        ept_resolution["boundary_intersects_aoi"] = intersects_aoi
+        _update_processing_metadata(outdir, "ept_resolution", ept_resolution)
+        process_specific_3dep_survey = resolved_ept_name
+
     # TODO: create EPT for local laz for common workflow? https://github.com/uw-cryo/lidar_tools/issues/14#issuecomment-3076045321
     # SB note: The main reason for seperate EPT and local laz pipelines is the difference in projection handling, not much due to difference in file formats.
     # Fail fast, before hours of tile compute, if PROJ cannot rigorously
@@ -498,6 +529,7 @@ def rasterize(
             dsm_gridding_choice=dsm_gridding_choice,
             process_specific_3dep_survey=process_specific_3dep_survey,
             process_all_intersecting_surveys=process_all_intersecting_surveys,
+            ept_index_gdf=ept_index_gdf,
             filter_high_noise=filter_high_noise,
             filter_low_noise=filter_low_noise,
             hag_nn=height_above_ground_threshold,
