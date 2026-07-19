@@ -9,12 +9,14 @@ from .merge import merge
 from .pdal_pipeline import rasterize
 from .preview import preview
 from .report_metrics import report_metrics
+from .staging import prepare
 from .survey import fetch_reports, survey
 
 
 app = cyclopts.App()
 app.command()(rasterize)
 app.command()(rasterize_projects)
+app.command()(prepare)
 app.command()(survey)
 app.command()(preview)
 app.command()(merge)
