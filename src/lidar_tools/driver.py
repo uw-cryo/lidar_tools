@@ -8,6 +8,7 @@ remain isolated (separate epochs = separate product sets); any combined
 compare stage — never an implicit side effect of processing.
 """
 
+import sys
 from pathlib import Path
 from typing import Literal
 
@@ -16,6 +17,34 @@ import yaml
 
 from lidar_tools import geodesy
 from lidar_tools.pdal_pipeline import rasterize
+
+
+def _project_run_status(outdir: Path) -> dict:
+    """
+    Read the run_status block from a project's processing metadata
+    (newest ``*processing_metadata.yaml``, covering both prefixed and
+    legacy bare names). Empty dict when absent; unreadable metadata is
+    WARNED about, never swallowed — a corrupt YAML must not let a
+    no-data run masquerade as a plain success unnoticed.
+    """
+    metas = sorted(
+        Path(outdir).glob("*processing_metadata.yaml"),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    for meta in metas:
+        try:
+            with open(meta) as f:
+                content = yaml.safe_load(f) or {}
+            return content.get("run_status") or {}
+        except Exception as e:
+            print(
+                f"WARNING: unreadable processing metadata {meta} ({e}); "
+                "cannot verify whether this run produced products",
+                file=sys.stderr,
+            )
+            return {}
+    return {}
 
 
 def rasterize_projects(
@@ -31,6 +60,7 @@ def rasterize_projects(
     dst_crs: str = None,
     output_datum: Literal["wgs84_g2139", "nad83_2011"] = "wgs84_g2139",
     ept_vertical: Literal["auto", "geoid", "ellipsoid"] = "auto",
+    geoid_override: Literal["declared", "best-available"] = "declared",
 ) -> None:
     """
     Run rasterize once per workunit into per-project subdirectories that
@@ -74,6 +104,10 @@ def rasterize_projects(
         Vertical interpretation override passed through to rasterize
         (applies to every project in the batch; use per-project runs when
         collections need different overrides).
+    geoid_override
+        Passed through to rasterize: 'declared' (default) hard-fails when
+        a survey's declared production geoid cannot be used;
+        'best-available' consciously accepts model substitution.
 
     Returns
     -------
@@ -114,9 +148,24 @@ def rasterize_projects(
                 cleanup=cleanup,
                 quiet=quiet,
                 ept_vertical=ept_vertical,
+                geoid_override=geoid_override,
                 resume=resume and outdir.exists(),
             )
-            status[workunit] = "completed"
+            # a clean return is NOT proof of products: a 0-reader run
+            # records "no data" in its run_status note and must never be
+            # reported as a plain success in the batch. Match the specific
+            # state+note the pipeline writes — an unrelated future note
+            # must not flip a products-bearing run to "(no data)".
+            run_status = _project_run_status(outdir)
+            note = run_status.get("note") or ""
+            if run_status.get("state") == "completed" and "no data" in note:
+                status[workunit] = f"completed (no data): {note}"
+                print(
+                    f"WARNING: {workunit} completed WITHOUT products: {note}",
+                    file=sys.stderr,
+                )
+            else:
+                status[workunit] = "completed"
         except Exception as e:
             # one failed project must not take down the rest of the batch
             print(f"ERROR: {workunit} failed: {e}")
@@ -132,7 +181,15 @@ def rasterize_projects(
     print("\nBatch summary:")
     for workunit, state in status.items():
         print(f"  {workunit}: {state}")
-    failed = [w for w, s in status.items() if s != "completed"]
+    nodata = [w for w, s in status.items() if s.startswith("completed (no data)")]
+    if nodata:
+        print(
+            f"WARNING: {len(nodata)}/{len(status)} project runs produced NO "
+            f"products: {nodata} — check EPT availability/name resolution or "
+            "use the local point-cloud path (rasterize --input)",
+            file=sys.stderr,
+        )
+    failed = [w for w, s in status.items() if s.startswith("failed")]
     if failed:
         raise RuntimeError(
             f"{len(failed)}/{len(status)} project runs failed: {failed} "

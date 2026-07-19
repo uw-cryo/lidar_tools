@@ -19,6 +19,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pyproj.datadir
 import pyproj.network
 from osgeo import gdal
 from pyproj import CRS, Transformer
@@ -117,6 +118,255 @@ def geoid_grid_hint(geoid_name) -> "str | None":
         return None
     key = str(geoid_name).upper().replace(" ", "")
     return GEOID_GRID_HINTS.get(key)
+
+
+# Declared geoid model -> PROJ-data grid file(s) per region. Filenames
+# verified against the cdn.proj.org us_noaa catalog (pyproj.sync,
+# 2026-07-18). GEOID99 CONUS/AK ship as multi-tile sets: vgridshift takes
+# the comma list and applies the tile containing each point.
+GEOID_GRID_FILES = {
+    "GEOID18": {
+        "conus": ["us_noaa_g2018u0.tif"],
+        "prvi": ["us_noaa_g2018p0.tif"],
+    },
+    "GEOID12B": {
+        "conus": ["us_noaa_g2012bu0.tif"],
+        "ak": ["us_noaa_g2012ba0.tif"],
+        "prvi": ["us_noaa_g2012bp0.tif"],
+        # NGS notes Hawaii had no official vertical datum in the GEOID12
+        # era; the g2012bh0 grid exists and is mapped, but an HI survey
+        # declaring GEOID12B deserves operator attention (what datum were
+        # the heights actually produced against?)
+        "hi": ["us_noaa_g2012bh0.tif"],
+        "guam": ["us_noaa_g2012bg0.tif"],
+        "samoa": ["us_noaa_g2012bs0.tif"],
+    },
+    "GEOID09": {
+        "conus": ["us_noaa_geoid09_conus.tif"],
+        "ak": ["us_noaa_geoid09_ak.tif"],
+    },
+    "GEOID06": {"ak": ["us_noaa_geoid06_ak.tif"]},
+    "GEOID03": {"conus": ["us_noaa_geoid03_conus.tif"]},
+    "GEOID99": {
+        "conus": [f"us_noaa_g1999u0{i}.tif" for i in range(1, 9)],
+        "ak": [f"us_noaa_g1999a0{i}.tif" for i in range(1, 5)],
+        "hi": ["us_noaa_g1999h01.tif"],
+        "prvi": ["us_noaa_g1999p01.tif"],
+    },
+}
+
+# short forms and case drift observed in WESM 'geoid' declarations
+_GEOID_NAME_ALIASES = {"12A": "GEOID12A", "12B": "GEOID12B"}
+# declarations that mean "nothing declared", not "declared but unavailable"
+_GEOID_NAME_UNDECLARED = {"", "UNKNOWN", "N/A", "NA", "NONE"}
+
+_REGION_BOXES = {
+    # (west, south, east, north), checked in order; conus last
+    "prvi": (-68.5, 17.0, -64.0, 19.5),
+    "hi": (-161.5, 18.0, -154.0, 23.5),
+    "guam": (144.0, 13.0, 146.5, 16.0),
+    "samoa": (-171.5, -15.0, -169.0, -13.5),
+    "ak": (-190.0, 49.5, -129.0, 72.5),
+    "conus": (-130.0, 23.0, -66.0, 50.0),
+}
+
+
+def _aoi_region(aoi_bounds: tuple) -> str:
+    """NGS geoid-grid region containing the AOI (west, south, east, north)."""
+    west, south, east, north = aoi_bounds
+    cx, cy = (west + east) / 2.0, (south + north) / 2.0
+    for region, (w, s, e, n) in _REGION_BOXES.items():
+        if w <= cx <= e and s <= cy <= n:
+            return region
+    raise ValueError(
+        f"AOI {aoi_bounds} is outside every NGS geoid-grid region "
+        f"({list(_REGION_BOXES)}); declared-geoid handling needs an explicit "
+        "region mapping for this area."
+    )
+
+
+def resolve_declared_geoid(geoid_name, aoi_bounds: tuple) -> "dict | None":
+    """
+    Resolve a survey's declared geoid model to the exact PROJ grid file(s)
+    to REQUIRE for its AOI — the survey's production geoid is part of the
+    data definition, and substituting a different model (e.g. GEOID18 for
+    a GEOID12B survey) silently shifts heights by the model difference
+    (cm-level). Returns None only when nothing was declared
+    ('Unknown'/'N/A'/empty); a declared-but-unmappable geoid raises.
+
+    GEOID12A has no grids in PROJ-data. Per the NGS GEOID Team, GEOID12B
+    "is EXACTLY the same as the earlier GEOID12A model in the fifty states
+    (CONUS); the only change is the portion that covers Puerto Rico and
+    the US Virgin Islands" (relayed by the NGS State Geodetic Advisor
+    program, 2015; see also the NGS technical summary
+    https://geodesy.noaa.gov/research/technical-details/USGG2012-GEOID12B-technical-information.pdf).
+    GEOID12A therefore maps to the GEOID12B grids everywhere EXCEPT
+    Puerto Rico / USVI, where the models differ and we refuse.
+
+    Returns
+    -------
+    dict | None
+        {"declared", "model", "region", "grids", "substituted_for"} —
+        ``grids`` are exact PROJ-data filenames; ``substituted_for`` is
+        set when an equivalent model's grids stand in for the declared one.
+    """
+    if geoid_name is None:
+        return None
+    key = str(geoid_name).upper().replace(" ", "")
+    if key in _GEOID_NAME_UNDECLARED:
+        return None
+    key = _GEOID_NAME_ALIASES.get(key, key)
+    region = _aoi_region(aoi_bounds)
+
+    substituted_for = None
+    model = key
+    if key == "GEOID12":
+        raise ValueError(
+            "Survey declares 'GEOID12', which NGS superseded with corrections "
+            "(GEOID12A/GEOID12B) and which has no PROJ-data grids. Confirm the "
+            "actual production model from the vendor report and handle this "
+            "survey explicitly."
+        )
+    if key == "GEOID12A":
+        if region == "prvi":
+            raise ValueError(
+                "Survey declares GEOID12A over Puerto Rico / USVI — the one "
+                "region where GEOID12A and GEOID12B DIFFER (NGS). No "
+                "GEOID12A grids exist in PROJ-data; refusing to substitute. "
+                "Handle this survey explicitly (NGS distributes legacy "
+                "GEOID12A PR/VI grids separately)."
+            )
+        model = "GEOID12B"
+        substituted_for = "GEOID12A"
+
+    files_by_region = GEOID_GRID_FILES.get(model)
+    if files_by_region is None:
+        raise ValueError(
+            f"Survey declares geoid '{geoid_name}', which has no known "
+            "PROJ-data grids. Refusing to silently substitute another model; "
+            "add the mapping to GEOID_GRID_FILES or use "
+            "--geoid-override best-available to consciously accept "
+            "substitution."
+        )
+    grids = files_by_region.get(region)
+    if grids is None:
+        raise ValueError(
+            f"Declared geoid {model} has no grid for region '{region}' "
+            f"(AOI {aoi_bounds}; available regions {sorted(files_by_region)}). "
+            "The declaration and the AOI disagree — resolve explicitly."
+        )
+    return {
+        "declared": str(geoid_name),
+        "model": model,
+        "region": region,
+        "grids": list(grids),
+        "substituted_for": substituted_for,
+    }
+
+
+def _swap_vgridshift_grids(definition: str, grid_files: list) -> str:
+    """
+    Return a PROJ pipeline with the vgridshift step's grids replaced by
+    ``grid_files``. The EPSG registry marks older NAVD88 geoid realizations
+    as superseded, so PROJ never even lists them as candidates — the only
+    way to honor a declared legacy geoid is to take the ranked pipeline
+    (whose structure is correct) and swap the geoid grid it uses.
+    """
+    # pyproj Transformer.definition drops the '+' prefixes; accept both
+    # forms and ANY whitespace. The substitution must use the SAME pattern
+    # as the match: a find-then-str.replace pair can silently no-op on a
+    # definition whose spacing differs from the reconstruction, which would
+    # run the ranked pipeline while claiming the declared one.
+    pattern = r"(\+?proj=vgridshift\s+\+?)grids=\S+"
+    matches = re.findall(pattern, definition)
+    if len(matches) != 1:
+        raise ValueError(
+            f"Cannot swap the declared geoid into this pipeline: expected "
+            f"exactly one vgridshift step, found {len(matches)} "
+            f"(pipeline: {definition[:200]})"
+        )
+    swapped = re.sub(
+        pattern,
+        lambda m: f"{m.group(1)}grids={','.join(grid_files)}",
+        definition,
+        count=1,
+    )
+    if swapped == definition:
+        raise ValueError(
+            "Declared-geoid grid swap produced no change to the pipeline "
+            f"(grids {grid_files}); refusing — an unchanged pipeline would "
+            "silently run the ranked geoid while claiming the declared one."
+        )
+    return swapped
+
+
+def _grid_locally_available(grid_file: str) -> bool:
+    """A datum grid counts as present only as a local file on the PROJ path."""
+    dirs = [pyproj.datadir.get_user_data_dir(), pyproj.datadir.get_data_dir()]
+    return any((Path(d) / grid_file).exists() for d in dirs if d)
+
+
+def _download_grid(grid_file: str) -> None:
+    """
+    Fetch one grid from the PROJ CDN into the user-writable data dir.
+    pid-unique temp name + unlink-on-failure so concurrent runs sharing
+    the PROJ user dir cannot clobber each other or rename a partial file
+    into place; the size is validated against Content-Length before the
+    rename publishes it.
+    """
+    import os
+    import urllib.request
+
+    from pyproj.sync import get_proj_endpoint
+
+    dest = Path(pyproj.datadir.get_user_data_dir())
+    dest.mkdir(parents=True, exist_ok=True)
+    url = f"{get_proj_endpoint()}/{grid_file}"
+    tmp = dest / f"{grid_file}.{os.getpid()}.part"
+    try:
+        with urllib.request.urlopen(url, timeout=120) as r, open(tmp, "wb") as f:
+            expected = r.headers.get("Content-Length")
+            shutil.copyfileobj(r, f)
+        if expected is not None and tmp.stat().st_size != int(expected):
+            raise OSError(
+                f"downloaded {tmp.stat().st_size} bytes for {grid_file}, "
+                f"server declared {expected}"
+            )
+        tmp.rename(dest / grid_file)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+
+
+def _ensure_grids_local(grid_files: list) -> None:
+    """
+    Fail fast unless every grid is a LOCAL file: a pipeline that fetches
+    grids over PROJ networking at warp time dies hours later on a CDN
+    blip. Missing grids are downloaded now (when networking is enabled)
+    or reported with the exact remedy.
+    """
+    for grid_file in grid_files:
+        if _grid_locally_available(grid_file):
+            continue
+        if pyproj.network.is_network_enabled():
+            print(f"Downloading datum grid {grid_file} to the PROJ user dir")
+            try:
+                _download_grid(grid_file)
+            except Exception as e:
+                raise RuntimeError(
+                    f"Datum grid '{grid_file}' is not installed locally and "
+                    f"the download failed ({e}). Install it explicitly "
+                    f"('pyproj sync --file {grid_file.split('.')[0]}' or the "
+                    "conda-forge proj-data package) and re-run."
+                ) from e
+        if not _grid_locally_available(grid_file):
+            raise RuntimeError(
+                f"Datum grid '{grid_file}' is not installed locally and PROJ "
+                "networking is disabled. Install it explicitly "
+                f"('pyproj sync --file {grid_file.split('.')[0]}' or the "
+                "conda-forge proj-data package, or set PROJ_NETWORK=ON) "
+                "and re-run. Refusing to defer grid access to warp time."
+            )
 
 
 def utm_zone_label(utm_epsg: int) -> str:
@@ -536,7 +786,8 @@ def preflight_vertical_transform(
     dst_crs: CRS | str,
     download: bool = True,
     aoi_bounds: tuple = None,
-    prefer_grids: str = None,
+    require_grids: list = None,
+    allow_geoid_fallback: bool = False,
 ) -> dict:
     """
     Verify PROJ can rigorously transform src_crs -> dst_crs before compute.
@@ -566,10 +817,24 @@ def preflight_vertical_transform(
         a CONUS geoid grid selected for a Puerto Rico/Alaska AOI), which is
         then applied out-of-area when the pipeline is enforced via
         gdalwarp -ct.
-    prefer_grids
-        Substring (e.g. 'g2012b') selecting the first available
-        transformation whose pipeline uses a matching grid — for honoring a
-        survey's production geoid model instead of PROJ's default ranking.
+    require_grids
+        Exact PROJ grid filename(s) (e.g. from `resolve_declared_geoid`)
+        that the vertical step MUST use — the survey's production geoid is
+        part of the data definition. If no candidate transformation uses
+        them (the EPSG registry marks legacy geoid realizations as
+        superseded, so PROJ never lists them), the pipeline is CONSTRUCTED
+        explicitly by swapping the grid into the ranked pipeline, the
+        grids are materialized locally, and the result is sanity-checked
+        numerically against the ranked pipeline. There is no silent
+        fallback: failure raises unless ``allow_geoid_fallback``.
+    allow_geoid_fallback
+        Operator escape hatch (--geoid-override best-available): when the
+        required grids cannot be used, warn LOUDLY and continue with the
+        ranked-best pipeline instead of raising. Default False. This is an
+        unblocking permission, NOT a model selector: when the required
+        grids ARE usable they are still used — there is deliberately no
+        mode that forces the ranked model over usable declared grids (a
+        historical-comparison run wanting that is a separate feature).
 
     Returns
     -------
@@ -634,17 +899,84 @@ def preflight_vertical_transform(
             "wrong by the geoid undulation (~31 m in CONUS)."
         )
     best = group.transformers[0]
-    if prefer_grids is not None:
+    pipeline_source = "ranked"
+    substitution_note = None
+    explicit_transformer = None
+    if require_grids:
+        required = list(require_grids)
         matching = [
-            t for t in group.transformers if prefer_grids in (t.definition or "")
+            t
+            for t in group.transformers
+            if all(g in (t.definition or "") for g in required)
         ]
-        if not matching:
-            raise RuntimeError(
-                f"No available transformation '{src_crs.name}' -> '{dst_crs.name}' "
-                f"uses a grid matching '{prefer_grids}' (candidates: "
-                f"{[t.description for t in group.transformers[:5]]})"
-            )
-        best = matching[0]
+        if matching:
+            best = matching[0]
+            pipeline_source = "ranked-declared-geoid"
+        else:
+            # The EPSG registry marks legacy NAVD88 geoid realizations as
+            # superseded by the newest one, and PROJ's operation factory
+            # discards superseded operations entirely (root cause of the
+            # 2026-07-18 GEOID12B->g2018 substitution: the g2012b grid was
+            # installed locally, yet the g2012b operation was never even a
+            # candidate). Ranking cannot cooperate — construct the pipeline
+            # explicitly by swapping the declared grid into the ranked
+            # pipeline, whose structure is otherwise identical.
+            try:
+                base_def = group.transformers[0].definition or ""
+                new_def = _swap_vgridshift_grids(base_def, required)
+                _ensure_grids_local(required)
+                explicit_transformer = Transformer.from_pipeline(new_def)
+                if aoi_bounds is not None:
+                    # numeric guard against a structurally wrong swap
+                    # (sign/units/coverage): the declared geoid must differ
+                    # from the ranked one by model differences (<~2 m),
+                    # never by the full undulation (~30 m) or worse
+                    cx = (aoi_bounds[0] + aoi_bounds[2]) / 2.0
+                    cy = (aoi_bounds[1] + aoi_bounds[3]) / 2.0
+                    to_src = Transformer.from_crs(
+                        "EPSG:4979", src_crs, always_xy=True, allow_ballpark=True
+                    )
+                    src_pt = to_src.transform(cx, cy, 0.0)
+                    z_ranked = best.transform(*src_pt)[2]
+                    z_declared = explicit_transformer.transform(*src_pt)[2]
+                    dz = abs(z_declared - z_ranked)
+                    if not dz < 2.0:
+                        raise RuntimeError(
+                            f"Swapped-grid pipeline disagrees with the ranked "
+                            f"pipeline by {dz:.3f} m at the AOI center — the "
+                            f"declared grids {required} do not behave like a "
+                            "geoid-model substitution; refusing."
+                        )
+                pipeline_source = "explicit-declared-geoid"
+            except Exception as e:
+                if allow_geoid_fallback:
+                    print(
+                        f"WARNING: declared geoid grids {required} cannot be "
+                        f"used ({e}); geoid-override accepted — continuing "
+                        "with the best-available model "
+                        f"({group.transformers[0].description}). Heights will "
+                        "differ from the survey's production geoid by the "
+                        "model difference.",
+                        file=sys.stderr,
+                    )
+                    best = group.transformers[0]
+                    explicit_transformer = None
+                    pipeline_source = "fallback-best-available"
+                    substitution_note = (
+                        f"declared grids {required} unusable ({e}); operator "
+                        "accepted best-available substitution"
+                    )
+                else:
+                    raise RuntimeError(
+                        f"The survey's declared geoid grids {required} cannot "
+                        f"be used for '{src_crs.name}' -> '{dst_crs.name}': "
+                        f"{e}. Remedies: install the grid "
+                        f"('pyproj sync --file {required[0].split('.')[0]}'), "
+                        "set PROJ_NETWORK=ON, or consciously accept "
+                        "substitution with --geoid-override best-available. "
+                        "Refusing to silently substitute another geoid model "
+                        "(cm-level vertical bias)."
+                    ) from e
     # never enforce a pipeline outside its stated validity area
     if aoi_bounds is not None and best.area_of_use is not None:
         a = best.area_of_use
@@ -665,23 +997,36 @@ def preflight_vertical_transform(
                 f"'{a.name}' ({a.bounds}), which does not contain the AOI "
                 f"{aoi_bounds}. Refusing to enforce an out-of-area pipeline."
             )
-    definition = best.definition or ""
+    if explicit_transformer is not None:
+        definition = explicit_transformer.definition or ""
+        description = f"{best.description} [declared geoid grids {list(require_grids)}]"
+    else:
+        definition = best.definition or ""
+        description = best.description
     grids = sorted(
         {name for match in re.findall(r"grids=(\S+)", definition) for name in match.split(",")}
     )
+    # every grid the selected pipeline touches must be a LOCAL file NOW —
+    # never defer grid access to the warp stage (CDN blips fail hours in)
+    _ensure_grids_local(grids)
     print(
         f"Transform preflight OK: '{src_crs.name}' -> '{dst_crs.name}' via "
-        f"{best.description} (accuracy {best.accuracy} m, grids {grids or 'none'})"
+        f"{description} (accuracy {best.accuracy} m, grids {grids or 'none'}, "
+        f"pipeline {pipeline_source})"
     )
-    return {
+    record = {
         "source_crs": src_crs.name,
         "target_crs": dst_crs.name,
-        "description": best.description,
+        "description": description,
         "proj_pipeline": definition,
         "grids": grids,
         "accuracy_m": best.accuracy,
         "area_of_use": best.area_of_use.name if best.area_of_use else None,
+        "pipeline_source": pipeline_source,
     }
+    if substitution_note:
+        record["substitution"] = substitution_note
+    return record
 
 
 def set_coordinate_epoch(

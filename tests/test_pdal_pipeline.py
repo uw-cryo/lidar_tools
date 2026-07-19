@@ -70,3 +70,174 @@ def test_cleanup_intermediates_nested_layout(tmp_path):
     assert not (d / "tiles" / "intensity").exists()
     assert not (d / "tiles" / "cache").exists()
     assert (d / "tiles" / "dsm").exists()
+
+
+def _lv_aoi_file(tmp_path):
+    import shapely
+
+    aoi = gpd.GeoDataFrame(
+        geometry=[shapely.box(-115.10, 36.00, -115.05, 36.05)], crs="EPSG:4326"
+    )
+    fn = tmp_path / "aoi.geojson"
+    aoi.to_file(fn)
+    return str(fn)
+
+
+def _fake_ept_index(names, counts):
+    import shapely
+
+    return gpd.GeoDataFrame(
+        {"name": names, "count": counts},
+        geometry=[shapely.box(-115.2, 35.9, -114.9, 36.2)] * len(names),
+        crs="EPSG:4326",
+    )
+
+
+def test_rasterize_pins_wesm_name_but_reads_resolved_ept(tmp_path, monkeypatch):
+    """The WESM pin, output naming and metadata keep the workunit name;
+    only the EPT reader join uses the resolved (FTP-era) resource name."""
+    import glob
+
+    import yaml
+
+    from lidar_tools import dsm_functions, geodesy, pdal_pipeline, survey
+
+    wesm_rec = {
+        "workunit": "NV_LasVegas_QL2_2016",
+        "horiz_crs": "6521",
+        "geoid": "GEOID12A",
+        "ql": "QL 2",
+    }
+    monkeypatch.setattr(
+        survey, "workunit_record", lambda gdf, wu, **k: dict(wesm_rec, workunit=wu)
+    )
+    preflight_kwargs = []
+    real_preflight_stub = lambda *a, **k: {"ok": True, "stub": True}  # noqa: E731
+
+    def spy_preflight(*a, **k):
+        preflight_kwargs.append(k)
+        return real_preflight_stub(*a, **k)
+    monkeypatch.setattr(
+        survey,
+        "load_ept_resources",
+        lambda *a, **k: _fake_ept_index(
+            ["USGS_LPC_NV_LasVegas_QL2_2016_LAS_2018"], [9]
+        ),
+    )
+    monkeypatch.setattr(geodesy, "preflight_vertical_transform", spy_preflight)
+    captured = {}
+
+    def fake_create(*args, **kwargs):
+        captured.update(kwargs)
+        return []
+
+    monkeypatch.setattr(dsm_functions, "create_ept_3dep_pipeline", fake_create)
+
+    outdir = tmp_path / "out"
+    pdal_pipeline.rasterize(
+        geometry=_lv_aoi_file(tmp_path),
+        output=str(outdir),
+        threedep_project="NV_LasVegas_QL2_2016",
+        output_datum="nad83_2011",
+        quiet=True,
+    )
+
+    # reader join got the RESOLVED EPT name
+    assert (
+        captured["process_specific_3dep_survey"]
+        == "USGS_LPC_NV_LasVegas_QL2_2016_LAS_2018"
+    )
+    metas = glob.glob(str(outdir / "*processing_metadata.yaml"))
+    assert len(metas) == 1
+    # output naming keeps the WESM workunit name, never the EPT alias
+    assert "NV_LasVegas_QL2_2016" in metas[0] and "USGS_LPC" not in metas[0]
+    meta = yaml.safe_load(open(metas[0]))
+    # the WESM pin rode through untouched (GEOID12A, workunit name)
+    assert meta["survey_records"][0]["workunit"] == "NV_LasVegas_QL2_2016"
+    assert meta["survey_records"][0]["geoid"] == "GEOID12A"
+    # resolution provenance recorded: who resolved to what, at which tier
+    assert meta["ept_resolution"]["workunit"] == "NV_LasVegas_QL2_2016"
+    assert (
+        meta["ept_resolution"]["ept_name"]
+        == "USGS_LPC_NV_LasVegas_QL2_2016_LAS_2018"
+    )
+    assert meta["ept_resolution"]["tier"] == 3
+    assert meta["ept_resolution"]["boundary_intersects_aoi"] is True
+    # 0 readers -> the no-data guard finished the run cleanly, loudly
+    assert meta["run_status"]["state"] == "completed"
+    assert "no data" in meta["run_status"]["note"]
+    # declared GEOID12A resolved to the GEOID12B CONUS grid (NGS-identical
+    # outside PR/USVI) and REQUIRED at preflight — never a silent fallback
+    assert meta["declared_geoid"]["model"] == "GEOID12B"
+    assert meta["declared_geoid"]["substituted_for"] == "GEOID12A"
+    geoid_calls = [k for k in preflight_kwargs if k.get("require_grids")]
+    assert geoid_calls, "no preflight call carried the declared-geoid grids"
+    assert geoid_calls[0]["require_grids"] == ["us_noaa_g2012bu0.tif"]
+    assert geoid_calls[0]["allow_geoid_fallback"] is False
+
+
+def test_rasterize_unresolvable_ept_raises_lookuperror(tmp_path, monkeypatch):
+    """No silent 0-reader runs: an unresolvable workunit fails loudly."""
+    from lidar_tools import geodesy, pdal_pipeline, survey
+
+    monkeypatch.setattr(
+        survey,
+        "workunit_record",
+        lambda gdf, wu, **k: {"workunit": wu, "horiz_crs": "6340", "geoid": "GEOID18"},
+    )
+    monkeypatch.setattr(
+        survey,
+        "load_ept_resources",
+        lambda *a, **k: _fake_ept_index(["NV_Southern_5_D23"], [1]),
+    )
+    monkeypatch.setattr(
+        geodesy,
+        "preflight_vertical_transform",
+        lambda *a, **k: {"ok": True, "stub": True},
+    )
+    with pytest.raises(LookupError, match="NV_Southern_4_D23"):
+        pdal_pipeline.rasterize(
+            geometry=_lv_aoi_file(tmp_path),
+            output=str(tmp_path / "out"),
+            threedep_project="NV_Southern_4_D23",
+            output_datum="nad83_2011",
+            quiet=True,
+        )
+
+
+def test_rasterize_wesm_failure_geoid_modes(tmp_path, monkeypatch):
+    """A WESM fetch failure must not silently drop the declared-geoid
+    requirement: hard error in 'declared' mode, loud proceed only when the
+    operator already chose best-available."""
+    from lidar_tools import dsm_functions, geodesy, pdal_pipeline, survey
+
+    def no_wesm(gdf, wu, **k):
+        raise OSError("connection reset by peer")
+
+    monkeypatch.setattr(survey, "workunit_record", no_wesm)
+    monkeypatch.setattr(
+        survey, "load_ept_resources", lambda *a, **k: _fake_ept_index(["WU_X"], [1])
+    )
+    monkeypatch.setattr(
+        geodesy, "preflight_vertical_transform", lambda *a, **k: {"ok": True}
+    )
+    monkeypatch.setattr(dsm_functions, "create_ept_3dep_pipeline", lambda *a, **k: [])
+
+    aoi = _lv_aoi_file(tmp_path)
+    with pytest.raises(RuntimeError, match="geoid-override best-available"):
+        pdal_pipeline.rasterize(
+            geometry=aoi,
+            output=str(tmp_path / "o1"),
+            threedep_project="WU_X",
+            output_datum="nad83_2011",
+            quiet=True,
+        )
+    # conscious override: run proceeds on default datum handling
+    pdal_pipeline.rasterize(
+        geometry=aoi,
+        output=str(tmp_path / "o2"),
+        threedep_project="WU_X",
+        output_datum="nad83_2011",
+        geoid_override="best-available",
+        quiet=True,
+    )
