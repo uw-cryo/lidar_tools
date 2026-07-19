@@ -121,3 +121,21 @@ def test_rasterize_projects_warns_on_unreadable_metadata(
     # ... but the operator is told the products could not be verified
     err = capsys.readouterr().err
     assert "unreadable processing metadata" in err
+
+
+def test_rasterize_projects_passes_geoid_override(tmp_path, aoi_file, monkeypatch):
+    from pathlib import Path
+
+    seen = []
+
+    def fake_rasterize(**kw):
+        Path(kw["output"]).mkdir(parents=True, exist_ok=True)
+        seen.append(kw)
+
+    monkeypatch.setattr(driver, "rasterize", fake_rasterize)
+    driver.rasterize_projects(aoi_file, "WU_A", str(tmp_path / "b1"))
+    assert seen[0]["geoid_override"] == "declared"  # hard-fail is the default
+    driver.rasterize_projects(
+        aoi_file, "WU_A", str(tmp_path / "b2"), geoid_override="best-available"
+    )
+    assert seen[1]["geoid_override"] == "best-available"

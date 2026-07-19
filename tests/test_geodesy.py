@@ -438,3 +438,206 @@ def test_coordinate_epoch_survives_overviews(tmp_path):
     assert geodesy.set_coordinate_epoch(fn) is True
     dsm_functions.gdal_add_overview(str(fn))
     assert _read_epoch(fn) == geodesy.DEFAULT_COORDINATE_EPOCH
+
+
+LV_AOI = (-115.466, 35.873, -114.875, 36.434)  # conus
+PRVI_AOI = (-66.5, 17.9, -65.5, 18.5)
+AK_AOI = (-150.0, 60.0, -149.0, 61.0)
+
+
+def test_resolve_declared_geoid_observed_wesm_set():
+    # every geoid the WESM archive actually declares (2026-07-18 census)
+    # must map to exact CDN grid files for its region — never a fragment
+    cases = {
+        "GEOID18": ["us_noaa_g2018u0.tif"],
+        "GEOID12B": ["us_noaa_g2012bu0.tif"],
+        "GEOID09": ["us_noaa_geoid09_conus.tif"],
+        "GEOID03": ["us_noaa_geoid03_conus.tif"],
+        "Geoid18": ["us_noaa_g2018u0.tif"],  # WESM case drift
+        "12B": ["us_noaa_g2012bu0.tif"],  # WESM short form
+    }
+    for declared, grids in cases.items():
+        r = geodesy.resolve_declared_geoid(declared, LV_AOI)
+        assert r["grids"] == grids, declared
+    # GEOID99 CONUS is a multi-tile set
+    r = geodesy.resolve_declared_geoid("GEOID99", LV_AOI)
+    assert len(r["grids"]) == 8 and r["grids"][0] == "us_noaa_g1999u01.tif"
+    # AK regionalization
+    assert geodesy.resolve_declared_geoid("GEOID09", AK_AOI)["grids"] == [
+        "us_noaa_geoid09_ak.tif"
+    ]
+    assert geodesy.resolve_declared_geoid("GEOID06", AK_AOI)["grids"] == [
+        "us_noaa_geoid06_ak.tif"
+    ]
+    # "nothing declared" is None, not an error
+    for undeclared in (None, "Unknown", "N/A", ""):
+        assert geodesy.resolve_declared_geoid(undeclared, LV_AOI) is None
+
+
+def test_resolve_declared_geoid_12a_equivalence_and_prvi_refusal():
+    # NGS: GEOID12B is identical to GEOID12A everywhere EXCEPT PR/USVI
+    r = geodesy.resolve_declared_geoid("GEOID12A", LV_AOI)
+    assert r["grids"] == ["us_noaa_g2012bu0.tif"]
+    assert r["model"] == "GEOID12B" and r["substituted_for"] == "GEOID12A"
+    with pytest.raises(ValueError, match="Puerto Rico"):
+        geodesy.resolve_declared_geoid("GEOID12A", PRVI_AOI)
+    # 12B itself is fine in PR/USVI
+    assert geodesy.resolve_declared_geoid("GEOID12B", PRVI_AOI)["grids"] == [
+        "us_noaa_g2012bp0.tif"
+    ]
+
+
+def test_resolve_declared_geoid_refuses_unmappable():
+    with pytest.raises(ValueError, match="GEOID12"):
+        geodesy.resolve_declared_geoid("GEOID12", LV_AOI)
+    # declared model has no grid for the AOI's region
+    with pytest.raises(ValueError, match="region"):
+        geodesy.resolve_declared_geoid("GEOID03", AK_AOI)
+    with pytest.raises(ValueError, match="no known"):
+        geodesy.resolve_declared_geoid("GEOID_FUTURE_29", LV_AOI)
+
+
+def test_swap_vgridshift_grids():
+    d = (
+        "+proj=pipeline +step +inv +proj=webmerc "
+        "+step +inv +proj=vgridshift +grids=us_noaa_g2018u0.tif +multiplier=1 "
+        "+step +proj=utm +zone=11"
+    )
+    out = geodesy._swap_vgridshift_grids(d, ["us_noaa_g2012bu0.tif"])
+    assert "+proj=vgridshift +grids=us_noaa_g2012bu0.tif" in out
+    assert "g2018u0" not in out
+    assert out.count("+proj=utm") == 1  # rest of the pipeline untouched
+    # multi-tile declared set becomes a comma list
+    out = geodesy._swap_vgridshift_grids(d, ["a.tif", "b.tif"])
+    assert "+grids=a.tif,b.tif" in out
+    with pytest.raises(ValueError, match="vgridshift"):
+        geodesy._swap_vgridshift_grids("+proj=pipeline +step +proj=utm +zone=11", ["a.tif"])
+    # pyproj Transformer.definition drops '+' prefixes — must still swap
+    bare = (
+        "proj=pipeline step inv proj=webmerc ellps=GRS80 "
+        "step proj=vgridshift grids=us_noaa_g2018u0.tif multiplier=1 "
+        "step proj=utm zone=11 ellps=GRS80"
+    )
+    out = geodesy._swap_vgridshift_grids(bare, ["us_noaa_g2012bu0.tif"])
+    assert "proj=vgridshift grids=us_noaa_g2012bu0.tif" in out
+    assert "g2018u0" not in out
+    # irregular whitespace must still swap (a silent no-op here would run
+    # the ranked grid while claiming the declared one)
+    spaced = (
+        "proj=pipeline step inv proj=webmerc "
+        "step proj=vgridshift   grids=us_noaa_g2018u0.tif multiplier=1 "
+        "step proj=utm zone=11"
+    )
+    out = geodesy._swap_vgridshift_grids(spaced, ["us_noaa_g2012bu0.tif"])
+    assert "grids=us_noaa_g2012bu0.tif" in out and "g2018u0" not in out
+    # swapping in the grid the pipeline already uses is a refused no-op
+    with pytest.raises(ValueError, match="no change"):
+        geodesy._swap_vgridshift_grids(bare, ["us_noaa_g2018u0.tif"])
+
+
+def test_ensure_grids_local_hard_error(monkeypatch, tmp_path):
+    monkeypatch.setattr(geodesy, "_grid_locally_available", lambda g: False)
+    # network off: exact remedy in the message
+    monkeypatch.setattr(geodesy.pyproj.network, "is_network_enabled", lambda: False)
+    with pytest.raises(RuntimeError, match="pyproj sync --file us_noaa_g2012bu0"):
+        geodesy._ensure_grids_local(["us_noaa_g2012bu0.tif"])
+    # network on but the download fails: still a hard error, still the remedy
+    monkeypatch.setattr(geodesy.pyproj.network, "is_network_enabled", lambda: True)
+
+    def boom(g):
+        raise OSError("cdn blip")
+
+    monkeypatch.setattr(geodesy, "_download_grid", boom)
+    with pytest.raises(RuntimeError, match="download failed"):
+        geodesy._ensure_grids_local(["us_noaa_g2012bu0.tif"])
+
+
+def _lv_preflight_crss():
+    src = geodesy.build_ept_3857_navd88_compound(base_epsg=6318)
+    dst = geodesy.build_utm_nad83_2011_3d(32611)
+    return src, dst
+
+
+def test_preflight_declared_geoid12b_pins_g2012b():
+    """Regression for the 2026-07-18 defect: a survey declaring GEOID12B
+    must get a g2012b pipeline even though EPSG supersession hides the
+    g2012b operation from PROJ's candidate list entirely."""
+    src, dst = _lv_preflight_crss()
+    if not (
+        geodesy._grid_locally_available("us_noaa_g2012bu0.tif")
+        or pyproj.network.is_network_enabled()
+    ):
+        pytest.skip("g2012b grid not local and PROJ network disabled")
+    rec = geodesy.preflight_vertical_transform(
+        src, dst, aoi_bounds=LV_AOI, require_grids=["us_noaa_g2012bu0.tif"]
+    )
+    assert rec["grids"] == ["us_noaa_g2012bu0.tif"]
+    assert rec["pipeline_source"] == "explicit-declared-geoid"
+    assert "vgridshift" in rec["proj_pipeline"]
+
+
+def test_preflight_no_silent_geoid_fallback(monkeypatch):
+    """A declared grid that cannot be used is a hard error unless the
+    operator consciously overrides — never a warn-and-substitute."""
+    src, dst = _lv_preflight_crss()
+    monkeypatch.setattr(geodesy, "_grid_locally_available", lambda g: False)
+
+    def boom(g):
+        raise OSError("no such grid on the CDN")
+
+    monkeypatch.setattr(geodesy, "_download_grid", boom)
+    with pytest.raises(RuntimeError, match="geoid-override best-available"):
+        geodesy.preflight_vertical_transform(
+            src, dst, aoi_bounds=LV_AOI, require_grids=["us_noaa_gXXXX.tif"]
+        )
+
+
+def test_preflight_geoid_override_accepts_substitution(monkeypatch, capsys):
+    src, dst = _lv_preflight_crss()
+    monkeypatch.setattr(geodesy, "_grid_locally_available", lambda g: g != "us_noaa_gXXXX.tif")
+
+    def boom(g):
+        raise OSError("no such grid on the CDN")
+
+    monkeypatch.setattr(geodesy, "_download_grid", boom)
+    rec = geodesy.preflight_vertical_transform(
+        src,
+        dst,
+        aoi_bounds=LV_AOI,
+        require_grids=["us_noaa_gXXXX.tif"],
+        allow_geoid_fallback=True,
+    )
+    assert rec["pipeline_source"] == "fallback-best-available"
+    assert "substitution" in rec
+    assert "WARNING" in capsys.readouterr().err
+
+
+def test_download_grid_atomic_and_size_validated(monkeypatch, tmp_path):
+    import io
+    import urllib.request as _ur
+
+    monkeypatch.setattr(
+        geodesy.pyproj.datadir, "get_user_data_dir", lambda: str(tmp_path)
+    )
+
+    class FakeResp(io.BytesIO):
+        def __init__(self, data, declared):
+            super().__init__(data)
+            self.headers = {"Content-Length": str(declared)}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    # truncated body vs declared size: hard error, nothing left behind
+    monkeypatch.setattr(_ur, "urlopen", lambda url, timeout=0: FakeResp(b"x" * 5, 10))
+    with pytest.raises(OSError, match="declared"):
+        geodesy._download_grid("us_noaa_test.tif")
+    assert list(tmp_path.iterdir()) == []  # no partial or .part files
+    # good download: published under the final name, no temp residue
+    monkeypatch.setattr(_ur, "urlopen", lambda url, timeout=0: FakeResp(b"x" * 10, 10))
+    geodesy._download_grid("us_noaa_test.tif")
+    assert (tmp_path / "us_noaa_test.tif").read_bytes() == b"x" * 10
+    assert [p.name for p in tmp_path.iterdir()] == ["us_noaa_test.tif"]

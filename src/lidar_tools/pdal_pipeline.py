@@ -53,6 +53,7 @@ def _write_processing_metadata(
     quiet: bool,
     ept_vertical: str = "auto",
     resume: bool = False,
+    geoid_override: str = "declared",
 ) -> None:
     """
     Write processing metadata to a YAML file in the output directory.
@@ -93,6 +94,7 @@ def _write_processing_metadata(
             "quiet": quiet,
             "ept_vertical": ept_vertical,
             "resume": resume,
+            "geoid_override": geoid_override,
         }
     }
     # exact code state for reproducing branch-based production runs
@@ -204,6 +206,7 @@ def rasterize(
     height_above_ground_threshold: float = None,
     quiet: Annotated[bool, cyclopts.Parameter(negative="")] = False,
     ept_vertical: Literal["auto", "geoid", "ellipsoid"] = "auto",
+    geoid_override: Literal["declared", "best-available"] = "declared",
     resume: Annotated[bool, cyclopts.Parameter(negative="")] = False,
     coord_epoch: float = None,
 ) -> None:
@@ -266,6 +269,15 @@ def rasterize(
         orthometric) or 'ellipsoid' skip the empirical check when the
         source datum is known (e.g. from per-survey metadata) or when the
         check cannot sample reliably (steep terrain, snow, small AOIs).
+    geoid_override
+        'declared' (default) REQUIRES the survey's declared production
+        geoid grids for the vertical transform — the run hard-fails rather
+        than silently substituting another model (cm-level bias), and also
+        hard-fails when the WESM record (the declaration's source) cannot
+        be fetched. 'best-available' consciously accepts substitution when
+        the declared grids (or the WESM record) cannot be used; it does
+        NOT force the ranked model when the declared grids are usable —
+        the declared geoid still wins.
     resume
         Continue an interrupted run in an existing output directory: tiles
         whose outputs already exist and pass a deep validity check are
@@ -346,6 +358,7 @@ def rasterize(
         quiet=quiet,
         ept_vertical=ept_vertical,
         resume=resume,
+        geoid_override=geoid_override,
     )
     _update_processing_metadata(
         outdir,
@@ -416,10 +429,23 @@ def rasterize(
         try:
             survey_record = survey.workunit_record(gdf, process_specific_3dep_survey)
         except Exception as e:
+            # Without the WESM record there is no declared geoid to require,
+            # so proceeding would silently reintroduce best-available
+            # substitution — a network blip must not decide the geoid.
+            if geoid_override == "declared":
+                raise RuntimeError(
+                    f"Could not fetch the WESM record for "
+                    f"'{process_specific_3dep_survey}' ({e}), so the survey's "
+                    "declared production geoid cannot be required. Retry (WESM "
+                    "reads are transient-failure-prone), or consciously accept "
+                    "best-available datum handling with "
+                    "--geoid-override best-available."
+                ) from e
             print(
                 f"WARNING: could not fetch the WESM record for "
-                f"'{process_specific_3dep_survey}' ({e}); using default datum "
-                "handling (NAD83(2011), best available geoid)",
+                f"'{process_specific_3dep_survey}' ({e}); geoid-override "
+                "accepted — using default datum handling (NAD83(2011), best "
+                "available geoid)",
                 file=sys.stderr,
             )
         if survey_record is not None:
@@ -429,7 +455,27 @@ def rasterize(
                 ept_base_epsg = geodesy.geographic_base_epsg(
                     survey_record["horiz_crs"]
                 )
-            geoid_hint = geodesy.geoid_grid_hint(survey_record.get("geoid"))
+            # Resolve the declared production geoid to the exact PROJ grid
+            # files for this AOI (GEOID12A -> GEOID12B grids outside PR/USVI
+            # per NGS; declared-but-unmappable raises rather than substituting)
+            declared_geoid = geodesy.resolve_declared_geoid(
+                survey_record.get("geoid"), aoi_lonlat
+            )
+            geoid_hint = declared_geoid["grids"] if declared_geoid else None
+            if declared_geoid is not None:
+                _update_processing_metadata(
+                    outdir, "declared_geoid", declared_geoid
+                )
+                sub = (
+                    f" (using {declared_geoid['model']} grids: NGS-identical "
+                    "outside Puerto Rico/USVI)"
+                    if declared_geoid["substituted_for"]
+                    else ""
+                )
+                print(
+                    f"Declared geoid {declared_geoid['declared']} -> "
+                    f"required grids {declared_geoid['grids']}{sub}"
+                )
             print(
                 f"Survey record pinned: {process_specific_3dep_survey} "
                 f"(base datum EPSG:{ept_base_epsg}, geoid "
@@ -497,25 +543,16 @@ def rasterize(
                     None,
                 ),
             ]:
-                try:
-                    record = geodesy.preflight_vertical_transform(
-                        ept_src_crs,
-                        out_crs,
-                        aoi_bounds=aoi_lonlat,
-                        prefer_grids=grids_hint,
-                    )
-                except RuntimeError:
-                    if grids_hint is None:
-                        raise
-                    print(
-                        f"WARNING: no transformation using the survey's "
-                        f"declared geoid ('{grids_hint}') is available; "
-                        "falling back to the best available geoid model",
-                        file=sys.stderr,
-                    )
-                    record = geodesy.preflight_vertical_transform(
-                        ept_src_crs, out_crs, aoi_bounds=aoi_lonlat
-                    )
+                # no silent geoid fallback: the declared grids are REQUIRED
+                # (constructed explicitly when EPSG supersession hides the
+                # operation); substitution only via --geoid-override
+                record = geodesy.preflight_vertical_transform(
+                    ept_src_crs,
+                    out_crs,
+                    aoi_bounds=aoi_lonlat,
+                    require_grids=grids_hint,
+                    allow_geoid_fallback=(geoid_override == "best-available"),
+                )
                 record["branch"] = branch
                 transform_checks.append(record)
                 ept_checks[key] = record

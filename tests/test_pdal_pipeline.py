@@ -111,6 +111,12 @@ def test_rasterize_pins_wesm_name_but_reads_resolved_ept(tmp_path, monkeypatch):
     monkeypatch.setattr(
         survey, "workunit_record", lambda gdf, wu, **k: dict(wesm_rec, workunit=wu)
     )
+    preflight_kwargs = []
+    real_preflight_stub = lambda *a, **k: {"ok": True, "stub": True}  # noqa: E731
+
+    def spy_preflight(*a, **k):
+        preflight_kwargs.append(k)
+        return real_preflight_stub(*a, **k)
     monkeypatch.setattr(
         survey,
         "load_ept_resources",
@@ -118,11 +124,7 @@ def test_rasterize_pins_wesm_name_but_reads_resolved_ept(tmp_path, monkeypatch):
             ["USGS_LPC_NV_LasVegas_QL2_2016_LAS_2018"], [9]
         ),
     )
-    monkeypatch.setattr(
-        geodesy,
-        "preflight_vertical_transform",
-        lambda *a, **k: {"ok": True, "stub": True},
-    )
+    monkeypatch.setattr(geodesy, "preflight_vertical_transform", spy_preflight)
     captured = {}
 
     def fake_create(*args, **kwargs):
@@ -164,6 +166,14 @@ def test_rasterize_pins_wesm_name_but_reads_resolved_ept(tmp_path, monkeypatch):
     # 0 readers -> the no-data guard finished the run cleanly, loudly
     assert meta["run_status"]["state"] == "completed"
     assert "no data" in meta["run_status"]["note"]
+    # declared GEOID12A resolved to the GEOID12B CONUS grid (NGS-identical
+    # outside PR/USVI) and REQUIRED at preflight — never a silent fallback
+    assert meta["declared_geoid"]["model"] == "GEOID12B"
+    assert meta["declared_geoid"]["substituted_for"] == "GEOID12A"
+    geoid_calls = [k for k in preflight_kwargs if k.get("require_grids")]
+    assert geoid_calls, "no preflight call carried the declared-geoid grids"
+    assert geoid_calls[0]["require_grids"] == ["us_noaa_g2012bu0.tif"]
+    assert geoid_calls[0]["allow_geoid_fallback"] is False
 
 
 def test_rasterize_unresolvable_ept_raises_lookuperror(tmp_path, monkeypatch):
@@ -193,3 +203,41 @@ def test_rasterize_unresolvable_ept_raises_lookuperror(tmp_path, monkeypatch):
             output_datum="nad83_2011",
             quiet=True,
         )
+
+
+def test_rasterize_wesm_failure_geoid_modes(tmp_path, monkeypatch):
+    """A WESM fetch failure must not silently drop the declared-geoid
+    requirement: hard error in 'declared' mode, loud proceed only when the
+    operator already chose best-available."""
+    from lidar_tools import dsm_functions, geodesy, pdal_pipeline, survey
+
+    def no_wesm(gdf, wu, **k):
+        raise OSError("connection reset by peer")
+
+    monkeypatch.setattr(survey, "workunit_record", no_wesm)
+    monkeypatch.setattr(
+        survey, "load_ept_resources", lambda *a, **k: _fake_ept_index(["WU_X"], [1])
+    )
+    monkeypatch.setattr(
+        geodesy, "preflight_vertical_transform", lambda *a, **k: {"ok": True}
+    )
+    monkeypatch.setattr(dsm_functions, "create_ept_3dep_pipeline", lambda *a, **k: [])
+
+    aoi = _lv_aoi_file(tmp_path)
+    with pytest.raises(RuntimeError, match="geoid-override best-available"):
+        pdal_pipeline.rasterize(
+            geometry=aoi,
+            output=str(tmp_path / "o1"),
+            threedep_project="WU_X",
+            output_datum="nad83_2011",
+            quiet=True,
+        )
+    # conscious override: run proceeds on default datum handling
+    pdal_pipeline.rasterize(
+        geometry=aoi,
+        output=str(tmp_path / "o2"),
+        threedep_project="WU_X",
+        output_datum="nad83_2011",
+        geoid_override="best-available",
+        quiet=True,
+    )
