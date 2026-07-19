@@ -521,6 +521,18 @@ def test_swap_vgridshift_grids():
     out = geodesy._swap_vgridshift_grids(bare, ["us_noaa_g2012bu0.tif"])
     assert "proj=vgridshift grids=us_noaa_g2012bu0.tif" in out
     assert "g2018u0" not in out
+    # irregular whitespace must still swap (a silent no-op here would run
+    # the ranked grid while claiming the declared one)
+    spaced = (
+        "proj=pipeline step inv proj=webmerc "
+        "step proj=vgridshift   grids=us_noaa_g2018u0.tif multiplier=1 "
+        "step proj=utm zone=11"
+    )
+    out = geodesy._swap_vgridshift_grids(spaced, ["us_noaa_g2012bu0.tif"])
+    assert "grids=us_noaa_g2012bu0.tif" in out and "g2018u0" not in out
+    # swapping in the grid the pipeline already uses is a refused no-op
+    with pytest.raises(ValueError, match="no change"):
+        geodesy._swap_vgridshift_grids(bare, ["us_noaa_g2018u0.tif"])
 
 
 def test_ensure_grids_local_hard_error(monkeypatch, tmp_path):
@@ -598,3 +610,34 @@ def test_preflight_geoid_override_accepts_substitution(monkeypatch, capsys):
     assert rec["pipeline_source"] == "fallback-best-available"
     assert "substitution" in rec
     assert "WARNING" in capsys.readouterr().err
+
+
+def test_download_grid_atomic_and_size_validated(monkeypatch, tmp_path):
+    import io
+    import urllib.request as _ur
+
+    monkeypatch.setattr(
+        geodesy.pyproj.datadir, "get_user_data_dir", lambda: str(tmp_path)
+    )
+
+    class FakeResp(io.BytesIO):
+        def __init__(self, data, declared):
+            super().__init__(data)
+            self.headers = {"Content-Length": str(declared)}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    # truncated body vs declared size: hard error, nothing left behind
+    monkeypatch.setattr(_ur, "urlopen", lambda url, timeout=0: FakeResp(b"x" * 5, 10))
+    with pytest.raises(OSError, match="declared"):
+        geodesy._download_grid("us_noaa_test.tif")
+    assert list(tmp_path.iterdir()) == []  # no partial or .part files
+    # good download: published under the final name, no temp residue
+    monkeypatch.setattr(_ur, "urlopen", lambda url, timeout=0: FakeResp(b"x" * 10, 10))
+    geodesy._download_grid("us_noaa_test.tif")
+    assert (tmp_path / "us_noaa_test.tif").read_bytes() == b"x" * 10
+    assert [p.name for p in tmp_path.iterdir()] == ["us_noaa_test.tif"]

@@ -272,9 +272,12 @@ def rasterize(
     geoid_override
         'declared' (default) REQUIRES the survey's declared production
         geoid grids for the vertical transform — the run hard-fails rather
-        than silently substituting another model (cm-level bias).
-        'best-available' consciously accepts substitution when the
-        declared grids cannot be used.
+        than silently substituting another model (cm-level bias), and also
+        hard-fails when the WESM record (the declaration's source) cannot
+        be fetched. 'best-available' consciously accepts substitution when
+        the declared grids (or the WESM record) cannot be used; it does
+        NOT force the ranked model when the declared grids are usable —
+        the declared geoid still wins.
     resume
         Continue an interrupted run in an existing output directory: tiles
         whose outputs already exist and pass a deep validity check are
@@ -426,10 +429,23 @@ def rasterize(
         try:
             survey_record = survey.workunit_record(gdf, process_specific_3dep_survey)
         except Exception as e:
+            # Without the WESM record there is no declared geoid to require,
+            # so proceeding would silently reintroduce best-available
+            # substitution — a network blip must not decide the geoid.
+            if geoid_override == "declared":
+                raise RuntimeError(
+                    f"Could not fetch the WESM record for "
+                    f"'{process_specific_3dep_survey}' ({e}), so the survey's "
+                    "declared production geoid cannot be required. Retry (WESM "
+                    "reads are transient-failure-prone), or consciously accept "
+                    "best-available datum handling with "
+                    "--geoid-override best-available."
+                ) from e
             print(
                 f"WARNING: could not fetch the WESM record for "
-                f"'{process_specific_3dep_survey}' ({e}); using default datum "
-                "handling (NAD83(2011), best available geoid)",
+                f"'{process_specific_3dep_survey}' ({e}); geoid-override "
+                "accepted — using default datum handling (NAD83(2011), best "
+                "available geoid)",
                 file=sys.stderr,
             )
         if survey_record is not None:

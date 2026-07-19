@@ -133,6 +133,10 @@ GEOID_GRID_FILES = {
         "conus": ["us_noaa_g2012bu0.tif"],
         "ak": ["us_noaa_g2012ba0.tif"],
         "prvi": ["us_noaa_g2012bp0.tif"],
+        # NGS notes Hawaii had no official vertical datum in the GEOID12
+        # era; the g2012bh0 grid exists and is mapped, but an HI survey
+        # declaring GEOID12B deserves operator attention (what datum were
+        # the heights actually produced against?)
         "hi": ["us_noaa_g2012bh0.tif"],
         "guam": ["us_noaa_g2012bg0.tif"],
         "samoa": ["us_noaa_g2012bs0.tif"],
@@ -268,19 +272,32 @@ def _swap_vgridshift_grids(definition: str, grid_files: list) -> str:
     way to honor a declared legacy geoid is to take the ranked pipeline
     (whose structure is correct) and swap the geoid grid it uses.
     """
-    # pyproj Transformer.definition drops the '+' prefixes; accept both forms
-    matches = re.findall(r"(\+?)proj=vgridshift\s+(\+?)grids=(\S+)", definition)
+    # pyproj Transformer.definition drops the '+' prefixes; accept both
+    # forms and ANY whitespace. The substitution must use the SAME pattern
+    # as the match: a find-then-str.replace pair can silently no-op on a
+    # definition whose spacing differs from the reconstruction, which would
+    # run the ranked pipeline while claiming the declared one.
+    pattern = r"(\+?proj=vgridshift\s+\+?)grids=\S+"
+    matches = re.findall(pattern, definition)
     if len(matches) != 1:
         raise ValueError(
             f"Cannot swap the declared geoid into this pipeline: expected "
             f"exactly one vgridshift step, found {len(matches)} "
             f"(pipeline: {definition[:200]})"
         )
-    p1, p2, old_grids = matches[0]
-    return definition.replace(
-        f"{p1}proj=vgridshift {p2}grids={old_grids}",
-        f"{p1}proj=vgridshift {p2}grids={','.join(grid_files)}",
+    swapped = re.sub(
+        pattern,
+        lambda m: f"{m.group(1)}grids={','.join(grid_files)}",
+        definition,
+        count=1,
     )
+    if swapped == definition:
+        raise ValueError(
+            "Declared-geoid grid swap produced no change to the pipeline "
+            f"(grids {grid_files}); refusing — an unchanged pipeline would "
+            "silently run the ranked geoid while claiming the declared one."
+        )
+    return swapped
 
 
 def _grid_locally_available(grid_file: str) -> bool:
@@ -290,7 +307,14 @@ def _grid_locally_available(grid_file: str) -> bool:
 
 
 def _download_grid(grid_file: str) -> None:
-    """Fetch one grid from the PROJ CDN into the user-writable data dir."""
+    """
+    Fetch one grid from the PROJ CDN into the user-writable data dir.
+    pid-unique temp name + unlink-on-failure so concurrent runs sharing
+    the PROJ user dir cannot clobber each other or rename a partial file
+    into place; the size is validated against Content-Length before the
+    rename publishes it.
+    """
+    import os
     import urllib.request
 
     from pyproj.sync import get_proj_endpoint
@@ -298,10 +322,20 @@ def _download_grid(grid_file: str) -> None:
     dest = Path(pyproj.datadir.get_user_data_dir())
     dest.mkdir(parents=True, exist_ok=True)
     url = f"{get_proj_endpoint()}/{grid_file}"
-    tmp = dest / f"{grid_file}.part"
-    with urllib.request.urlopen(url, timeout=120) as r, open(tmp, "wb") as f:
-        shutil.copyfileobj(r, f)
-    tmp.rename(dest / grid_file)
+    tmp = dest / f"{grid_file}.{os.getpid()}.part"
+    try:
+        with urllib.request.urlopen(url, timeout=120) as r, open(tmp, "wb") as f:
+            expected = r.headers.get("Content-Length")
+            shutil.copyfileobj(r, f)
+        if expected is not None and tmp.stat().st_size != int(expected):
+            raise OSError(
+                f"downloaded {tmp.stat().st_size} bytes for {grid_file}, "
+                f"server declared {expected}"
+            )
+        tmp.rename(dest / grid_file)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 def _ensure_grids_local(grid_files: list) -> None:
@@ -796,7 +830,11 @@ def preflight_vertical_transform(
     allow_geoid_fallback
         Operator escape hatch (--geoid-override best-available): when the
         required grids cannot be used, warn LOUDLY and continue with the
-        ranked-best pipeline instead of raising. Default False.
+        ranked-best pipeline instead of raising. Default False. This is an
+        unblocking permission, NOT a model selector: when the required
+        grids ARE usable they are still used — there is deliberately no
+        mode that forces the ranked model over usable declared grids (a
+        historical-comparison run wanting that is a separate feature).
 
     Returns
     -------

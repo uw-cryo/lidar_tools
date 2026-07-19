@@ -203,3 +203,41 @@ def test_rasterize_unresolvable_ept_raises_lookuperror(tmp_path, monkeypatch):
             output_datum="nad83_2011",
             quiet=True,
         )
+
+
+def test_rasterize_wesm_failure_geoid_modes(tmp_path, monkeypatch):
+    """A WESM fetch failure must not silently drop the declared-geoid
+    requirement: hard error in 'declared' mode, loud proceed only when the
+    operator already chose best-available."""
+    from lidar_tools import dsm_functions, geodesy, pdal_pipeline, survey
+
+    def no_wesm(gdf, wu, **k):
+        raise OSError("connection reset by peer")
+
+    monkeypatch.setattr(survey, "workunit_record", no_wesm)
+    monkeypatch.setattr(
+        survey, "load_ept_resources", lambda *a, **k: _fake_ept_index(["WU_X"], [1])
+    )
+    monkeypatch.setattr(
+        geodesy, "preflight_vertical_transform", lambda *a, **k: {"ok": True}
+    )
+    monkeypatch.setattr(dsm_functions, "create_ept_3dep_pipeline", lambda *a, **k: [])
+
+    aoi = _lv_aoi_file(tmp_path)
+    with pytest.raises(RuntimeError, match="geoid-override best-available"):
+        pdal_pipeline.rasterize(
+            geometry=aoi,
+            output=str(tmp_path / "o1"),
+            threedep_project="WU_X",
+            output_datum="nad83_2011",
+            quiet=True,
+        )
+    # conscious override: run proceeds on default datum handling
+    pdal_pipeline.rasterize(
+        geometry=aoi,
+        output=str(tmp_path / "o2"),
+        threedep_project="WU_X",
+        output_datum="nad83_2011",
+        geoid_override="best-available",
+        quiet=True,
+    )
