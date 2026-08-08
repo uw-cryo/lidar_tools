@@ -51,6 +51,7 @@ def _write_processing_metadata(
     height_above_ground_threshold: float,
     quiet: bool,
     ept_vertical: str = "auto",
+    resume: bool = False,
 ) -> None:
     """
     Write processing metadata to a YAML file in the output directory.
@@ -90,12 +91,13 @@ def _write_processing_metadata(
             "height_above_ground_threshold": height_above_ground_threshold,
             "quiet": quiet,
             "ept_vertical": ept_vertical,
+            "resume": resume,
         }
     }
     # exact code state for reproducing branch-based production runs
     try:
         metadata["git_commit"] = subprocess.check_output(
-            ["git", "rev-parse", "HEAD"],
+            ["git", "describe", "--always", "--dirty", "--abbrev=12"],
             cwd=Path(__file__).parent,
             text=True,
             stderr=subprocess.DEVNULL,
@@ -156,6 +158,7 @@ def rasterize(
     height_above_ground_threshold: float = None,
     quiet: Annotated[bool, cyclopts.Parameter(negative="")] = False,
     ept_vertical: Literal["auto", "geoid", "ellipsoid"] = "auto",
+    resume: Annotated[bool, cyclopts.Parameter(negative="")] = False,
 ) -> None:
     """
     Create a Digital Surface Model (DSM), Digital Terrain Model (DTM) and/or Intensity raster from point cloud data.
@@ -206,6 +209,11 @@ def rasterize(
         orthometric) or 'ellipsoid' skip the empirical check when the
         source datum is known (e.g. from per-survey metadata) or when the
         check cannot sample reliably (steep terrain, snow, small AOIs).
+    resume
+        Continue an interrupted run in an existing output directory: tiles
+        whose outputs already exist and pass a deep validity check are
+        skipped; truncated/invalid tiles are recomputed. Mutually exclusive
+        with overwrite.
 
     Returns
     -------
@@ -223,9 +231,17 @@ def rasterize(
     # lon/lat AOI bounds for scoping PROJ transformation selection
     aoi_lonlat = tuple(gdf.to_crs("EPSG:4326").total_bounds)
 
+    if overwrite and resume:
+        raise ValueError("--overwrite and --resume are mutually exclusive")
+
     outdir = Path(output)
     if outdir.exists():
-        if overwrite:
+        if resume:
+            print(
+                f"Resuming into existing output path: {outdir} "
+                "(existing valid tiles will be skipped)"
+            )
+        elif overwrite:
             print(f"Overwriting existing output path: {outdir}")
             if outdir.is_file():
                 outdir.unlink()
@@ -233,11 +249,12 @@ def rasterize(
                 shutil.rmtree(outdir)
         else:
             raise FileExistsError(
-                f"Output directory {outdir} already exists. Use --overwrite to allow overwriting."
+                f"Output directory {outdir} already exists. Use --overwrite to "
+                "replace it or --resume to continue an interrupted run."
             )
 
     # Set output filename prefix based on input polygon name
-    outdir.mkdir(parents=True)
+    outdir.mkdir(parents=True, exist_ok=True)
     output_prefix = outdir / Path(geometry).stem
 
     # Write processing metadata to YAML file
@@ -261,6 +278,12 @@ def rasterize(
         height_above_ground_threshold=height_above_ground_threshold,
         quiet=quiet,
         ept_vertical=ept_vertical,
+        resume=resume,
+    )
+    _update_processing_metadata(
+        outdir,
+        "run_status",
+        {"state": "started", "timestamp": datetime.now().isoformat()},
     )
 
     # Create custom 3D CRS UTM WKT2 with WGS84 G2139 datum realization,
@@ -412,76 +435,70 @@ def rasterize(
 
     # TODO: refactor into function
     num_pipelines = len(dsm_pipeline_list)
+
+    # per-product pipeline batches to execute (order preserved for accounting)
+    batches = {}
+    if products == "all" or products == "dsm":
+        batches["dsm"] = dsm_pipeline_list
+    if products == "all" or products == "dtm":
+        batches["dtm_no_fill"] = dtm_no_fill_pipeline_list
+        batches["dtm_fill"] = dtm_fill_pipeline_list
+    if products == "all" or products == "intensity":
+        batches["intensity"] = intensity_pipeline_list
+
+    results = {}
     if num_process == 1:
         print(f"Executing PDAL in serial for products={products}")
-
-        if products == "all" or products == "dsm":
-            print("Generating DSM tiles")
-            final_dsm_fn_list = []
-            for idx,pipeline in enumerate(dsm_pipeline_list):
-                print(idx)
-                outfn = dsm_functions.execute_pdal_pipeline(pipeline)
-                if outfn is not None:
-                    final_dsm_fn_list.append(outfn)
-
-        if products == "all" or products == "dtm":
-            print("Generating DTM tiles")
-            final_dtm_no_fill_fn_list = []
-            for pipeline in dtm_no_fill_pipeline_list:
-                outfn = dsm_functions.execute_pdal_pipeline(pipeline)
-                if outfn is not None:
-                    final_dtm_no_fill_fn_list.append(outfn)
-
-            final_dtm_fill_fn_list = []
-            for pipeline in dtm_fill_pipeline_list:
-                outfn = dsm_functions.execute_pdal_pipeline(pipeline)
-                if outfn is not None:
-                    final_dtm_fill_fn_list.append(outfn)
-
-        if products == "all" or products == "intensity":
-            print("Generating Intensity tiles")
-            final_intensity_fn_list = []
-            for pipeline in intensity_pipeline_list:
-                outfn = dsm_functions.execute_pdal_pipeline(pipeline)
-                if outfn is not None:
-                    final_intensity_fn_list.append(outfn)
-
+        for name, pipeline_list in batches.items():
+            print(f"Generating {name} tiles")
+            results[name] = [
+                outfn
+                for pipeline in pipeline_list
+                if (outfn := dsm_functions.execute_pdal_pipeline(pipeline, resume))
+                is not None
+            ]
     else:
         n_jobs = num_process if num_pipelines > num_process else num_pipelines
-
-        def run_parallel(pipeline_list):   
-            with Client(
-                n_workers=n_jobs,
-                processes=True,  # run PDAL pipelines in isolated processes
-                threads_per_worker=1
-            ) as client:
-                print(f"Dask dashboard available at: {client.dashboard_link}")    
-                # Submit all tasks with fire_and_forget for better memory management
-                futures = []
-                for pipeline in pipeline_list:
-                    future = client.submit(dsm_functions.execute_pdal_pipeline, pipeline, retries=1)
-                    fire_and_forget(future)
-                    futures.append(future)
-                if not quiet:
-                    progress(futures)
-                results = client.gather(futures)
-                return [outfn for outfn in results if outfn is not None]
-
         print(
             f"Executing PDAL in parallel with dask n_workers={n_jobs} for products={products}"
         )
-        if products == "all" or products == "dsm":
-            print("Generating DSM tiles")
-            final_dsm_fn_list = run_parallel(dsm_pipeline_list)
+        # one cluster for the whole run, all product batches submitted
+        # together: the scheduler interleaves tiles instead of paying a
+        # cluster spinup + idle drain per product (~20% of wall time
+        # measured at UW-campus scale)
+        with Client(
+            n_workers=n_jobs,
+            processes=True,  # run PDAL pipelines in isolated processes
+            threads_per_worker=1,
+        ) as client:
+            print(f"Dask dashboard available at: {client.dashboard_link}")
+            futures = {}
+            for name, pipeline_list in batches.items():
+                futures[name] = [
+                    client.submit(
+                        dsm_functions.execute_pdal_pipeline,
+                        pipeline,
+                        resume,
+                        retries=3,  # resubmit on worker death (KilledWorker)
+                        pure=False,
+                    )
+                    for pipeline in pipeline_list
+                ]
+                # fire_and_forget for better memory management
+                for future in futures[name]:
+                    fire_and_forget(future)
+            all_futures = [f for fs in futures.values() for f in fs]
+            if not quiet:
+                progress(all_futures)
+            for name, fs in futures.items():
+                results[name] = [
+                    outfn for outfn in client.gather(fs) if outfn is not None
+                ]
 
-        if products == "all" or products == "dtm":
-            print("Generating DTM tiles")
-            final_dtm_no_fill_fn_list = run_parallel(dtm_no_fill_pipeline_list)
-            final_dtm_fill_fn_list = run_parallel(dtm_fill_pipeline_list)
-
-        if products == "all" or products == "intensity":
-            print("Generating Intensity tiles")
-            final_intensity_fn_list = run_parallel(intensity_pipeline_list)
+    final_dsm_fn_list = results.get("dsm", [])
+    final_dtm_no_fill_fn_list = results.get("dtm_no_fill", [])
+    final_dtm_fill_fn_list = results.get("dtm_fill", [])
+    final_intensity_fn_list = results.get("intensity", [])
 
     print("****Processing complete for all tiles****")
 
@@ -747,6 +764,12 @@ def rasterize(
     print("Running overview creation sequentially")
     for raster_fn in final_products:
         dsm_functions.gdal_add_overview(raster_fn)
+
+    _update_processing_metadata(
+        outdir,
+        "run_status",
+        {"state": "completed", "timestamp": datetime.now().isoformat()},
+    )
 
     if cleanup:
         print("Cleaning up intermediate outputs")

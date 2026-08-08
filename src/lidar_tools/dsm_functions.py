@@ -14,6 +14,7 @@ import pystac_client
 import numpy as np
 import json
 import sys
+import time
 from pathlib import Path
 
 # import planetary_computer
@@ -1038,7 +1039,10 @@ def confirm_3dep_vertical(raster_fn: str, bare_diff_tolerance: float = 3.0) -> b
     from lidar_tools import geodesy
     from pyproj import Transformer as _Transformer
 
-    lidar_da = rioxarray.open_rasterio(raster_fn, masked=True).squeeze()
+    # decimated read: matching reference layers to a full production mosaic
+    # grid needed ~174 GB at Las Vegas scale; a bounded ~1024^2 grid is
+    # ample for a robust median datum decision
+    lidar_da = _open_decimated_dataarray(raster_fn)
     worldcover_da = fetch_worldcover(raster_fn, lidar_da)
     cop30_da = fetch_cop30(raster_fn, lidar_da)
     lidar_da_masked, worldcover_da_masked, cop30_da_masked = common_mask(
@@ -1149,7 +1153,7 @@ def datum_shift_required(
     )
 
 
-def check_raster_validity(raster_fn: str) -> bool:
+def check_raster_validity(raster_fn: str, deep: bool = False) -> bool:
     """
     Check if a raster file is valid and can be opened using rioxarray and CRS check
 
@@ -1157,21 +1161,76 @@ def check_raster_validity(raster_fn: str) -> bool:
     ----------
     raster_fn
         Path to the raster file.
+    deep
+        Also read the last pixel row to catch files truncated by an
+        interrupted run (used by resume before trusting an existing tile).
 
     Returns
     -------
     bool
         True if the raster file is valid, False otherwise.
     """
-    da = rioxarray.open_rasterio(raster_fn, masked=True).squeeze()
-    if da.rio.crs is None:
-        # print(f"Raster {raster_fn} does not have a valid CRS.")
-        out = False
-    else:
-        # print(f"Raster {raster_fn} has a valid CRS.")
-        out = True
-    da = None
+    try:
+        da = rioxarray.open_rasterio(raster_fn, masked=True).squeeze()
+        out = da.rio.crs is not None
+        da = None
+    except Exception:
+        return False
+    if out and deep:
+        try:
+            with gdal.OpenEx(str(raster_fn)) as ds:
+                ds.GetRasterBand(1).ReadAsArray(
+                    0, ds.RasterYSize - 1, ds.RasterXSize, 1
+                )
+        except Exception:
+            return False
     return out
+
+
+def _open_decimated_dataarray(raster_fn: str, max_dim: int = 1024):
+    """
+    Open a raster decimated to at most max_dim x max_dim (average resampling)
+    as a georeferenced DataArray.
+
+    Bounds the memory of whole-mosaic comparisons: reproject_match against a
+    full production mosaic grid needed ~174 GB at Las Vegas scale, while a
+    ~1024^2 grid is a few MB and is ample for a robust median datum decision.
+
+    Parameters
+    ----------
+    raster_fn
+        Path to the raster file.
+    max_dim
+        Maximum output dimension in pixels, by default 1024.
+
+    Returns
+    -------
+    xr.DataArray
+        Decimated raster with CRS and coordinates set.
+    """
+    with rasterio.open(raster_fn) as src:
+        scale = max(src.width, src.height) / max_dim
+        if scale <= 1:
+            return rioxarray.open_rasterio(raster_fn, masked=True).squeeze()
+        w = max(1, int(round(src.width / scale)))
+        h = max(1, int(round(src.height / scale)))
+        data = src.read(
+            1,
+            out_shape=(h, w),
+            resampling=rasterio.enums.Resampling.average,
+            masked=True,
+        )
+        transform = src.transform * rasterio.Affine.scale(
+            src.width / w, src.height / h
+        )
+        xs = transform.c + transform.a * (np.arange(w) + 0.5)
+        ys = transform.f + transform.e * (np.arange(h) + 0.5)
+        da = xr.DataArray(
+            np.ma.filled(data.astype("float32"), np.nan),
+            dims=("y", "x"),
+            coords={"y": ys, "x": xs},
+        )
+        return da.rio.write_crs(src.crs)
 
 
 def gdal_warp(
@@ -1772,7 +1831,9 @@ def create_ept_3dep_pipeline(
     )
 
 
-def execute_pdal_pipeline(pdal_pipeline_path: str) -> str:
+def execute_pdal_pipeline(
+    pdal_pipeline_path: str, skip_existing: bool = False, attempts: int = 3
+) -> str:
     """
     Execute a PDAL pipeline
     #modified by Scott Henderson
@@ -1781,6 +1842,15 @@ def execute_pdal_pipeline(pdal_pipeline_path: str) -> str:
     ----------
     pdal_pipeline_path : str
         The path to the PDAL pipeline json
+    skip_existing
+        If the pipeline's output already exists and passes a deep validity
+        check, return it without re-executing (tile-level resume for
+        interrupted runs). Truncated files from a killed run fail the check
+        and are recomputed.
+    attempts
+        Execute up to this many times with backoff before giving up —
+        EPT reads over the network fail transiently, and a multi-day run
+        must not lose a tile to a single hiccup. By default 3.
     Returns
     -------
     output_fn
@@ -1794,10 +1864,33 @@ def execute_pdal_pipeline(pdal_pipeline_path: str) -> str:
         # maybe more robust to check for {'type': 'writers.gdal'}...
         outfile = pipelineDict["pipeline"][-1]["filename"]
 
-        pipeline = pdal.Pipeline(json.dumps(pipelineDict))
-        print(f"Executing {pdal_pipeline_path}")
-        pipeline.execute()
-        pipeline = None
+        if (
+            skip_existing
+            and Path(outfile).exists()
+            and check_raster_validity(outfile, deep=True)
+        ):
+            print(f"Resume: skipping existing valid tile {outfile}")
+            return outfile
+
+        for attempt in range(1, attempts + 1):
+            try:
+                pipeline = pdal.Pipeline(json.dumps(pipelineDict))
+                suffix = f" (attempt {attempt}/{attempts})" if attempt > 1 else ""
+                print(f"Executing {pdal_pipeline_path}{suffix}")
+                pipeline.execute()
+                pipeline = None
+                break
+            except Exception as e:
+                if attempt == attempts:
+                    raise
+                wait = 5 * attempt
+                print(
+                    f"WARNING: pipeline {pdal_pipeline_path} failed "
+                    f"(attempt {attempt}/{attempts}): {e}; retrying in {wait}s",
+                    file=sys.stderr,
+                )
+                time.sleep(wait)
+
         if check_raster_validity(outfile):
             return outfile
         print(

@@ -178,6 +178,59 @@ def test_datum_shift_required():
         )
 
 
+def test_check_raster_validity_deep_catches_truncation(tmp_path):
+    fn = tmp_path / "tile.tif"
+    _make_const_uint16_raster(fn, size=256)
+    assert lidar_tools.dsm_functions.check_raster_validity(str(fn), deep=True)
+    # truncate: header intact, pixel data missing (an interrupted write)
+    data = fn.read_bytes()
+    truncated = tmp_path / "truncated.tif"
+    truncated.write_bytes(data[: len(data) // 2])
+    assert not lidar_tools.dsm_functions.check_raster_validity(
+        str(truncated), deep=True
+    )
+
+
+def test_execute_pdal_pipeline_skip_existing(tmp_path):
+    import json
+
+    # output already exists and is valid; the pipeline itself is garbage,
+    # so returning the outfile proves execution was skipped
+    outfn = tmp_path / "existing_tile.tif"
+    _make_const_uint16_raster(outfn, size=64)
+    pipeline_fn = tmp_path / "pipeline.json"
+    pipeline_fn.write_text(
+        json.dumps(
+            {"pipeline": [{"type": "readers.las", "filename": "/nonexistent.laz"},
+                          {"type": "writers.gdal", "filename": str(outfn),
+                           "resolution": 1.0}]}
+        )
+    )
+    result = lidar_tools.dsm_functions.execute_pdal_pipeline(
+        str(pipeline_fn), skip_existing=True
+    )
+    assert result == str(outfn)
+    # without skip_existing the garbage pipeline fails -> None (after retries)
+    result = lidar_tools.dsm_functions.execute_pdal_pipeline(
+        str(pipeline_fn), skip_existing=False, attempts=1
+    )
+    assert result is None
+
+
+def test_open_decimated_dataarray(tmp_path):
+    fn = tmp_path / "big.tif"
+    _make_const_uint16_raster(fn, value=200, size=3000, res=0.5)
+    da = lidar_tools.dsm_functions._open_decimated_dataarray(str(fn), max_dim=512)
+    assert max(da.shape) <= 512
+    assert da.rio.crs is not None
+    np.testing.assert_allclose(float(np.nanmedian(da.values)), 200.0)
+    # small rasters pass through at full resolution
+    fn2 = tmp_path / "small.tif"
+    _make_const_uint16_raster(fn2, size=100)
+    da2 = lidar_tools.dsm_functions._open_decimated_dataarray(str(fn2), max_dim=512)
+    assert da2.shape == (100, 100)
+
+
 def test_raise_file_limit():
     import resource
 
