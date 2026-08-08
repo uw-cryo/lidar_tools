@@ -78,6 +78,10 @@ def _read_decimated_band(fn: Path, max_dim: int = 8000) -> tuple:
         "Int16": 32767.0,
         "UInt32": float(2**32 - 1),
     }.get(gdal.GetDataTypeName(band.DataType), np.inf)
+    # release the handle: a merge walks every source, and the caller may
+    # rewrite these files afterwards
+    band = None
+    ds = None
     return arr, mask, nodata, dtype_max
 
 

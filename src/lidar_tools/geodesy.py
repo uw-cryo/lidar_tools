@@ -332,7 +332,11 @@ def _download_grid(grid_file: str) -> None:
                 f"downloaded {tmp.stat().st_size} bytes for {grid_file}, "
                 f"server declared {expected}"
             )
-        tmp.rename(dest / grid_file)
+        # replace(), not rename(): another process may have published the
+        # same grid while this one downloaded it. Atomic-overwrite treats
+        # that as success on every platform (rename raises FileExistsError
+        # on Windows), and the bytes are identical + size-verified.
+        tmp.replace(dest / grid_file)
     except BaseException:
         tmp.unlink(missing_ok=True)
         raise

@@ -157,14 +157,18 @@ def _metadata_file(dirname: Path, kind: str, prefix: str | None = None) -> Path 
     holding more than one run's metadata (different resolutions) must
     report the previewed product's own provenance, not whichever file
     sorts first."""
+    legacy = dirname / f"{kind}.yaml"
     if prefix is not None:
+        # exact match only: falling back to whichever file sorts first
+        # would report ANOTHER run's provenance under this product's
+        # header — no footer beats a wrong footer
         own = dirname / f"{prefix}-{kind}.yaml"
         if own.exists():
             return own
+        return legacy if legacy.exists() else None
     hits = sorted(dirname.glob(f"*-{kind}.yaml"))
     if hits:
         return hits[0]
-    legacy = dirname / f"{kind}.yaml"
     return legacy if legacy.exists() else None
 
 

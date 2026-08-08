@@ -85,3 +85,8 @@ def test_preview_footer_uses_the_previewed_prefix(tmp_path):
     picked = preview._project_metadata_files(tmp_path, "aoi_1m")
     assert [p.name for p in picked] == ["aoi_1m-processing_metadata.yaml"]
     assert preview.product_preview(tmp_path) is not None
+
+    # and with NO metadata for the previewed prefix, report nothing rather
+    # than the other run's record
+    (tmp_path / "aoi_1m-processing_metadata.yaml").unlink()
+    assert preview._project_metadata_files(tmp_path, "aoi_1m") == []
