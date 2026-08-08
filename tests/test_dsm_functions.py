@@ -857,16 +857,14 @@ def test_lpc_tile_jobs(tmp_path):
         assert all(s["type"] != "writers.las" for s in stages)
 
 
-def test_tile_job_stamps_source_crs():
+def test_tile_job_stamps_source_crs(tmp_path):
     """The cache round-trip must not depend on the LAS-header SRS surviving:
     source_crs is stamped on the cache writer (a_srs) and forced onto the
     cache reader (override_srs) so product rasters always carry the CRS."""
     import json
 
     d = lidar_tools.dsm_functions
-    import tempfile
-
-    tmp = Path(tempfile.mkdtemp())
+    tmp = tmp_path
     reader = {"type": "readers.ept", "filename": "https://example/ept.json"}
     job = d.create_tile_pipelines(
         [reader],
