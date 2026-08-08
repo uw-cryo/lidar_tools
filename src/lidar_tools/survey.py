@@ -348,10 +348,10 @@ def select_latest_workunit(
     dict
         ``{"workunit", "collect_start", "collect_end", "ql",
         "aoi_overlap_frac", "n_candidates", "undated"}``. ``undated`` is
-        True when no candidate carried acquisition dates and the first
-        intersecting one was taken. Note the newest survey often covers only
-        part of the AOI — check ``aoi_overlap_frac`` before assuming a
-        single-survey run is complete.
+        True when no candidate carried acquisition dates, in which case the
+        widest-coverage candidate was taken instead. Note the newest survey
+        often covers only part of the AOI — check ``aoi_overlap_frac``
+        before assuming a single-survey run is complete.
 
     Raises
     ------
@@ -360,7 +360,12 @@ def select_latest_workunit(
     """
     wesm = load_wesm(aoi_gdf) if wesm_gdf is None else wesm_gdf
     ept = load_ept_resources() if ept_gdf is None else ept_gdf
-    surveys = summarize_surveys(wesm, aoi_gdf, ept)
+    # deliberately no `ept` here: passing it makes summarize_surveys
+    # intersect and union the whole EPT index against every collection
+    # footprint, and this function uses none of that spatial output —
+    # availability is the name join below, and the tie-breaks come from
+    # WESM. The EPT index is still loaded, for resolve_ept_resource.
+    surveys = summarize_surveys(wesm, aoi_gdf)
     if surveys.empty:
         raise LookupError(
             "No 3DEP collection intersects this AOI; nothing to select. "
@@ -388,9 +393,12 @@ def select_latest_workunit(
     dated = with_ept[with_ept["collect_end"].notna()]
     undated = dated.empty
     if undated:
-        # every candidate lacks WESM dates: keep the old first-intersecting
-        # behavior rather than failing, but say so
-        pick = with_ept.iloc[0]
+        # every candidate lacks WESM dates, so recency is unknowable: fall
+        # back to the most AOI coverage rather than failing (ties by name,
+        # so the pick stays reproducible), and say so
+        pick = with_ept.sort_values(
+            ["aoi_overlap_frac", "workunit"], ascending=[False, True]
+        ).iloc[0]
     else:
         # newest acquisition wins; ties broken by AOI coverage then name so
         # the choice is reproducible

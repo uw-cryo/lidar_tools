@@ -405,8 +405,35 @@ def test_select_latest_workunit_undated_falls_back_and_says_so():
     wesm["collect_end"] = pd.NaT
     out = survey.select_latest_workunit(aoi, wesm, _ept_for(list(wesm["workunit"])))
     assert out["undated"] is True
-    assert out["workunit"] in set(wesm["workunit"])
+    # recency is unknowable here, so the fallback is widest AOI coverage;
+    # these three footprints are identical, so the name tie-break decides.
+    # It must be a stated rule, not whatever order the frame arrived in.
+    assert out["workunit"] == "WU_A_2019"
 
     # ... and with no EPT build anywhere, fail loudly instead of no-data
     with pytest.raises(LookupError, match="none resolves"):
         survey.select_latest_workunit(aoi, _wesm_dated(), _ept_for(["UNRELATED"]))
+
+
+def test_select_latest_workunit_undated_fallback_prefers_coverage():
+    """The undated fallback is coverage-ordered, not input- or QL-ordered."""
+    import pandas as pd
+    import pytest
+
+    aoi = gpd.GeoDataFrame(geometry=[_square(0, 0, 1, 1)], crs="EPSG:4326")
+    wesm = gpd.GeoDataFrame(
+        {
+            "workunit": ["WU_A_SLIVER", "WU_B_FULL"],
+            "ql": ["QL 1", "QL 2"],  # A sorts first on QL, and on name
+            "collect_start": pd.to_datetime([None, None]),
+            "collect_end": pd.to_datetime([None, None]),
+        },
+        geometry=[_square(0, 0, 0.1, 1), _square(0, 0, 1, 1)],
+        crs="EPSG:4326",
+    )
+    out = survey.select_latest_workunit(
+        aoi, wesm, _ept_for(["WU_A_SLIVER", "WU_B_FULL"])
+    )
+    assert out["undated"] is True
+    assert out["workunit"] == "WU_B_FULL"
+    assert out["aoi_overlap_frac"] == pytest.approx(1.0, abs=1e-6)

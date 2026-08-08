@@ -474,8 +474,8 @@ def rasterize(
             print(
                 f"WARNING: no acquisition dates for any of the "
                 f"{latest['n_candidates']} EPT-backed collection(s) here; "
-                f"selected '{latest['workunit']}' (first intersecting), which "
-                "may not be the most recent",
+                f"selected '{latest['workunit']}' (widest AOI coverage), "
+                "which may not be the most recent",
                 file=sys.stderr,
             )
         else:
