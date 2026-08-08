@@ -129,6 +129,19 @@ def load_ept_resources(url: str = EPT_RESOURCES_URL) -> gpd.GeoDataFrame:
     return gpd.read_file(url)
 
 
+def _equal_area_m2(geom) -> float:
+    """Area of an EPSG:4326 geometry in m2, measured in the EPSG:6933
+    equal-area projection. Coverage/gap fractions must never ratio raw
+    degree2 areas: cos(latitude) weighting skews them for large or
+    high-latitude AOIs (an Alaska AOI's northern half is materially
+    smaller than its southern half in true area)."""
+    if geom.is_empty:
+        return 0.0
+    return float(
+        gpd.GeoSeries([geom], crs="EPSG:4326").to_crs("EPSG:6933").area.iloc[0]
+    )
+
+
 def summarize_surveys(
     wesm_gdf: gpd.GeoDataFrame,
     aoi_gdf: gpd.GeoDataFrame,
@@ -165,8 +178,9 @@ def summarize_surveys(
     if w.empty:
         return w
 
+    aoi_area = _equal_area_m2(aoi)
     w["aoi_overlap_frac"] = w.geometry.apply(
-        lambda g: g.intersection(aoi).area / aoi.area
+        lambda g: _equal_area_m2(g.intersection(aoi)) / aoi_area
     )
 
     ept_names: list = []
@@ -177,11 +191,12 @@ def summarize_surveys(
             footprint = g.intersection(aoi)
             hits = e[e.intersects(footprint)]
             ept_names.append(sorted(hits["name"].tolist()))
-            if footprint.is_empty or footprint.area == 0:
+            footprint_area = _equal_area_m2(footprint)
+            if footprint_area == 0:
                 ept_cov.append(0.0)
             else:
                 covered = hits.union_all().intersection(footprint)
-                ept_cov.append(covered.area / footprint.area)
+                ept_cov.append(_equal_area_m2(covered) / footprint_area)
     else:
         ept_names = [None] * len(w)
         ept_cov = [None] * len(w)
@@ -585,7 +600,7 @@ def coverage_gaps(
         )
     parts = list(gap.geoms) if hasattr(gap, "geoms") else [gap]
     return gpd.GeoDataFrame(
-        {"gap_frac": [p.area / aoi.area for p in parts]},
+        {"gap_frac": [_equal_area_m2(p) / _equal_area_m2(aoi) for p in parts]},
         geometry=parts,
         crs="EPSG:4326",
     )
