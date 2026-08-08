@@ -1764,7 +1764,10 @@ def create_tile_pipelines(
     tile_id
         Zero-padded tile index used in filenames.
     output_path
-        Directory receiving pipeline JSONs and product tiles.
+        Run directory; per-tile pipeline JSONs are written to
+        output_path/pipelines/, per-tile product rasters (and any saved
+        pointclouds) to output_path/tiles/<product>/, and the cache LAZ to
+        output_path/tiles/cache/.
     prefix
         Filename prefix (AOI stem).
     extent
@@ -1812,6 +1815,16 @@ def create_tile_pipelines(
     )
     ordered = [name for name in PRODUCT_ORDER if name in products]
 
+    # Per-tile intermediates live in subdirectories so the run directory
+    # holds only final products + provenance (tiles/ and pipelines/ are
+    # removed by the post-run cleanup; ~1000-tile runs otherwise leave
+    # thousands of files next to the mosaics). Tile rasters are further
+    # split per product (tiles/dsm/, tiles/intensity/, ...; cache LAZ in
+    # tiles/cache/) so recovery/mosaic rebuilds are one unambiguous glob.
+    tiles_dir = output_path / "tiles"
+    pipelines_dir = output_path / "pipelines"
+    pipelines_dir.mkdir(parents=True, exist_ok=True)
+
     # Group products by identical built filter chain: matching chains share
     # one execution with chained writers, distinct chains each re-read the
     # (local) cache. dict preserves insertion order -> deterministic naming.
@@ -1821,7 +1834,9 @@ def create_tile_pipelines(
             **{**specs[name]["pipeline_kwargs"], **(extra_pipeline_kwargs or {})}
         )
         signature = json.dumps(chain, sort_keys=True)
-        outfile = output_path / specs[name]["filename"].format(
+        product_dir = tiles_dir / name
+        product_dir.mkdir(parents=True, exist_ok=True)
+        outfile = product_dir / specs[name]["filename"].format(
             prefix=prefix, tile=tile_id
         )
         writer = create_dem_stage(
@@ -1839,7 +1854,9 @@ def create_tile_pipelines(
     fetch = None
     source_stages = reader_stages
     if use_cache and len(groups) > 1:
-        cache_file = output_path / f"{prefix}_cache_tile_aoi_{tile_id}.laz"
+        cache_dir = tiles_dir / "cache"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        cache_file = cache_dir / f"{prefix}_cache_tile_aoi_{tile_id}.laz"
         cache_writer = {
             "type": "writers.las",
             "filename": str(cache_file),
@@ -1864,7 +1881,7 @@ def create_tile_pipelines(
             cache_writer["a_srs"] = crs_str
             cache_reader["override_srs"] = crs_str
         fetch_pipeline = {"pipeline": list(reader_stages) + [cache_writer]}
-        fetch_fn = output_path / f"pipeline_fetch_{tile_id}.json"
+        fetch_fn = pipelines_dir / f"pipeline_fetch_{tile_id}.json"
         with open(fetch_fn, "w") as f:
             f.write(json.dumps(fetch_pipeline))
         fetch = {"pipeline_json": str(fetch_fn), "cache_file": str(cache_file)}
@@ -1891,7 +1908,7 @@ def create_tile_pipelines(
             ] + writers
         stages = list(source_stages) + group["chain"] + writers
         joined = "_".join(member["name"] for member in members)
-        pipeline_fn = output_path / f"pipeline_{joined}_{tile_id}.json"
+        pipeline_fn = pipelines_dir / f"pipeline_{joined}_{tile_id}.json"
         with open(pipeline_fn, "w") as f:
             f.write(json.dumps({"pipeline": stages}))
         executions.append(
