@@ -2256,13 +2256,25 @@ def execute_tile_job(
                 return {"empty": True, "outputs": {name: None for name in outputs}}
         for execution in pending:
             try:
-                _execute_pipeline_with_retries(execution["pipeline_json"], attempts)
+                n_points = _execute_pipeline_with_retries(
+                    execution["pipeline_json"], attempts
+                )
             except Exception as e:
                 print(
                     f"ERROR: PDAL pipeline {execution['pipeline_json']} failed: {e}",
                     file=sys.stderr,
                 )
                 continue
+            if fetch is None and n_points == 0:
+                # no separate fetch step (single filter-chain group), so this
+                # execution's own point count is the only empty-tile signal.
+                # Its writers still produced full-size CRS-less nodata
+                # rasters — remove them and report the tile as empty, not
+                # failed (mirrors the fetch-path check above).
+                print(f"Empty tile {job.get('tile_id')}: 0 points, skipped")
+                for fn in execution["outputs"].values():
+                    Path(fn).unlink(missing_ok=True)
+                return {"empty": True, "outputs": {name: None for name in outputs}}
             for name, fn in execution["outputs"].items():
                 if check_raster_validity(fn):
                     outputs[name] = fn
