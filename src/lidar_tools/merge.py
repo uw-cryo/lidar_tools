@@ -64,10 +64,12 @@ def _read_decimated_band(fn: Path, max_dim: int = 8000) -> tuple:
     ds = gdal.OpenEx(str(fn))
     band = ds.GetRasterBand(1)
     scale = max(1, int(np.ceil(max(ds.RasterXSize, ds.RasterYSize) / max_dim)))
+    # float32: at max_dim=8000 a float64 array is ~512 MB per source, and
+    # the composite/fit only carry UInt16-range DNs (exactly representable)
     arr = band.ReadAsArray(
         buf_xsize=max(1, ds.RasterXSize // scale),
         buf_ysize=max(1, ds.RasterYSize // scale),
-    ).astype(np.float64)
+    ).astype(np.float32)
     nodata = band.GetNoDataValue()
     mask = np.isfinite(arr) if nodata is None else (arr != nodata)
     dtype_max = {
@@ -130,7 +132,7 @@ def _intensity_normalization(sources: list[Path]) -> list[dict]:
                 file=sys.stderr,
             )
         if composite is None:
-            composite = np.full(arr.shape, np.nan)
+            composite = np.full(arr.shape, np.nan, dtype=np.float32)
             comp_mask = np.zeros(arr.shape, dtype=bool)
         assert comp_mask is not None
         newly = mask & ~comp_mask
@@ -181,6 +183,14 @@ def _apply_vrt_normalization(vrt_fn: Path, params: list[dict]) -> None:
             (vrt_fn.parent / el.text) if el.get("relativeToVRT") == "1"
             else Path(el.text)
         ).resolve()
+        if key not in by_path:
+            # path normalization drift (symlinked volume, mount alias)
+            # would otherwise surface as a bare KeyError mid-rewrite
+            raise KeyError(
+                f"{vrt_fn.name}: VRT source {key} has no normalization "
+                f"parameters; fitted sources were "
+                f"{[str(k) for k in by_path]}"
+            )
         p = by_path[key]
         # raw DNs whose mapped values hit the target endpoints; the LUT
         # interpolates linearly between them and clamps beyond

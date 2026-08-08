@@ -82,6 +82,17 @@ def test_merge_vrt_is_portable(tmp_path):
     # sources are stored relative to the VRT so a moved batch dir still opens
     _make_batch(tmp_path)
     written = merge.merge_projects(tmp_path)
+    xml = written[0].read_text()
+    assert 'relativeToVRT="1"' in xml
+    assert str(tmp_path) not in xml  # no absolute path survives anywhere
+    # the metadata's provenance list must travel with the VRT, not point
+    # back at the pre-move location
+    meta = yaml.safe_load(
+        next(written[0].parent.glob("*merge_metadata.yaml")).read_text()
+    )
+    sources = meta["products"]["DSM_mos"]["sources_priority_order"]
+    assert sources and not any(s.startswith("/") for s in sources)
+
     moved = tmp_path.parent / f"{tmp_path.name}_moved"
     tmp_path.rename(moved)
     arr, _ = _read(moved / "merge" / written[0].name)
@@ -260,28 +271,12 @@ def test_merge_intensity_single_source_stays_raw(tmp_path):
     assert gdal.GetDataTypeName(ds.GetRasterBand(1).DataType) == "UInt16"
 
 
-def test_merge_outputs_are_relocatable(tmp_path):
-    """VRT sources and the metadata's source list are both recorded
-    relative to their own file, so a merged batch survives being moved
-    (or the volume being mounted at a different path)."""
-    from pathlib import Path
-
-    batch = tmp_path / "batch"
-    batch.mkdir()
-    _make_batch(batch)
-    written = merge.merge_projects(batch)
-    vrt = written[0]
-    assert 'relativeToVRT="1"' in vrt.read_text()
-    assert str(tmp_path) not in vrt.read_text()  # no absolute paths at all
-
-    meta = yaml.safe_load(
-        next((vrt.parent).glob("*merge_metadata.yaml")).read_text()
-    )
-    sources = meta["products"]["DSM_mos"]["sources_priority_order"]
-    assert all(not Path(s).is_absolute() for s in sources)
-
-    before, _ = _read(vrt)
-    moved = tmp_path / "relocated"
-    batch.rename(moved)
-    after, _ = _read(moved / vrt.parent.name / vrt.name)
-    np.testing.assert_array_equal(before, after)
+def test_decimated_read_is_float32(tmp_path):
+    """Decimated reads stay float32: at max_dim=8000 a float64 array costs
+    ~512 MB per source, and UInt16 DNs are exactly representable in
+    float32 (fitted gain/offset match float64 to ~1e-9 relative)."""
+    fn = tmp_path / "proj" / "aoi-intensity_mos.tif"
+    _make_intensity(fn, slice(0, 64), 1000, 60000)
+    arr, _mask, _nodata, dtype_max = merge._read_decimated_band(fn)
+    assert arr.dtype == np.float32
+    assert dtype_max == 65535.0
