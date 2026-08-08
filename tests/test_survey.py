@@ -194,3 +194,39 @@ def test_fetch_reports_stages_report_files(tmp_path, monkeypatch):
         c for c in calls[n_before:]
         if c.endswith((".pdf", ".gpkg", ".xml"))
     ]
+
+
+def test_fetch_reports_survives_listing_failure(tmp_path, monkeypatch):
+    """A transient S3 listing failure skips the workunit — it must not
+    truncate the previous run's remote_inventory.txt or abort the batch."""
+    import requests
+    import yaml
+
+    pdir = tmp_path / "wu_a"
+    outdir = pdir / "vendor_reports"
+    outdir.mkdir(parents=True)
+    inv = outdir / "remote_inventory.txt"
+    inv.write_text("           4 reports/QC_Report.pdf\n")
+    link = (
+        "https://prd-tnm.s3.amazonaws.com/index.html?"
+        "prefix=StagedProducts/Elevation/metadata/PROJ_X/wu_a"
+    )
+    meta_fn = pdir / "aoi_1m_wu_a-processing_metadata.yaml"
+    meta_fn.write_text(
+        yaml.dump({"survey_records": [{"workunit": "wu_a", "metadata_link": link}]})
+    )
+    (tmp_path / "batch_status.yaml").write_text(
+        yaml.dump({"projects": {"wu_a": "completed"}})
+    )
+
+    def fake_get(url, **kwargs):
+        raise requests.exceptions.ConnectionError("connection reset")
+
+    monkeypatch.setattr(requests, "get", fake_get)
+    survey.fetch_reports(str(tmp_path))  # must not raise
+
+    assert inv.read_text() == "           4 reports/QC_Report.pdf\n"
+    assert not list(outdir.rglob("*.part*"))
+    # staging metadata untouched: no vendor_reports section claiming success
+    meta = yaml.safe_load(meta_fn.read_text())
+    assert "vendor_reports" not in meta

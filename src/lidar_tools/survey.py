@@ -896,64 +896,86 @@ def fetch_reports(
         fetched: list[str] = []
         failed: list[str] = []
         n_remote = 0
-        with open(outdir / "remote_inventory.txt", "w") as inv:
+        # List every layer before touching remote_inventory.txt: a transient
+        # S3 listing failure must not truncate the previous run's inventory
+        # or abort the remaining workunits (staging is never fatal)
+        listed = []
+        try:
             for layer_link, sub, layer_exts, layer_skip in layers:
-                objects = _s3_list_prefix(layer_link, recursive=sub != "project_level/")
-                n_remote += len(objects)
+                objects = _s3_list_prefix(
+                    layer_link, recursive=sub != "project_level/"
+                )
                 _, layer_prefix = _parse_index_url(layer_link)
+                listed.append(
+                    (sub, layer_exts, layer_skip, layer_prefix, objects)
+                )
+                n_remote += len(objects)
+        except Exception as e:
+            print(
+                f"WARNING: {wu}: could not list the remote report prefixes "
+                f"({e}); skipping this workunit (existing inventory and "
+                "staged files kept)",
+                file=sys.stderr,
+            )
+            continue
+        inv_tmp = outdir / f"remote_inventory.txt.part{os.getpid()}"
+        with open(inv_tmp, "w") as inv:
+            for sub, _, _, _, objects in listed:
                 for obj in objects:
                     inv.write(f"{obj['size']:>12} {sub}{obj['key']}\n")
-                for obj in objects:
-                    key_lower = obj["key"].lower()
-                    if layer_exts and not key_lower.endswith(layer_exts):
-                        continue
-                    if layer_skip and key_lower.endswith(layer_skip):
-                        continue
-                    dest = outdir / sub / obj["key"]
-                    if dest.exists() and dest.stat().st_size == obj["size"]:
-                        fetched.append(f"{sub}{obj['key']}")
-                        continue
-                    dest.parent.mkdir(parents=True, exist_ok=True)
-                    # pid-unique temp name: overlapping runs (an orphaned
-                    # session's fetch still downloading) must not share a
-                    # .part inode — one run's rename removes the path and
-                    # the other's rename then crashes the whole staging
-                    tmp = dest.with_suffix(
-                        f"{dest.suffix}.part{os.getpid()}"
-                    )
-                    # long multi-GB staging runs hit transient S3 resets;
-                    # retry each file, and give up on a persistently
-                    # failing object (recorded in `failed`, never fatal)
-                    ok = False
-                    for attempt in range(4):
-                        try:
-                            resp = requests.get(
-                                f"{endpoint}/{layer_prefix}{obj['key']}",
-                                timeout=600,
-                                stream=True,
-                            )
-                            resp.raise_for_status()
-                            with open(tmp, "wb") as f:
-                                for chunk in resp.iter_content(1 << 20):
-                                    f.write(chunk)
-                            ok = True
-                            break
-                        except requests.exceptions.RequestException as e:
-                            if attempt == 3:
-                                print(
-                                    f"WARNING: giving up on "
-                                    f"{sub}{obj['key']} after 4 attempts "
-                                    f"({e})",
-                                    file=sys.stderr,
-                                )
-                            else:
-                                time.sleep(2 ** (attempt + 1))
-                    if not ok:
-                        tmp.unlink(missing_ok=True)
-                        failed.append(f"{sub}{obj['key']}")
-                        continue
-                    tmp.rename(dest)
+        inv_tmp.rename(outdir / "remote_inventory.txt")
+        for sub, layer_exts, layer_skip, layer_prefix, objects in listed:
+            for obj in objects:
+                key_lower = obj["key"].lower()
+                if layer_exts and not key_lower.endswith(layer_exts):
+                    continue
+                if layer_skip and key_lower.endswith(layer_skip):
+                    continue
+                dest = outdir / sub / obj["key"]
+                if dest.exists() and dest.stat().st_size == obj["size"]:
                     fetched.append(f"{sub}{obj['key']}")
+                    continue
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                # pid-unique temp name: overlapping runs (an orphaned
+                # session's fetch still downloading) must not share a
+                # .part inode — one run's rename removes the path and
+                # the other's rename then crashes the whole staging
+                tmp = dest.with_suffix(
+                    f"{dest.suffix}.part{os.getpid()}"
+                )
+                # long multi-GB staging runs hit transient S3 resets;
+                # retry each file, and give up on a persistently
+                # failing object (recorded in `failed`, never fatal)
+                ok = False
+                for attempt in range(4):
+                    try:
+                        resp = requests.get(
+                            f"{endpoint}/{layer_prefix}{obj['key']}",
+                            timeout=600,
+                            stream=True,
+                        )
+                        resp.raise_for_status()
+                        with open(tmp, "wb") as f:
+                            for chunk in resp.iter_content(1 << 20):
+                                f.write(chunk)
+                        ok = True
+                        break
+                    except requests.exceptions.RequestException as e:
+                        if attempt == 3:
+                            print(
+                                f"WARNING: giving up on "
+                                f"{sub}{obj['key']} after 4 attempts "
+                                f"({e})",
+                                file=sys.stderr,
+                            )
+                        else:
+                            time.sleep(2 ** (attempt + 1))
+                if not ok:
+                    tmp.unlink(missing_ok=True)
+                    failed.append(f"{sub}{obj['key']}")
+                    continue
+                tmp.rename(dest)
+                fetched.append(f"{sub}{obj['key']}")
         meta["vendor_reports"] = {
             "source_prefix": link,
             "project_prefix": proj_link,

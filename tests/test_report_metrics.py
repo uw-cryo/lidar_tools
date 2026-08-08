@@ -163,3 +163,35 @@ def test_parse_usgs_project_report_v2_layout():
     assert out["nva_rmsez_dem_m"] == 0.0445
     assert out["nva_95_dem_m"] == 0.0873
     assert out["vva_95th_dem_m"] == 0.1335
+
+
+def test_extract_survives_missing_collect_end(tmp_path):
+    """A pinned WESM record without collect_end (NaT in WESM) yields no
+    acquisition-consistency verdict instead of crashing the batch."""
+    import yaml
+
+    vdir = tmp_path / "vendor_reports" / "reports" / "vendor_provided_xml"
+    vdir.mkdir(parents=True)
+    (vdir / "WU_ClassifiedPointCloud.xml").write_text(FGDC_XML)
+    (tmp_path / "aoi_1m_wu_a-processing_metadata.yaml").write_text(
+        yaml.dump(
+            {"survey_records": [{"workunit": "wu_a", "collect_start": "2023-06-01"}]}
+        )
+    )
+    rec = report_metrics.extract_project_metrics(tmp_path, "wu_a")
+    assert rec["fgdc"]["acquisition_start"] == "2023-06-18"
+    assert "acquisition_dates_consistent" not in rec
+
+
+def test_report_metrics_survives_missing_project_dir(tmp_path, capsys):
+    """A workunit listed in batch_status.yaml without a project directory
+    gets a note-only record; the run and comparison table still complete."""
+    import yaml
+
+    (tmp_path / "batch_status.yaml").write_text(
+        yaml.dump({"projects": {"wu_missing": "completed"}})
+    )
+    report_metrics.report_metrics(str(tmp_path))  # must not raise
+    out = capsys.readouterr().out
+    assert "wu_missing" in out
+    assert not (tmp_path / "wu_missing").exists()  # no dir invented
