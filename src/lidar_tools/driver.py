@@ -192,8 +192,47 @@ def rasterize_projects(
     status_fn = outbase / "batch_status.yaml"
     projects: dict = {}
     if status_fn.exists():
-        with open(status_fn) as f:
-            projects = (yaml.safe_load(f) or {}).get("projects") or {}
+        prior: object = {}
+        try:
+            with open(status_fn) as f:
+                prior = yaml.safe_load(f) or {}
+        except yaml.YAMLError as e:
+            print(
+                f"WARNING: {status_fn} is not readable YAML ({e}); starting a "
+                "fresh batch status",
+                file=sys.stderr,
+            )
+        if not isinstance(prior, dict):
+            print(
+                f"WARNING: {status_fn} is not a mapping; starting a fresh "
+                "batch status",
+                file=sys.stderr,
+            )
+            prior = {}
+        # Only carry projects forward within the SAME batch: the downstream
+        # defaults (merge/preview/fetch-reports/report-metrics) act on this
+        # list, so inheriting another AOI's or grid's projects would point
+        # them at products that do not belong together.
+        same_batch = str(prior.get("geometry")) == str(geometry) and str(
+            prior.get("dst_crs")
+        ) == str(dst_crs)
+        if prior and not same_batch:
+            print(
+                f"WARNING: {status_fn} records a different AOI/target grid "
+                f"({prior.get('geometry')}, {prior.get('dst_crs')}); its "
+                "projects are NOT carried forward",
+                file=sys.stderr,
+            )
+        elif same_batch:
+            carried = prior.get("projects")
+            if isinstance(carried, dict):
+                projects = dict(carried)
+            elif carried is not None:
+                print(
+                    f"WARNING: 'projects' in {status_fn} is not a mapping; "
+                    "ignoring it",
+                    file=sys.stderr,
+                )
     projects.update(status)
     with open(status_fn, "w") as f:
         yaml.dump(

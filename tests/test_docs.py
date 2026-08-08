@@ -18,7 +18,7 @@ def _registered_command_names() -> set[str]:
 
 
 def test_readme_documents_every_registered_command():
-    readme = README.read_text()
+    readme = README.read_text(encoding="utf-8")
     missing = sorted(n for n in _registered_command_names() if f"`{n}`" not in readme)
     assert not missing, (
         f"commands registered in cli.py but absent from README.md: {missing}. "

@@ -89,8 +89,9 @@ lidar-tools report-metrics batch/                    # standardized accuracy tab
 ```
 
 Projects are listed in priority order: the first one wins where they overlap.
-See [docs/vendor_reports.md](docs/vendor_reports.md) for the report staging and
-metric extraction details.
+See [docs/vendor_reports.md](https://github.com/uw-cryo/lidar_tools/blob/main/docs/vendor_reports.md)
+for the report staging and metric extraction details (repo-only: `docs/` is not
+shipped in the built package).
 
 ## Development
 

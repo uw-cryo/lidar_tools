@@ -174,7 +174,8 @@ def _apply_vrt_normalization(vrt_fn: Path, params: list[dict]) -> None:
     by_path = {Path(p["source"]).resolve(): p for p in params}
     tree = ET.parse(vrt_fn)
     band = tree.getroot().find("VRTRasterBand")
-    assert band is not None, f"no VRTRasterBand in {vrt_fn}"
+    if band is None:
+        raise ValueError(f"{vrt_fn.name}: VRT has no VRTRasterBand")
     band.set("dataType", "Float32")
     nd = band.find("NoDataValue")
     if nd is None:
@@ -190,7 +191,10 @@ def _apply_vrt_normalization(vrt_fn: Path, params: list[dict]) -> None:
         raise ValueError(f"{vrt_fn.name}: no VRT sources to normalize")
     for source in sources:
         el = source.find("SourceFilename")
-        assert el is not None and el.text, f"sourceless VRT source in {vrt_fn}"
+        if el is None or not el.text:
+            # not an assert: -O strips them, turning a malformed VRT into a
+            # confusing failure further downstream
+            raise ValueError(f"{vrt_fn.name}: VRT source without a filename")
         key = (
             (vrt_fn.parent / el.text) if el.get("relativeToVRT") == "1"
             else Path(el.text)

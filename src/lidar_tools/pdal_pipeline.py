@@ -271,7 +271,10 @@ def rasterize(
         the transformation is pinned to this epoch and the epoch is stamped
         on the outputs. Only meaningful with a dynamic `output_datum`
         (ITRF/WGS84 realizations); rejected for the plate-fixed
-        'nad83_2011'. Default None stamps the frame's own reference epoch.
+        'nad83_2011'. Default None stamps
+        geodesy.DEFAULT_COORDINATE_EPOCH (2010.0) — chosen because 3DEP
+        surveys are epoch-reduced to 2010.0 in NAD83(2011) — NOT the target
+        frame's own reference epoch.
     resolution
         Square output raster posting in units of `dst_crs`.
     dsm_gridding_choice
