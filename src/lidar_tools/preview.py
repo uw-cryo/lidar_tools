@@ -173,7 +173,10 @@ def _project_metadata_files(project_dir: Path) -> list[Path]:
         seen = set()
         for prod in meta.get("products", {}).values():
             for src in prod.get("sources_priority_order", []):
-                srcdir = Path(src).parent
+                # paths are recorded relative to this metadata file (older
+                # merges wrote absolute ones — both must resolve, and
+                # neither may be interpreted against the process CWD)
+                srcdir = (merge_meta.parent / src).resolve().parent
                 fn = _metadata_file(srcdir, "processing_metadata")
                 if fn is None:
                     # resampled staging copies (<workunit>_<posting>, e.g.

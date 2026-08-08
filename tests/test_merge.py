@@ -43,7 +43,11 @@ def _read(fn):
     from osgeo import gdal
 
     ds = gdal.OpenEx(str(fn))
-    return ds.GetRasterBand(1).ReadAsArray(), ds.GetGeoTransform()
+    arr, gt = ds.GetRasterBand(1).ReadAsArray(), ds.GetGeoTransform()
+    # release the handle: an open dataset makes renaming the containing
+    # directory flaky on platforms with stricter file locking
+    ds = None
+    return arr, gt
 
 
 def test_merge_priority_and_union(tmp_path):
@@ -254,3 +258,30 @@ def test_merge_intensity_single_source_stays_raw(tmp_path):
     written = merge.merge_projects(tmp_path)
     ds = gdal.OpenEx(str(written[0]))
     assert gdal.GetDataTypeName(ds.GetRasterBand(1).DataType) == "UInt16"
+
+
+def test_merge_outputs_are_relocatable(tmp_path):
+    """VRT sources and the metadata's source list are both recorded
+    relative to their own file, so a merged batch survives being moved
+    (or the volume being mounted at a different path)."""
+    from pathlib import Path
+
+    batch = tmp_path / "batch"
+    batch.mkdir()
+    _make_batch(batch)
+    written = merge.merge_projects(batch)
+    vrt = written[0]
+    assert 'relativeToVRT="1"' in vrt.read_text()
+    assert str(tmp_path) not in vrt.read_text()  # no absolute paths at all
+
+    meta = yaml.safe_load(
+        next((vrt.parent).glob("*merge_metadata.yaml")).read_text()
+    )
+    sources = meta["products"]["DSM_mos"]["sources_priority_order"]
+    assert all(not Path(s).is_absolute() for s in sources)
+
+    before, _ = _read(vrt)
+    moved = tmp_path / "relocated"
+    batch.rename(moved)
+    after, _ = _read(moved / vrt.parent.name / vrt.name)
+    np.testing.assert_array_equal(before, after)
