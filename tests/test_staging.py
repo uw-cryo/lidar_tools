@@ -195,3 +195,34 @@ def test_build_site_manifest_roundtrip(tmp_path):
     assert loaded["workunits"]["WU_B"]["lpc_cache"] == b["lpc_cache"]
     # YAML stays plain-typed (no numpy scalars etc.)
     assert yaml.safe_load(fn.read_text())
+
+
+def test_decode_tile_footprints_default_epsg_zone_range():
+    import pytest
+
+    # Aleutian wrap-around zones: 59N/60N are EPSG:6328/6329, NOT 6329+zone
+    z60 = staging.decode_tile_footprints(
+        ["https://x/USGS_LPC_AK_Foo_60VSA123456.laz"]
+    )
+    assert z60.crs.to_epsg() == 6329
+    z59 = staging.decode_tile_footprints(
+        ["https://x/USGS_LPC_AK_Foo_59VMA123456.laz"]
+    )
+    assert z59.crs.to_epsg() == 6328
+    # zones without a NAD83(2011) UTM code (6329+zone would land on an
+    # unrelated State Plane CRS) refuse to guess — e.g. Guam, zone 55P
+    with pytest.raises(ValueError, match="no default NAD83\\(2011\\)"):
+        staging.decode_tile_footprints(
+            ["https://x/USGS_LPC_GU_Foo_55PDB123456.laz"]
+        )
+
+
+def test_reconcile_tile_sources_tesm_unavailable():
+    # a failed TESM read is an unknown, not a "TESM has no tiles" verdict
+    v = staging.reconcile_tile_sources("WU", tesm_count=None, links_count=200)
+    assert v["status"] == "tesm-unavailable"
+    assert v["tesm_tiles"] is None and v["links_tiles"] == 200
+    assert "could not be read" in v["warning"]
+    # ... and must not shadow the genuine index-lag verdict
+    lag = staging.reconcile_tile_sources("WU", tesm_count=0, links_count=200)
+    assert lag["status"] == "tesm-missing"

@@ -147,7 +147,20 @@ def decode_tile_footprints(urls: list[str], utm_epsg: int = None) -> gpd.GeoData
                 "no default CRS for southern-hemisphere grid ids — pass the "
                 "workunit's UTM-south EPSG explicitly (e.g. NAD83(PA11) zone 2S)"
             )
-        utm_epsg = 6329 + zone  # NAD83(2011) / UTM north
+        # NAD83(2011) / UTM north: zones 1-19 are EPSG:6330-6348 and the
+        # Aleutian wrap-around zones 59N/60N are 6328/6329. Other zones have
+        # no NAD83(2011) UTM code (6329+zone lands on unrelated State Plane
+        # CRSs) — require an explicit EPSG instead of stamping a wrong CRS.
+        if 1 <= zone <= 19:
+            utm_epsg = 6329 + zone
+        elif zone in (59, 60):
+            utm_epsg = 6328 + (zone - 59)
+        else:
+            raise ValueError(
+                f"no default NAD83(2011) UTM EPSG for zone {zone}N — pass "
+                "the workunit's UTM EPSG explicitly (e.g. NAD83(MA11) / "
+                "UTM 55N, EPSG:8693, for Guam)"
+            )
     else:
         from pyproj import CRS as _CRS
 
@@ -244,7 +257,7 @@ def fetch_links_file(lpc_link: str, opener=None) -> list[str]:
 
 def reconcile_tile_sources(
     workunit: str,
-    tesm_count: int,
+    tesm_count: int | None,
     links_count: int | None,
     scope: str = "aoi_bbox",
 ) -> dict:
@@ -254,19 +267,28 @@ def reconcile_tile_sources(
     same way — see `count_links_tiles_in_bbox`).
 
     ``links_count=None`` means the links file could not be fetched — a
-    different fact from "no staged LAZ" (0), and the verdicts keep them
-    apart. Returns ``{status, warning, ...}``; ``warning`` is None only
-    when the two sources agree.
+    different fact from "no staged LAZ" (0) — and symmetrically
+    ``tesm_count=None`` means the TESM index could not be read (NOT "TESM
+    has no tiles"); the verdicts keep the failure modes apart. Returns
+    ``{status, warning, ...}``; ``warning`` is None only when the two
+    sources agree.
     """
     verdict = {
         "workunit": workunit,
         "scope": scope,
-        "tesm_tiles": int(tesm_count),
+        "tesm_tiles": None if tesm_count is None else int(tesm_count),
         "links_tiles": None if links_count is None else int(links_count),
         "status": "consistent",
         "warning": None,
     }
-    if links_count is None:
+    if tesm_count is None:
+        verdict["status"] = "tesm-unavailable"
+        verdict["warning"] = (
+            "TESM index could not be read — index truth unknown (NOT the "
+            "same as 'TESM has no tiles'); retry before drawing index "
+            "conclusions"
+        )
+    elif links_count is None:
         verdict["status"] = "links-unavailable"
         verdict["warning"] = (
             "links file could not be fetched — staged-LAZ truth unknown "
@@ -302,8 +324,8 @@ def build_site_manifest(
     wesm_gdf: gpd.GeoDataFrame,
     output_dir: str,
     ept_gdf: gpd.GeoDataFrame = None,
-    tesm_counts: dict = None,
-    links_counts: dict = None,
+    tesm_counts: dict | None = None,
+    links_counts: dict | None = None,
 ) -> dict:
     """
     Assemble the per-AOI site manifest from already-loaded inputs (pure —
@@ -315,6 +337,8 @@ def build_site_manifest(
     slots filled by the staging-time probes (vertical datum, EPT<->LAZ
     single-tile cross-check).
     """
+    # None = the TESM read failed (unknown truth); {} = read fine, no tiles
+    tesm_unavailable = tesm_counts is None
     tesm_counts = tesm_counts or {}
     links_counts = links_counts or {}
     manifest = {
@@ -343,9 +367,11 @@ def build_site_manifest(
             except LookupError as e:
                 rec["ept"] = {"error": str(e)}
         if wu in tesm_counts or wu in links_counts:
-            # links value None = fetch attempted and failed (distinct from 0)
+            # None values = fetch attempted and failed (distinct from 0)
             rec["tiles"] = reconcile_tile_sources(
-                wu, tesm_counts.get(wu, 0), links_counts.get(wu)
+                wu,
+                None if tesm_unavailable else tesm_counts.get(wu, 0),
+                links_counts.get(wu),
             )
         rec["lpc_cache"] = str(Path(output_dir) / "lpc_cache" / wu)
         manifest["workunits"][wu] = rec
@@ -389,19 +415,27 @@ def prepare(
     aoi = gpd.read_file(geometry)
     wesm = survey.load_wesm(aoi)
     if workunits is None:
-        wu_list = sorted(wesm["workunit"].astype(str))
+        # the WESM read is bbox-scoped; require true polygon intersection so
+        # a diagonal or L-shaped AOI doesn't pull in bbox-only neighbors —
+        # the manifest drives full rasterize runs, and a false hit costs
+        # hours of tiling for a 'completed (no data)' outcome
+        aoi_union = aoi.to_crs(wesm.crs).union_all()
+        wu_list = sorted(
+            wesm.loc[wesm.intersects(aoi_union), "workunit"].astype(str)
+        )
     else:
         wu_list = [w.strip() for w in str(workunits).split(",") if w.strip()]
     if not wu_list:
         raise ValueError("No workunits given and none intersect the AOI")
     ept = survey.load_ept_resources()
-    tesm_counts: dict = {}
+    # None = TESM read failed (index truth unknown), {} = read fine, empty
+    tesm_counts: dict | None = None
     links_counts: dict = {}
     try:
         tesm = attach_workunits(load_tesm_tiles(aoi), wesm)
         tesm_counts = tesm.groupby("workunit").size().to_dict()
     except Exception as e:
-        print(f"WARNING: TESM read failed ({e}); tile index omitted")
+        print(f"WARNING: TESM read failed ({e}); index truth unknown")
     for wu in wu_list:
         try:
             rec = survey.record_from_wesm(wesm, wu)
