@@ -462,7 +462,40 @@ def rasterize(
         process_specific_3dep_survey = None
     elif threedep_project == "latest":
         process_all_intersecting_surveys = False
-        process_specific_3dep_survey = None
+        # Resolve "latest" to a concrete workunit here, so the run takes the
+        # normal per-workunit path: WESM record pinned, declared geoid
+        # enforced, EPT name resolved. Selecting inside return_readers could
+        # not be date-ordered — the EPT index carries no acquisition dates,
+        # so it took whichever collection came first in file order (gh #68).
+        latest = survey.select_latest_workunit(gdf)
+        process_specific_3dep_survey = latest["workunit"]
+        if latest["undated"]:
+            print(
+                f"WARNING: no acquisition dates for any of the "
+                f"{latest['n_candidates']} EPT-backed collection(s) here; "
+                f"selected '{latest['workunit']}' (first intersecting), which "
+                "may not be the most recent",
+                file=sys.stderr,
+            )
+        else:
+            print(
+                f"Latest survey selected: {latest['workunit']} "
+                f"(collected {latest['collect_start']} - "
+                f"{latest['collect_end']}, ql {latest['ql']}; "
+                f"{latest['n_candidates']} EPT-backed candidate(s))"
+            )
+        if latest["aoi_overlap_frac"] < 0.95:
+            # the most recent survey is frequently a sliver of the AOI, so a
+            # single-survey run silently leaves most of it empty (gh #68)
+            print(
+                f"WARNING: {latest['workunit']} covers only "
+                f"{latest['aoi_overlap_frac']:.1%} of the AOI, so this run "
+                f"will have no data over the rest. {latest['n_candidates']} "
+                "collection(s) cover this AOI — use `lidar-tools survey` to "
+                "inspect them and `rasterize-projects` + `merge` to process "
+                "and combine several.",
+                file=sys.stderr,
+            )
     else:
         process_all_intersecting_surveys = False
         process_specific_3dep_survey = threedep_project
