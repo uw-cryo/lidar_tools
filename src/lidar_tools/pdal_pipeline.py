@@ -145,6 +145,9 @@ def rasterize(
     output: str = "/tmp/lidar-tools-output",
     src_crs: str = None,
     dst_crs: str = None,
+    output_datum: Literal[
+        "wgs84_g2139", "nad83_2011", "wgs84_g1674", "itrf2020"
+    ] = "wgs84_g2139",
     resolution: float = 1.0,
     dsm_gridding_choice: str = "first_idw",
     products: str = "all",
@@ -159,6 +162,7 @@ def rasterize(
     quiet: Annotated[bool, cyclopts.Parameter(negative="")] = False,
     ept_vertical: Literal["auto", "geoid", "ellipsoid"] = "auto",
     resume: Annotated[bool, cyclopts.Parameter(negative="")] = False,
+    coord_epoch: float = None,
 ) -> None:
     """
     Create a Digital Surface Model (DSM), Digital Terrain Model (DTM) and/or Intensity raster from point cloud data.
@@ -174,7 +178,13 @@ def rasterize(
     src_crs
         Path to file with PROJ-supported CRS definition to override CRS of input files.
     dst_crs
-        Path to file with PROJ-supported CRS definition for the output. If unspecified, a local UTM CRS will be used.
+        Path to file with PROJ-supported CRS definition for the output. If unspecified, a local UTM CRS is auto-built for the AOI (datum per `output_datum`).
+    output_datum
+        Datum realization of the auto-built local-UTM target, used only when
+        `dst_crs` is not given: 'wgs84_g2139' (default; dynamic frame,
+        outputs stamped at epoch 2010.0) or 'nad83_2011' (static source
+        realization of 3DEP; ellipsoidal heights, no epoch, no ITRF Helmert).
+        For any other target, pass an explicit `dst_crs` WKT file.
     resolution
         Square output raster posting in units of `dst_crs`.
     dsm_gridding_choice
@@ -293,16 +303,15 @@ def rasterize(
         {"state": "started", "timestamp": datetime.now().isoformat()},
     )
 
-    # Create custom 3D CRS UTM WKT2 with WGS84 G2139 datum realization,
-    # built programmatically with pyproj (correct southern-hemisphere false
-    # northing; no runtime network fetch of a WKT template)
+    # Create custom 3D CRS UTM WKT2 for the AOI's local zone on the selected
+    # output datum realization, built programmatically with pyproj (correct
+    # southern-hemisphere false northing; no runtime network fetch of a WKT
+    # template). Default is the dynamic WGS 84 (G2139); output_datum can
+    # select the static NAD83(2011) source realization instead.
     if dst_crs is None:
         epsg_code = gdf.estimate_utm_crs().to_epsg()
-        zone = geodesy.utm_zone_label(epsg_code)
-        target_wkt = outdir / f"UTM_{zone}_WGS84_G2139_3D.wkt"
-        dst_crs = geodesy.write_crs_file(
-            geodesy.build_utm_g2139_3d(epsg_code), target_wkt
-        )
+        out_crs_obj, wkt_name = geodesy.build_utm_target(epsg_code, output_datum)
+        dst_crs = geodesy.write_crs_file(out_crs_obj, outdir / wkt_name)
 
     # Configure output raster extents and posting based on input polygon
     with open(dst_crs, "r") as f:
@@ -396,8 +405,8 @@ def rasterize(
             for key, branch, ept_src_crs, grids_hint in [
                 (
                     "geoid",
-                    "geoid (EPSG:3857 + NAVD88 heights)",
-                    geodesy.build_3857_navd88_compound(),
+                    f"geoid (EPSG:3857 as base EPSG:{ept_base_epsg} + NAVD88 heights)",
+                    geodesy.build_ept_3857_navd88_compound(base_epsg=ept_base_epsg),
                     geoid_hint,
                 ),
                 (
@@ -708,10 +717,12 @@ def rasterize(
         ]
         if reproject_truth_val:
             # EPT heights are NAVD88 orthometric: warp with the compound
-            # source SRS so the geoid-to-ellipsoid shift is applied
+            # source SRS (TRUE base datum declared — see
+            # build_ept_3857_navd88_compound) so the geoid-to-ellipsoid
+            # shift uses the survey-consistent geoid route
             src_srs = geodesy.write_crs_file(
-                geodesy.build_3857_navd88_compound(),
-                outdir / "EPT_3857_NAVD88_compound.wkt",
+                geodesy.build_ept_3857_navd88_compound(base_epsg=ept_base_epsg),
+                outdir / f"EPT_3857_base{ept_base_epsg}_NAVD88_compound.wkt",
             )
         else:
             # EPT heights are already ellipsoidal: declare the survey's true
@@ -725,6 +736,30 @@ def rasterize(
         out_extent = final_out_extent
         print(src_srs)
         print("Running reprojection sequentially")
+        # An explicit coord_epoch PINS the full operation with the epoch
+        # baked into the -ct pipeline (projinfo --t_epoch). GDAL free
+        # selection with -t_coord_epoch is deliberately NOT used: it proved
+        # unstable across source datum declarations (LV 2026-07-10 — null
+        # horizontal ties for WGS84-realization targets, and for ITRF
+        # targets once the compound source declared its true NAD83 base).
+        if coord_epoch is not None:
+            need = ["+proj=helmert"]
+            if reproject_truth_val:
+                need.append("vgridshift")
+            height_ct = geodesy.epoch_pinned_pipeline(
+                src_srs,
+                dst_crs,
+                coord_epoch,
+                aoi_bounds=aoi_lonlat,
+                require_substrings=need,
+            )
+            print(f"epoch-pinned -ct pipeline: {height_ct}")
+            transform_checks.append(
+                {
+                    "branch": f"epoch-pinned (coord_epoch={coord_epoch})",
+                    "proj_pipeline": height_ct,
+                }
+            )
         if "dsm" in requested:
             print("Reprojecting DSM raster")
             dsm_functions.gdal_warp(
@@ -835,20 +870,21 @@ def rasterize(
     # DYNAMIC property (intensity is warped to the 2D demotion of the
     # target, whose file SRS reads back as static).
     intensity_warped_2d = input == "EPT_AWS" and out_crs != CRS.from_epsg(3857)
+    epoch_to_stamp = (
+        coord_epoch if coord_epoch is not None else geodesy.DEFAULT_COORDINATE_EPOCH
+    )
     stamped = [
         fn
         for fn in final_products
         if geodesy.set_coordinate_epoch(
             fn,
-            geodesy.DEFAULT_COORDINATE_EPOCH,
+            epoch_to_stamp,
             crs=out_crs.to_2d()
             if (fn == intensity_reproj and intensity_warped_2d)
             else out_crs,
         )
     ]
-    geodesy_record["coordinate_epoch"] = (
-        geodesy.DEFAULT_COORDINATE_EPOCH if stamped else None
-    )
+    geodesy_record["coordinate_epoch"] = epoch_to_stamp if stamped else None
     geodesy_record["epoch_stamped_products"] = [Path(fn).name for fn in stamped]
     _update_processing_metadata(outdir, "geodesy", geodesy_record)
 

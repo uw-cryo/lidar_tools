@@ -968,3 +968,56 @@ def test_execute_tile_job_empty_tile(tmp_path, capsys):
     assert not Path(job["fetch"]["cache_file"]).exists()
     # no spurious ERROR about invalid rasters
     assert "invalid raster" not in capsys.readouterr().err
+
+
+def test_gdal_add_overview_alignment(tmp_path):
+    """Overview levels must stay georeferenced-aligned with the base grid.
+
+    The GAUSS kernel shifts overview content by (factor/2 - 0.5) base pixels
+    per level (0.5/1.5/3.5/7.5 px at factors 2/4/8/16, measured with GDAL
+    3.12) -- the horizontal offset observed on production DSM overviews. The
+    default AVERAGE kernel preserves a smooth blob's center of mass exactly;
+    this pins that contract."""
+    from osgeo import gdal, osr
+
+    size = 512
+    px = 1.0
+    x0, y0 = 500000.0, 5270000.0
+    fn = tmp_path / "blob.tif"
+
+    # smooth blob centered off-grid so any kernel shift moves the centroid
+    yy, xx = np.mgrid[0:size, 0:size]
+    blob = np.exp(-(((xx - 217.3) ** 2 + (yy - 341.8) ** 2) / (2 * 6.0**2))).astype(
+        np.float32
+    )
+    ds = gdal.GetDriverByName("GTiff").Create(str(fn), size, size, 1, gdal.GDT_Float32)
+    ds.SetGeoTransform((x0, px, 0, y0, 0, -px))
+    srs = osr.SpatialReference()
+    srs.ImportFromWkt(pyproj.CRS.from_epsg(32610).to_wkt())
+    ds.SetSpatialRef(srs)
+    ds.GetRasterBand(1).WriteArray(blob)
+    ds = None
+
+    lidar_tools.dsm_functions.gdal_add_overview(str(fn))
+
+    def center_of_mass(arr, dx, dy):
+        total = arr.sum(dtype=np.float64)
+        xs = x0 + (np.arange(arr.shape[1]) + 0.5) * dx
+        ys = y0 + (np.arange(arr.shape[0]) + 0.5) * dy
+        return (
+            arr.sum(axis=0, dtype=np.float64) @ xs / total,
+            arr.sum(axis=1, dtype=np.float64) @ ys / total,
+        )
+
+    with gdal.OpenEx(str(fn)) as ds:
+        band = ds.GetRasterBand(1)
+        bx, by = center_of_mass(band.ReadAsArray(), px, -px)
+        assert band.GetOverviewCount() >= 3
+        # factors 2, 4, 8 (factor 16 leaves the blob under one overview pixel,
+        # where edge quantization dominates)
+        for i in range(3):
+            ovr = band.GetOverview(i)
+            arr = ovr.ReadAsArray()
+            ox, oy = center_of_mass(arr, px * size / ovr.XSize, -px * size / ovr.YSize)
+            assert abs(ox - bx) < 0.25 * px
+            assert abs(oy - by) < 0.25 * px

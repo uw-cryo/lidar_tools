@@ -14,6 +14,9 @@ PROJ_ONLY_BEST_DEFAULT environment variables before GDAL/PROJ are imported.
 """
 
 import re
+import shutil
+import subprocess
+import sys
 from pathlib import Path
 
 import pyproj.network
@@ -168,6 +171,151 @@ def build_utm_g2139_3d(utm_epsg: int) -> CRS:
     ).to_3d()
 
 
+def build_utm_nad83_2011_3d(utm_epsg: int) -> CRS:
+    """
+    Build a 3D UTM CRS on the static NAD83(2011) datum for a UTM EPSG code.
+
+    NAD83(2011) is the source realization of 3DEP lidar, so a NAD83(2011)
+    target is the most native output: no time-dependent Helmert is applied
+    (the ellipsoid-source transform is a pure projection change), and the
+    frame is static — coordinates carry no epoch (unlike the dynamic WGS 84
+    (G2139) default, which is stamped at epoch 2010.0). Heights are
+    ellipsoidal on the GRS 1980 ellipsoid.
+
+    Parameters
+    ----------
+    utm_epsg
+        WGS84 UTM EPSG code (e.g. 32610) selecting the zone and hemisphere.
+        Only the zone/hemisphere are taken from it; the datum is NAD83(2011).
+
+    Returns
+    -------
+    CRS
+        Projected 3D CRS with a static NAD83(2011) datum and
+        ellipsoidal-height axis.
+    """
+    label = utm_zone_label(utm_epsg)
+    zone, hemisphere = label[:-1], label[-1]
+    return ProjectedCRS(
+        conversion=UTMConversion(zone, hemisphere=hemisphere),
+        geodetic_crs=CRS.from_epsg(NAD83_2011_EPSG),
+        name=f"NAD83(2011) / UTM zone {label}",
+    ).to_3d()
+
+
+WGS84_G1674_EPSG = 9056
+ITRF2020_EPSG = 9990
+ITRF2008_EPSG = 8999
+ITRF2014_EPSG = 9000
+
+
+def build_utm_realization_3d(utm_epsg: int, base_epsg: int, base_name: str) -> CRS:
+    """
+    Build a 3D UTM CRS on an arbitrary geographic realization.
+
+    Generalizes the G2139/NAD83(2011) builders for additional output frames
+    (e.g. matching a product delivery's realization for multi-frame
+    validation). Same construction: UTM conversion on the given geographic
+    2D base, promoted to 3D (ellipsoidal heights).
+
+    Parameters
+    ----------
+    utm_epsg
+        WGS84 UTM EPSG code (e.g. 32611) selecting zone/hemisphere only.
+    base_epsg
+        Geographic 2D EPSG code of the target realization (e.g. 9056 for
+        WGS 84 (G1674), 9990 for ITRF2020).
+    base_name
+        Realization name used in the CRS name.
+
+    Returns
+    -------
+    CRS
+        Projected 3D CRS on the requested realization.
+    """
+    label = utm_zone_label(utm_epsg)
+    zone, hemisphere = label[:-1], label[-1]
+    return ProjectedCRS(
+        conversion=UTMConversion(zone, hemisphere=hemisphere),
+        geodetic_crs=CRS.from_epsg(base_epsg),
+        name=f"{base_name} / UTM zone {label}",
+    ).to_3d()
+
+
+def build_utm_g1674_3d(utm_epsg: int) -> CRS:
+    """3D UTM CRS on WGS 84 (G1674) (~ITRF2008; dynamic — stamp an epoch)."""
+    return build_utm_realization_3d(utm_epsg, WGS84_G1674_EPSG, "WGS 84 (G1674)")
+
+
+def build_utm_itrf2020_3d(utm_epsg: int) -> CRS:
+    """3D UTM CRS on ITRF2020 (dynamic — stamp an epoch)."""
+    return build_utm_realization_3d(utm_epsg, ITRF2020_EPSG, "ITRF2020")
+
+
+def build_utm_itrf2008_3d(utm_epsg: int) -> CRS:
+    """3D UTM CRS on ITRF2008 (≡ WGS 84 (G1674) to ~cm; dynamic).
+
+    ⚠ Prefer this over the wgs84_g1674 target when coord_epoch is used:
+    with GDAL selecting the operation (no -ct), a WGS84-realization target
+    gets the NULL NAD83<->WGS84 tie HORIZONTALLY (~1.2-1.3 m CONUS error),
+    while the ITRF alias finds the direct time-dependent
+    ITRFxxxx<->NAD83(2011) Helmert (verified empirically, LV T2 2026-07-09).
+    """
+    return build_utm_realization_3d(utm_epsg, ITRF2008_EPSG, "ITRF2008")
+
+
+def build_utm_itrf2014_3d(utm_epsg: int) -> CRS:
+    """3D UTM CRS on ITRF2014 (≡ WGS 84 (G2139) to ~cm; dynamic).
+
+    ⚠ Same GDAL null-tie caveat as build_utm_itrf2008_3d: use this instead
+    of wgs84_g2139 whenever coord_epoch is passed.
+    """
+    return build_utm_realization_3d(utm_epsg, ITRF2014_EPSG, "ITRF2014")
+
+
+# Selectable output-datum realizations for the auto-built local-UTM target.
+# key -> (3D UTM builder, filename datum label). Arbitrary output CRSs beyond
+# these are still supported by passing an explicit dst_crs WKT file.
+OUTPUT_DATUM_BUILDERS = {
+    "wgs84_g2139": (build_utm_g2139_3d, "WGS84_G2139"),
+    "nad83_2011": (build_utm_nad83_2011_3d, "NAD83_2011"),
+    "wgs84_g1674": (build_utm_g1674_3d, "WGS84_G1674"),
+    "itrf2020": (build_utm_itrf2020_3d, "ITRF2020"),
+    "itrf2008": (build_utm_itrf2008_3d, "ITRF2008"),
+    "itrf2014": (build_utm_itrf2014_3d, "ITRF2014"),
+}
+
+
+def build_utm_target(utm_epsg: int, output_datum: str = "wgs84_g2139") -> "tuple[CRS, str]":
+    """
+    Build the auto-target 3D UTM CRS and its canonical WKT filename for a UTM
+    zone and a selectable output datum realization.
+
+    Parameters
+    ----------
+    utm_epsg
+        WGS84 UTM EPSG code selecting the zone/hemisphere (e.g. from
+        ``gdf.estimate_utm_crs().to_epsg()``).
+    output_datum
+        Output datum key, one of ``OUTPUT_DATUM_BUILDERS`` ('wgs84_g2139'
+        default, or 'nad83_2011').
+
+    Returns
+    -------
+    tuple[CRS, str]
+        The 3D UTM CRS and a canonical basename like
+        'UTM_10N_NAD83_2011_3D.wkt' (caller joins it with the run directory).
+    """
+    try:
+        builder, label = OUTPUT_DATUM_BUILDERS[output_datum]
+    except KeyError:
+        raise ValueError(
+            f"Unknown output_datum '{output_datum}'; choose from "
+            f"{sorted(OUTPUT_DATUM_BUILDERS)} or pass an explicit dst_crs WKT file."
+        )
+    return builder(utm_epsg), f"UTM_{utm_zone_label(utm_epsg)}_{label}_3D.wkt"
+
+
 def build_3857_navd88_compound() -> CRS:
     """
     Build the compound CRS describing geoid-referenced 3DEP EPT data:
@@ -185,6 +333,116 @@ def build_3857_navd88_compound() -> CRS:
     return CompoundCRS(
         name="WGS 84 / Pseudo-Mercator + NAVD88 height",
         components=[CRS.from_epsg(3857), CRS.from_epsg(5703)],
+    )
+
+
+def epoch_pinned_pipeline(src_crs, dst_crs, coord_epoch: float,
+                          aoi_bounds=None, require_substrings=()) -> str:
+    """
+    Resolve ONE explicit PROJ pipeline with the target coordinate epoch baked
+    in (``projinfo --t_epoch``), for enforcement via gdalwarp ``-ct``.
+
+    Operation AUTO-selection proved unstable across source datum declarations
+    (LV four-frame validation 2026-07-10): GDAL free selection with
+    ``-t_coord_epoch`` null-tied the horizontal Helmert for WGS84-realization
+    targets, and flipped to null horizontal for ITRF targets when the source
+    compound declared its true NAD83(2011) base. The only robust contract is
+    an explicit pipeline. projinfo emits the top-ranked operation with
+    ``+proj=set +v_4=<epoch>`` bookends, so the time-dependent Helmert is
+    evaluated at the requested epoch without 4D input — usable as a static
+    ``-ct`` string and recordable as provenance.
+
+    NOTE: general-purpose geodesy with no lidar_tools dependencies — a
+    candidate for migration into ``groundcontrol`` when lidar_tools adopts it
+    as a dependency (planned refactor).
+
+    Parameters
+    ----------
+    src_crs, dst_crs
+        CRS object, WKT string, or path to a WKT file.
+    coord_epoch
+        Target coordinate epoch (decimal year).
+    aoi_bounds
+        Optional (west, south, east, north) degrees — passed as
+        ``--bbox`` so area-appropriate operations rank first.
+    require_substrings
+        Substrings that MUST appear in the selected pipeline (e.g.
+        ``["+proj=helmert", "vgridshift"]``) — fail loud on a null or
+        wrong-geoid route instead of producing silently shifted rasters.
+
+    Returns
+    -------
+    str
+        The ``+proj=pipeline ...`` string of the top-ranked operation.
+    """
+    def _wkt(c):
+        if isinstance(c, CRS):
+            return c.to_wkt()
+        p = Path(str(c))
+        if p.exists():
+            return p.read_text()
+        return str(c)
+
+    exe = Path(sys.executable).parent / "projinfo"
+    projinfo = str(exe) if exe.exists() else shutil.which("projinfo")
+    if projinfo is None:
+        raise RuntimeError("projinfo executable not found")
+    cmd = [projinfo, "-s", _wkt(src_crs), "-t", _wkt(dst_crs),
+           "--t_epoch", str(coord_epoch), "--hide-ballpark",
+           "--spatial-test", "intersects", "-o", "PROJ", "--single-line"]
+    if aoi_bounds is not None:
+        w, s, e, n = aoi_bounds
+        cmd += ["--bbox", f"{w},{s},{e},{n}"]
+    out = subprocess.run(cmd, capture_output=True, text=True)
+    if out.returncode != 0:
+        raise RuntimeError(f"projinfo failed: {out.stderr[-500:]}")
+    pipelines = [ln.strip() for ln in out.stdout.splitlines()
+                 if ln.strip().startswith("+proj=pipeline")]
+    if not pipelines:
+        raise RuntimeError(
+            f"projinfo returned no pipeline for {coord_epoch=}: "
+            f"{out.stdout[-500:]}")
+    pipe = pipelines[0]
+    epoch_tag = f"+proj=set +v_4={coord_epoch:g}"
+    missing = [s for s in ([epoch_tag] + list(require_substrings))
+               if s not in pipe]
+    if missing:
+        raise RuntimeError(
+            f"selected pipeline lacks required component(s) {missing}: {pipe}")
+    return pipe
+
+
+def build_ept_3857_navd88_compound(base_epsg: int = NAD83_2011_EPSG) -> CRS:
+    """
+    Compound CRS for geoid-referenced EPT data with the TRUE base datum:
+    Pseudo-Mercator on the survey's NAD83-family realization + NAVD88 heights.
+
+    Replaces :func:`build_3857_navd88_compound` (WGS84-based horizontal) as
+    the geoid-branch warp source. Declaring the horizontal as generic WGS 84
+    forces PROJ to reach NAVD88 through WGS84->NAD83(HARN) chains, and the
+    declared-accuracy ranking then prefers GEOID03/NADCON5 routes for some
+    targets (empirically 2-16 cm spatially varying vertical + horizontal
+    error vs GEOID18, LV validation 2026-07-10). With the truthful
+    NAD83(2011)-based horizontal, the NAVD88->ellipsoid candidate set
+    collapses to the survey-consistent GEOID18 operation (single candidate
+    to NAD83(2011) 3D, top-ranked at 0.015 m to ITRF targets).
+
+    Parameters
+    ----------
+    base_epsg
+        Geographic 2D EPSG code of the survey's true horizontal datum
+        (see :func:`build_ept_3857_nad83_2011`).
+
+    Returns
+    -------
+    CRS
+        Compound CRS: Pseudo-Mercator (base-datum based) + NAVD88 height.
+    """
+    horiz = build_ept_3857_nad83_2011(three_d=False, base_epsg=base_epsg)
+    base_name = CRS.from_epsg(base_epsg).name
+    return CompoundCRS(
+        name=f"Pseudo-Mercator ({base_name} based) + NAVD88 height",
+        components=[horiz, CRS.from_epsg(5703)],
     )
 
 

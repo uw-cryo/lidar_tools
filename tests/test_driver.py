@@ -37,6 +37,22 @@ def test_rasterize_projects_shared_grid_and_subdirs(tmp_path, aoi_file, monkeypa
     assert status["projects"] == {"WU_A": "completed", "WU_B": "completed"}
 
 
+def test_rasterize_projects_output_datum_nad83(tmp_path, aoi_file, monkeypatch):
+    calls = []
+    monkeypatch.setattr(driver, "rasterize", lambda **kw: calls.append(kw))
+    outbase = tmp_path / "batch"
+    driver.rasterize_projects(
+        aoi_file, "WU_A,WU_B", str(outbase), output_datum="nad83_2011"
+    )
+    # the shared target is the NAD83(2011) realization, built once, and the
+    # datum choice is threaded through to every project
+    wkts = list(outbase.glob("UTM_*_NAD83_2011_3D.wkt"))
+    assert len(wkts) == 1
+    assert not list(outbase.glob("*WGS84_G2139*"))
+    assert all(c["dst_crs"] == str(wkts[0]) for c in calls)
+    assert all(c["output_datum"] == "nad83_2011" for c in calls)
+
+
 def test_rasterize_projects_one_failure_does_not_stop_batch(
     tmp_path, aoi_file, monkeypatch
 ):
