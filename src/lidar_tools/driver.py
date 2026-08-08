@@ -183,9 +183,21 @@ def rasterize_projects(
             print(f"ERROR: {workunit} failed: {e}")
             status[workunit] = f"failed: {e}"
 
-    with open(outbase / "batch_status.yaml", "w") as f:
+    # Carry forward projects from earlier invocations into the same batch
+    # directory: merge / preview / fetch-reports / report-metrics all default
+    # to the workunits recorded here, so overwriting with just this run's
+    # list silently shrinks their input (Casa Grande: a later single-project
+    # run left the 5-project batch listing one, and the re-merge had to name
+    # all five by hand).
+    status_fn = outbase / "batch_status.yaml"
+    projects: dict = {}
+    if status_fn.exists():
+        with open(status_fn) as f:
+            projects = (yaml.safe_load(f) or {}).get("projects") or {}
+    projects.update(status)
+    with open(status_fn, "w") as f:
         yaml.dump(
-            {"geometry": str(geometry), "dst_crs": str(dst_crs), "projects": status},
+            {"geometry": str(geometry), "dst_crs": str(dst_crs), "projects": projects},
             f,
             default_flow_style=False,
             sort_keys=False,

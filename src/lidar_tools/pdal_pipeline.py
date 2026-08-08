@@ -54,6 +54,8 @@ def _write_processing_metadata(
     ept_vertical: str = "auto",
     resume: bool = False,
     geoid_override: str = "declared",
+    output_datum: str = "wgs84_g2139",
+    coord_epoch: float = None,
 ) -> None:
     """
     Write processing metadata to a YAML file in the output directory.
@@ -95,6 +97,11 @@ def _write_processing_metadata(
             "ept_vertical": ept_vertical,
             "resume": resume,
             "geoid_override": geoid_override,
+            # the auto-built target is derived from these two, so without
+            # them a run with dst_crs=None cannot be reproduced from its
+            # own metadata
+            "output_datum": output_datum,
+            "coord_epoch": coord_epoch,
         }
     }
     # exact code state for reproducing branch-based production runs
@@ -405,6 +412,8 @@ def rasterize(
         quiet=quiet,
         ept_vertical=ept_vertical,
         resume=resume,
+        output_datum=output_datum,
+        coord_epoch=coord_epoch,
         geoid_override=geoid_override,
     )
     _update_processing_metadata(

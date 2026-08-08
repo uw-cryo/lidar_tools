@@ -139,3 +139,27 @@ def test_rasterize_projects_passes_geoid_override(tmp_path, aoi_file, monkeypatc
         aoi_file, "WU_A", str(tmp_path / "b2"), geoid_override="best-available"
     )
     assert seen[1]["geoid_override"] == "best-available"
+
+
+def test_batch_status_accumulates_across_invocations(tmp_path, aoi_file, monkeypatch):
+    """merge/preview/fetch-reports/report-metrics default to the workunits in
+    batch_status.yaml, so a later run over one project must not drop the
+    others from the batch."""
+    out = tmp_path / "batch"
+    out.mkdir()
+    (out / "batch_status.yaml").write_text(
+        yaml.dump(
+            {
+                "geometry": aoi_file,
+                "dst_crs": "utm.wkt",
+                "projects": {"WU_A": "completed", "WU_B": "completed"},
+            }
+        )
+    )
+    monkeypatch.setattr(driver, "rasterize", lambda **kw: None)
+
+    driver.rasterize_projects(
+        geometry=aoi_file, workunits="WU_C", output=str(out), dst_crs="utm.wkt"
+    )
+    projects = yaml.safe_load((out / "batch_status.yaml").read_text())["projects"]
+    assert set(projects) == {"WU_A", "WU_B", "WU_C"}
