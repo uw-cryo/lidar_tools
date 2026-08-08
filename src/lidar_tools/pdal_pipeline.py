@@ -286,10 +286,11 @@ def rasterize(
         Which 3DEP survey(s) to read. A WESM workunit name (e.g.
         "AZ_PimaCo_1_2021") processes that survey; its EPT resource name is
         resolved automatically. "all" processes every EPT collection
-        intersecting the AOI. "latest" (default) processes the FIRST
-        intersecting collection in the EPT index — the index carries no
-        acquisition dates, so this is NOT date-ordered despite the name
-        (gh #68); name the workunit explicitly when the survey matters.
+        intersecting the AOI. "latest" (default) processes the most recently
+        collected survey that has an EPT build, chosen from the WESM
+        acquisition dates. Note the newest survey often covers only part of
+        an AOI — the run reports its coverage and warns below 95%; use
+        `rasterize-projects` + `merge` to process and combine several.
     tile_size
         The size of rasterized tiles processed from input EPT point clouds in units of `dst_crs`.
     num_process
