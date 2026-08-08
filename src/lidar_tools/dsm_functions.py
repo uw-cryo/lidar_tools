@@ -1368,19 +1368,23 @@ def gdal_warp(
         cli_resampling = {"nearest": "near", "cubic_spline": "cubicspline"}.get(
             resampling_alogrithm, resampling_alogrithm
         )
-        opts = (
-            f"-overwrite -r {cli_resampling} -tr {res} {res} -et {tolerance} "
-            f"-ot {dtype} -multi -t_coord_epoch {coord_epoch} "
-            f'-s_srs "{src_srs}" -t_srs "{dst_srs}" '
-            "-co COMPRESS=LZW -co TILED=YES -co COPY_SRC_OVERVIEWS=YES "
-            "-co BIGTIFF=IF_SAFER"
-        )
+        # pre-tokenized argv form: same parser as the CLI string (keeps
+        # -t_coord_epoch, which the WarpOptions kwargs lack), but SRS values
+        # are single tokens — a WKT string with embedded quotes cannot
+        # mis-parse (CLI-string form broke on them)
+        opts = [
+            "-overwrite", "-r", cli_resampling, "-tr", str(res), str(res),
+            "-et", str(tolerance), "-ot", dtype, "-multi",
+            "-t_coord_epoch", str(coord_epoch),
+            "-s_srs", str(src_srs), "-t_srs", str(dst_srs),
+            "-co", "COMPRESS=LZW", "-co", "TILED=YES",
+            "-co", "COPY_SRC_OVERVIEWS=YES", "-co", "BIGTIFF=IF_SAFER",
+        ]
         if target_aligned_pixels:
-            opts += " -tap"
+            opts += ["-tap"]
         if out_extent is not None:
-            opts += (f" -te {out_extent[0]} {out_extent[1]}"
-                     f" {out_extent[2]} {out_extent[3]}")
-        print(f"gdal.Warp CLI options: {opts}")
+            opts += ["-te"] + [str(v) for v in out_extent]
+        print(f"gdal.Warp CLI options: {' '.join(opts)}")
         ds = gdal.Warp(dst_fn, src_fn, options=opts,
                        callback=gdal.TermProgress_nocb)
     else:

@@ -58,7 +58,10 @@ def rasterize_projects(
     cleanup: bool = True,
     quiet: bool = False,
     dst_crs: str | None = None,
-    output_datum: Literal["wgs84_g2139", "nad83_2011"] = "wgs84_g2139",
+    output_datum: Literal[
+        "wgs84_g2139", "nad83_2011", "wgs84_g1674", "itrf2020",
+        "itrf2008", "itrf2014",
+    ] = "wgs84_g2139",
     ept_vertical: Literal["auto", "geoid", "ellipsoid"] = "auto",
     geoid_override: Literal["declared", "best-available"] = "declared",
 ) -> None:

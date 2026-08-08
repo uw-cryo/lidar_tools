@@ -201,7 +201,8 @@ def rasterize(
     src_crs: str = None,
     dst_crs: str = None,
     output_datum: Literal[
-        "wgs84_g2139", "nad83_2011", "wgs84_g1674", "itrf2020"
+        "wgs84_g2139", "nad83_2011", "wgs84_g1674", "itrf2020",
+        "itrf2008", "itrf2014",
     ] = "wgs84_g2139",
     resolution: float = 1.0,
     dsm_gridding_choice: str = "first_idw",
@@ -237,10 +238,12 @@ def rasterize(
         Path to file with PROJ-supported CRS definition for the output. If unspecified, a local UTM CRS is auto-built for the AOI (datum per `output_datum`).
     output_datum
         Datum realization of the auto-built local-UTM target, used only when
-        `dst_crs` is not given: 'wgs84_g2139' (default; dynamic frame,
-        outputs stamped at epoch 2010.0) or 'nad83_2011' (static source
-        realization of 3DEP; ellipsoidal heights, no epoch, no ITRF Helmert).
-        For any other target, pass an explicit `dst_crs` WKT file.
+        `dst_crs` is not given. Dynamic frames (outputs stamped at epoch
+        2010.0, or at `coord_epoch` when given): 'wgs84_g2139' (default),
+        'wgs84_g1674', 'itrf2020', 'itrf2014', 'itrf2008'. Static:
+        'nad83_2011' (the source realization of 3DEP; ellipsoidal heights,
+        no epoch stamp, no ITRF Helmert). For any other target, pass an
+        explicit `dst_crs` WKT file.
     resolution
         Square output raster posting in units of `dst_crs`.
     dsm_gridding_choice
@@ -315,6 +318,15 @@ def rasterize(
 
     if overwrite and resume:
         raise ValueError("--overwrite and --resume are mutually exclusive")
+    if coord_epoch is not None and dst_crs is None and output_datum == "nad83_2011":
+        # fail here with the reason, not hours later deep in
+        # epoch_pinned_pipeline's +proj=helmert requirement
+        raise ValueError(
+            "--coord-epoch applies to dynamic-frame targets only: "
+            "NAD83(2011) is plate-fixed (epoch-invariant), so there is no "
+            "epoch-dependent transformation to pin. Drop --coord-epoch or "
+            "choose a dynamic --output-datum (e.g. itrf2020, wgs84_g2139)."
+        )
 
     outdir = Path(output)
     if outdir.exists():
