@@ -76,3 +76,26 @@ def test_coverage_gaps():
     empty = survey.summarize_surveys(_wesm(), _aoi()).iloc[0:0]
     gaps = survey.coverage_gaps(empty, _aoi())
     np.testing.assert_allclose(gaps["gap_frac"].sum(), 1.0)
+
+
+def test_area_fractions_equal_area_not_degrees():
+    """Coverage fractions must ratio true areas: the northern half of a
+    10-degree-tall Alaska AOI is ~45% of its area, not the 50% a raw
+    degree-squared ratio reports."""
+    aoi = gpd.GeoDataFrame(
+        geometry=[_square(-150, 60, -140, 70)], crs="EPSG:4326"
+    )
+    north = gpd.GeoDataFrame(
+        {"workunit": ["AK_North"]},
+        geometry=[_square(-150, 65, -140, 70)],
+        crs="EPSG:4326",
+    )
+    expected = (np.sin(np.radians(70)) - np.sin(np.radians(65))) / (
+        np.sin(np.radians(70)) - np.sin(np.radians(60))
+    )  # ~0.453; the degree-squared ratio would be exactly 0.5
+    out = survey.summarize_surveys(north, aoi)
+    np.testing.assert_allclose(
+        out["aoi_overlap_frac"].iloc[0], expected, atol=0.005
+    )
+    gaps = survey.coverage_gaps(out, aoi)
+    np.testing.assert_allclose(gaps["gap_frac"].sum(), 1 - expected, atol=0.005)
