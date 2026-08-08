@@ -221,7 +221,23 @@ _METRIC_PATTERNS: list[tuple[str, str]] = [
     ("horizontal_acc95_m",
      r"compiled to meet (?P<horizontal_acc95_m>[\d.]+)\s*m(?:eter)? "
      r"horizontal accuracy"),
+    # NV5 "FOCUS On Accuracy" contractor vertical assessment: sectioned
+    # "Nonvegetated Vertical Accuracy (Ground LAS)" / "(DEM)" pages with an
+    # "RMSE <observed> cm <required> cm" row inside each section (values in
+    # cm — normalized to meters in parse_report_text)
+    ("nva_rmsez_pointcloud_vendor_cm",
+     r"Nonvegetated Vertical Accuracy \(Ground LAS\)[\s\S]{0,2000}?"
+     r"RMSE\s+(?P<nva_rmsez_pointcloud_vendor_cm>[\d.]+)\s*cm\s+[\d.]+\s*cm"),
+    ("nva_rmsez_dem_vendor_cm",
+     r"Nonvegetated Vertical Accuracy \(DEM\)[\s\S]{0,2000}?"
+     r"RMSE\s+(?P<nva_rmsez_dem_vendor_cm>[\d.]+)\s*cm\s+[\d.]+\s*cm"),
 ]
+
+#: metric keys captured in centimeters -> their meter-normalized names
+_CM_KEYS = {
+    "nva_rmsez_pointcloud_vendor_cm": "nva_rmsez_pointcloud_vendor_m",
+    "nva_rmsez_dem_vendor_cm": "nva_rmsez_dem_vendor_m",
+}
 
 
 def parse_report_text(text: str, source: str) -> tuple[dict, list[dict]]:
@@ -246,6 +262,8 @@ def parse_report_text(text: str, source: str) -> tuple[dict, list[dict]]:
                 num = float(val)
                 # first match wins: reports repeat their summary tables
                 # (duplicated appendices), and the primary table comes first
+                if key in _CM_KEYS:
+                    key, num = _CM_KEYS[key], round(num / 100.0, 4)
                 if key not in metrics:
                     metrics[key] = num
                     evidence.append({"metric": key, "file": source, "line": line})
@@ -379,7 +397,10 @@ _TABLE_ROWS = [
      lambda r: (r.get("usgs_project_report") or {}).get("primary_contractor")),
     ("NVA RMSEz [m] USGS PC/DEM",
      lambda r: _usgs(r, "nva_rmsez_pointcloud_m", "nva_rmsez_dem_m")),
-    ("NVA RMSEz [m] vendor", lambda r: r["metrics"].get("nva_rmsez_m")),
+    ("NVA RMSEz [m] vendor PC/DEM",
+     lambda r: _fmt_pair(r["metrics"], "nva_rmsez_pointcloud_vendor_m",
+                         "nva_rmsez_dem_vendor_m")
+     or r["metrics"].get("nva_rmsez_m")),
     ("NVA 95% [m] USGS PC/DEM",
      lambda r: _usgs(r, "nva_95_pointcloud_m", "nva_95_dem_m")),
     ("NVA 95% [m] vendor", lambda r: r["metrics"].get("nva_95pct_m")),
