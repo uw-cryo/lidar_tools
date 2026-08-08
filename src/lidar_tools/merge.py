@@ -310,7 +310,11 @@ def merge_projects(
         # (aoi_1m_AZ_PimaCo_1_2021-DSM_mos.tif -> aoi_1m-DSM_mos.vrt);
         # sources without the token (older runs) pass through unchanged
         base = sources[0].name.rsplit(".", 1)[0]
-        out_fn = output_dir / f"{base.replace(f'_{source_wus[0]}-', '-')}.vrt"
+        # the project token sits immediately before the product suffix;
+        # drop that occurrence only (an AOI name could repeat the pattern)
+        token = f"_{source_wus[0]}-"
+        head, sep, tail = base.rpartition(token)
+        out_fn = output_dir / f"{(head + '-' + tail) if sep else base}.vrt"
         # VRT sources paint in list order (last on top) -> reverse so the
         # highest-priority project wins in overlaps.
         build_sources = [str(fn) for fn in reversed(sources)]

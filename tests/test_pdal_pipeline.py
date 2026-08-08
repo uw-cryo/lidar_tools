@@ -262,3 +262,23 @@ def test_metadata_path_rejects_mixed_run_prefixes(tmp_path):
     assert (
         pdal_pipeline._metadata_path(legacy).name == "processing_metadata.yaml"
     )
+
+
+def test_metadata_updates_target_the_running_prefix(tmp_path):
+    """A run passes its own prefix, so its updates land in its own record
+    even when the directory holds another run's metadata."""
+    import yaml
+
+    from lidar_tools import pdal_pipeline
+
+    stale = tmp_path / "aoi_0.5m-processing_metadata.yaml"
+    stale.write_text("run_status:\n  state: completed\n")
+    mine = tmp_path / "aoi_1m-processing_metadata.yaml"
+    mine.write_text("run_status:\n  state: started\n")
+
+    pdal_pipeline._update_processing_metadata(
+        tmp_path, "geodesy", {"x": 1}, filename_prefix="aoi_1m"
+    )
+    assert "geodesy" in yaml.safe_load(mine.read_text())
+    # the other run's record is untouched
+    assert yaml.safe_load(stale.read_text()) == {"run_status": {"state": "completed"}}

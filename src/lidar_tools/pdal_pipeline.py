@@ -115,11 +115,21 @@ def _write_processing_metadata(
     print(f"Processing metadata written to {metadata_file}")
 
 
-def _metadata_path(output_dir: Path) -> Path:
+def _metadata_path(output_dir: Path, filename_prefix: str | None = None) -> Path:
     """The directory's processing-metadata file: <prefix>-processing_metadata
     .yaml (prefix = AOI + posting + project), falling back to the legacy bare
-    processing_metadata.yaml of pre-2026-07-13 runs."""
-    hits = sorted(Path(output_dir).glob("*-processing_metadata.yaml"))
+    processing_metadata.yaml of pre-2026-07-13 runs.
+
+    A run passes its own `filename_prefix` so its updates always land in its
+    own record, even when the directory holds another run's metadata (e.g.
+    a resume at a different resolution). Without one, the file must be
+    unambiguous."""
+    output_dir = Path(output_dir)
+    if filename_prefix is not None:
+        own = output_dir / f"{filename_prefix}-processing_metadata.yaml"
+        if own.exists():
+            return own
+    hits = sorted(output_dir.glob("*-processing_metadata.yaml"))
     if len(hits) > 1:
         # e.g. a --resume into the same directory at a different resolution:
         # updates would silently land in the alphabetically-first (stale)
@@ -133,7 +143,9 @@ def _metadata_path(output_dir: Path) -> Path:
     return hits[0] if hits else Path(output_dir) / "processing_metadata.yaml"
 
 
-def _update_processing_metadata(output_dir: Path, section: str, data) -> None:
+def _update_processing_metadata(
+    output_dir: Path, section: str, data, filename_prefix: str | None = None
+) -> None:
     """
     Merge a top-level section into an existing processing-metadata file.
 
@@ -145,12 +157,15 @@ def _update_processing_metadata(output_dir: Path, section: str, data) -> None:
         Top-level key to set or replace.
     data
         YAML-serializable content for the section.
+    filename_prefix
+        The calling run's filename prefix; targets that run's own record
+        when the directory holds more than one.
 
     Returns
     -------
     None
     """
-    metadata_file = _metadata_path(output_dir)
+    metadata_file = _metadata_path(output_dir, filename_prefix)
     metadata: dict = {}
     if metadata_file.exists():
         with open(metadata_file) as f:
@@ -386,6 +401,7 @@ def rasterize(
         outdir,
         "run_status",
         {"state": "started", "timestamp": datetime.now().astimezone().isoformat()},
+        filename_prefix=filename_prefix,
     )
 
     # Create custom 3D CRS UTM WKT2 for the AOI's local zone on the selected
@@ -498,7 +514,7 @@ def rasterize(
                     file=sys.stderr,
                 )
         if survey_record is not None:
-            _update_processing_metadata(outdir, "survey_records", [survey_record])
+            _update_processing_metadata(outdir, "survey_records", [survey_record], filename_prefix=filename_prefix)
         if survey_record is not None and input == "EPT_AWS":
             # datum-handling side effects apply to the EPT path only; local
             # inputs keep their file-declared CRS handling unchanged
@@ -516,7 +532,8 @@ def rasterize(
             geoid_hint = declared_geoid["grids"] if declared_geoid else None
             if declared_geoid is not None:
                 _update_processing_metadata(
-                    outdir, "declared_geoid", declared_geoid
+                    outdir, "declared_geoid", declared_geoid,
+                    filename_prefix=filename_prefix,
                 )
                 sub = (
                     f" (using {declared_geoid['model']} grids: NGS-identical "
@@ -569,7 +586,7 @@ def rasterize(
                 file=sys.stderr,
             )
         ept_resolution["boundary_intersects_aoi"] = intersects_aoi
-        _update_processing_metadata(outdir, "ept_resolution", ept_resolution)
+        _update_processing_metadata(outdir, "ept_resolution", ept_resolution, filename_prefix=filename_prefix)
         process_specific_3dep_survey = resolved_ept_name
 
     # TODO: create EPT for local laz for common workflow? https://github.com/uw-cryo/lidar_tools/issues/14#issuecomment-3076045321
@@ -670,7 +687,7 @@ def rasterize(
         "vertical_transform_preflight": transform_checks,
         "coordinate_epoch": None,
     }
-    _update_processing_metadata(outdir, "geodesy", geodesy_record)
+    _update_processing_metadata(outdir, "geodesy", geodesy_record, filename_prefix=filename_prefix)
 
     # BuildVRT opens every tile at once during mosaicking; the default soft
     # open-file limit fails for large AOIs (issue #43)
@@ -789,6 +806,7 @@ def rasterize(
                 "note": "no data (survey does not cover AOI)",
                 "timestamp": datetime.now().astimezone().isoformat(),
             },
+            filename_prefix=filename_prefix,
         )
         if cleanup:
             _cleanup_intermediates(outdir)
@@ -1071,7 +1089,7 @@ def rasterize(
     ]
     geodesy_record["coordinate_epoch"] = epoch_to_stamp if stamped else None
     geodesy_record["epoch_stamped_products"] = [Path(fn).name for fn in stamped]
-    _update_processing_metadata(outdir, "geodesy", geodesy_record)
+    _update_processing_metadata(outdir, "geodesy", geodesy_record, filename_prefix=filename_prefix)
 
     print("****Building Gaussian overviews for all rasters****")
     print("Running overview creation sequentially")
@@ -1095,6 +1113,7 @@ def rasterize(
                 "file": Path(footprint_fn).name,
                 "source": Path(footprint_source).name,
             },
+            filename_prefix=filename_prefix,
         )
         print(f"Valid-data footprint: {footprint_fn}")
     except Exception as e:
@@ -1110,6 +1129,7 @@ def rasterize(
             "tiles_empty": n_empty,
             "tiles_data": data_total,
         },
+        filename_prefix=filename_prefix,
     )
 
     if cleanup:
