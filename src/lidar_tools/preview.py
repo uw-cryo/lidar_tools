@@ -12,6 +12,7 @@ The hillshade/scalebar helpers mirror groundcontrol.plot — candidates for
 the planned shared plotting library; keep the implementations in sync.
 """
 
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -172,7 +173,18 @@ def _project_metadata_files(project_dir: Path) -> list[Path]:
         seen = set()
         for prod in meta.get("products", {}).values():
             for src in prod.get("sources_priority_order", []):
-                fn = _metadata_file(Path(src).parent, "processing_metadata")
+                srcdir = Path(src).parent
+                fn = _metadata_file(srcdir, "processing_metadata")
+                if fn is None:
+                    # resampled staging copies (<workunit>_<posting>, e.g.
+                    # NV_ClarkCo_2_B22_1m) carry no processing metadata —
+                    # fall back to the original project dir so combined-merge
+                    # footers report every true source project, not just the
+                    # ones staged in place
+                    stem = re.sub(r"_[\d.]+m$", "", srcdir.name)
+                    if stem != srcdir.name:
+                        fn = _metadata_file(srcdir.parent / stem,
+                                            "processing_metadata")
                 if fn is not None and fn not in seen:
                     seen.add(fn)
                     found.append(fn)
@@ -269,11 +281,18 @@ def product_preview(
     project_dir = Path(project_dir)
     panels = []
     prefix = None
-    for suffix, label, kind in _PRODUCT_PANELS:
+    available = {
         # .tif = per-project mosaics, .vrt = merge-stage composites
-        hits = sorted(project_dir.glob(f"*-{suffix}.tif")) or sorted(
-            project_dir.glob(f"*-{suffix}.vrt")
-        )
+        suffix: sorted(project_dir.glob(f"*-{suffix}.tif"))
+        or sorted(project_dir.glob(f"*-{suffix}.vrt"))
+        for suffix, _, _ in _PRODUCT_PANELS
+    }
+    for suffix, label, kind in _PRODUCT_PANELS:
+        # the no-fill DTM is visually indistinguishable from the filled DTM at
+        # page scale — show it only when no filled DTM exists in the directory
+        if suffix == "DTM_no_fill_mos" and available["DTM_fill_window_size_4_mos"]:
+            continue
+        hits = available[suffix]
         if hits:
             if prefix is None:
                 prefix = hits[0].name.rsplit(f"-{suffix}", 1)[0]

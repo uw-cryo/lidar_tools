@@ -417,39 +417,69 @@ def rasterize(
         filter_high_noise = False
         filter_low_noise = False
 
-    # Per-survey record (WESM): pinned into processing metadata and used to
-    # drive datum handling — declared horizontal realization (base datum for
-    # the EPT null-tie interpretation) and production geoid model. Only
-    # available when a specific workunit was requested; 'latest'/'all' runs
-    # fall back to the NAD83(2011)+best-geoid defaults.
+    # Per-survey record (WESM): pinned into processing metadata and — on the
+    # EPT path — used to drive datum handling (declared horizontal realization
+    # as the base datum for the EPT null-tie interpretation, and production
+    # geoid model). The workunit is the one explicitly requested, or, for
+    # local (staged-LAZ) inputs, the input directory's name when it matches a
+    # WESM workunit — staged 3DEP downloads are conventionally named by
+    # workunit, and without this fallback local-path runs carried NO survey
+    # record, so downstream consumers (preview footers, report-metrics,
+    # fetch-reports) under-reported the batch's projects.
     survey_record = None
     ept_base_epsg = geodesy.NAD83_2011_EPSG
     geoid_hint = None
-    if input == "EPT_AWS" and process_specific_3dep_survey is not None:
+    pin_workunit = process_specific_3dep_survey
+    workunit_derived = False
+    if pin_workunit is None and input != "EPT_AWS":
+        pin_workunit = Path(input).name
+        workunit_derived = True
+    if pin_workunit is not None:
         try:
-            survey_record = survey.workunit_record(gdf, process_specific_3dep_survey)
+            survey_record = survey.workunit_record(gdf, pin_workunit)
         except Exception as e:
-            # Without the WESM record there is no declared geoid to require,
-            # so proceeding would silently reintroduce best-available
-            # substitution — a network blip must not decide the geoid.
-            if geoid_override == "declared":
+            if workunit_derived:
+                # a local dir not named after a WESM workunit is normal —
+                # note it and move on
+                print(
+                    f"No WESM record pinned for local input "
+                    f"'{pin_workunit}' ({e})"
+                )
+            elif input != "EPT_AWS":
+                # explicit workunit on the local path: the record is
+                # metadata-only, so a fetch failure only loses provenance
+                print(
+                    f"WARNING: could not fetch the WESM record for "
+                    f"'{pin_workunit}' ({e}); no survey record will be "
+                    "pinned for this local-input run",
+                    file=sys.stderr,
+                )
+            elif geoid_override == "declared":
+                # Without the WESM record there is no declared geoid to
+                # require, so proceeding would silently reintroduce
+                # best-available substitution — a network blip must not
+                # decide the geoid.
                 raise RuntimeError(
                     f"Could not fetch the WESM record for "
-                    f"'{process_specific_3dep_survey}' ({e}), so the survey's "
+                    f"'{pin_workunit}' ({e}), so the survey's "
                     "declared production geoid cannot be required. Retry (WESM "
                     "reads are transient-failure-prone), or consciously accept "
                     "best-available datum handling with "
                     "--geoid-override best-available."
                 ) from e
-            print(
-                f"WARNING: could not fetch the WESM record for "
-                f"'{process_specific_3dep_survey}' ({e}); geoid-override "
-                "accepted — using default datum handling (NAD83(2011), best "
-                "available geoid)",
-                file=sys.stderr,
-            )
+            else:
+                print(
+                    f"WARNING: could not fetch the WESM record for "
+                    f"'{pin_workunit}' ({e}); geoid-override "
+                    "accepted — using default datum handling (NAD83(2011), best "
+                    "available geoid)",
+                    file=sys.stderr,
+                )
         if survey_record is not None:
             _update_processing_metadata(outdir, "survey_records", [survey_record])
+        if survey_record is not None and input == "EPT_AWS":
+            # datum-handling side effects apply to the EPT path only; local
+            # inputs keep their file-declared CRS handling unchanged
             if survey_record.get("horiz_crs"):
                 # hard-errors on non-NAD83-family (e.g. Pacific-plate PA11)
                 ept_base_epsg = geodesy.geographic_base_epsg(
@@ -477,9 +507,16 @@ def rasterize(
                     f"required grids {declared_geoid['grids']}{sub}"
                 )
             print(
-                f"Survey record pinned: {process_specific_3dep_survey} "
+                f"Survey record pinned: {pin_workunit} "
                 f"(base datum EPSG:{ept_base_epsg}, geoid "
                 f"{survey_record.get('geoid')}, ql {survey_record.get('ql')})"
+            )
+        elif survey_record is not None:
+            print(
+                f"Survey record pinned (metadata only, local input): "
+                f"{pin_workunit} (ql {survey_record.get('ql')}, "
+                f"{survey_record.get('collect_start')} - "
+                f"{survey_record.get('collect_end')})"
             )
 
     # EPT resource names are frozen at entwine-build time and drift from
