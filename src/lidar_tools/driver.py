@@ -57,7 +57,7 @@ def rasterize_projects(
     resume: bool = True,
     cleanup: bool = True,
     quiet: bool = False,
-    dst_crs: str = None,
+    dst_crs: str | None = None,
     output_datum: Literal["wgs84_g2139", "nad83_2011"] = "wgs84_g2139",
     ept_vertical: Literal["auto", "geoid", "ellipsoid"] = "auto",
     geoid_override: Literal["declared", "best-available"] = "declared",
@@ -122,7 +122,14 @@ def rasterize_projects(
 
     if dst_crs is None:
         gdf = gpd.read_file(geometry)
-        epsg_code = gdf.estimate_utm_crs().to_epsg()
+        utm_crs = gdf.estimate_utm_crs()
+        epsg_code = utm_crs.to_epsg() if utm_crs is not None else None
+        if epsg_code is None:
+            raise ValueError(
+                "Could not derive a UTM EPSG code for the AOI "
+                "(estimate_utm_crs found no exact EPSG match — polar or "
+                "zone-spanning AOI?). Pass --dst-crs explicitly."
+            )
         out_crs_obj, wkt_name = geodesy.build_utm_target(epsg_code, output_datum)
         target = outbase / wkt_name
         if not target.exists():

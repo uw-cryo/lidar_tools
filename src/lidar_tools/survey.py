@@ -97,10 +97,18 @@ def record_from_wesm(wesm_gdf: gpd.GeoDataFrame, workunit: str) -> dict:
     """
     rows = wesm_gdf[wesm_gdf["workunit"] == workunit]
     if rows.empty:
-        available = sorted(wesm_gdf.get("workunit", pd.Series(dtype=str)).astype(str))
+        available = sorted(
+            set(wesm_gdf.get("workunit", pd.Series(dtype=str)).dropna().astype(str))
+        )
+        shown = available[:15]
+        more = (
+            f", ... +{len(available) - len(shown)} more"
+            if len(available) > len(shown)
+            else ""
+        )
         raise ValueError(
             f"Workunit '{workunit}' not found in the WESM query result "
-            f"(available here: {available})"
+            f"(available here: {', '.join(shown)}{more})"
         )
     row = rows.iloc[0]
     return {k: _yaml_safe(row[k]) for k in WESM_FIELDS if k in rows.columns}
