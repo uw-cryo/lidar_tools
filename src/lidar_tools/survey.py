@@ -225,7 +225,9 @@ def _equal_area_m2(geom) -> float:
     degree2 areas: cos(latitude) weighting skews them for large or
     high-latitude AOIs (an Alaska AOI's northern half is materially
     smaller than its southern half in true area)."""
-    if geom.is_empty:
+    # zero degree2 area (empty, point, line) is zero true area: skip the
+    # projection rather than round-trip a degenerate geometry
+    if geom.is_empty or geom.area == 0.0:
         return 0.0
     return float(
         gpd.GeoSeries([geom], crs="EPSG:4326").to_crs("EPSG:6933").area.iloc[0]
@@ -269,6 +271,11 @@ def summarize_surveys(
         return w
 
     aoi_area = _equal_area_m2(aoi)
+    if aoi_area == 0:
+        raise ValueError(
+            "AOI has zero area (point/line geometry?) — coverage fractions "
+            "are undefined"
+        )
     w["aoi_overlap_frac"] = w.geometry.apply(
         lambda g: _equal_area_m2(g.intersection(aoi)) / aoi_area
     )
@@ -689,8 +696,14 @@ def coverage_gaps(
             {"gap_frac": []}, geometry=[], crs="EPSG:4326"
         )
     parts = list(gap.geoms) if hasattr(gap, "geoms") else [gap]
+    aoi_area = _equal_area_m2(aoi)
+    if aoi_area == 0:
+        raise ValueError(
+            "AOI has zero area (point/line geometry?) — gap fractions are "
+            "undefined"
+        )
     return gpd.GeoDataFrame(
-        {"gap_frac": [_equal_area_m2(p) / _equal_area_m2(aoi) for p in parts]},
+        {"gap_frac": [_equal_area_m2(p) / aoi_area for p in parts]},
         geometry=parts,
         crs="EPSG:4326",
     )

@@ -73,7 +73,7 @@ def _write_processing_metadata(
     """
     metadata: dict = {
         "lidar_tools_version": version("lidar_tools"),
-        "processing_timestamp": datetime.now().isoformat(),
+        "processing_timestamp": datetime.now().astimezone().isoformat(),
         "input_parameters": {
             "geometry": str(geometry),
             "input": str(input),
@@ -373,7 +373,7 @@ def rasterize(
     _update_processing_metadata(
         outdir,
         "run_status",
-        {"state": "started", "timestamp": datetime.now().isoformat()},
+        {"state": "started", "timestamp": datetime.now().astimezone().isoformat()},
     )
 
     # Create custom 3D CRS UTM WKT2 for the AOI's local zone on the selected
@@ -775,7 +775,7 @@ def rasterize(
             {
                 "state": "completed",
                 "note": "no data (survey does not cover AOI)",
-                "timestamp": datetime.now().isoformat(),
+                "timestamp": datetime.now().astimezone().isoformat(),
             },
         )
         if cleanup:
@@ -1093,7 +1093,7 @@ def rasterize(
         "run_status",
         {
             "state": "completed",
-            "timestamp": datetime.now().isoformat(),
+            "timestamp": datetime.now().astimezone().isoformat(),
             "tiles_total": num_pipelines,
             "tiles_empty": n_empty,
             "tiles_data": data_total,

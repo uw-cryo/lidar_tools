@@ -334,3 +334,20 @@ def test_area_fractions_equal_area_not_degrees():
     )
     gaps = survey.coverage_gaps(out, aoi)
     np.testing.assert_allclose(gaps["gap_frac"].sum(), 1 - expected, atol=0.005)
+
+
+def test_zero_area_aoi_rejected():
+    """A degenerate (point/line) AOI must raise a clear error, not
+    ZeroDivisionError, from the coverage-fraction math."""
+    import pytest
+
+    point_aoi = gpd.GeoDataFrame(
+        geometry=[shapely.Point(-115.0, 36.0)], crs="EPSG:4326"
+    )
+    wesm = gpd.GeoDataFrame(
+        {"workunit": ["WU"]},
+        geometry=[_square(-116, 35, -114, 37)],
+        crs="EPSG:4326",
+    )
+    with pytest.raises(ValueError, match="zero area"):
+        survey.summarize_surveys(wesm, point_aoi)
