@@ -23,7 +23,7 @@ def rasterize_projects(
     workunits: str,
     output: str,
     resolution: float = 1.0,
-    products: Literal["all", "dsm", "dtm", "intensity"] = "all",
+    products: str = "all",
     num_process: int = 1,
     resume: bool = True,
     cleanup: bool = True,
@@ -49,7 +49,8 @@ def rasterize_projects(
     resolution
         Shared output posting in target CRS units.
     products
-        Product selection passed through to rasterize.
+        Comma-separated product selection passed through to rasterize
+        (e.g. "all", "dsm,intensity"; see rasterize for names/aliases).
     num_process
         Worker count passed through to rasterize.
     resume
