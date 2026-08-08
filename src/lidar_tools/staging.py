@@ -393,7 +393,7 @@ def prepare(
     geometry: str,
     output: str,
     workunits: str = None,
-) -> dict:
+) -> None:
     """
     Stage discovery metadata for an AOI and write
     ``<output>/site_manifest.yaml``: pinned WESM records, EPT name
@@ -468,4 +468,3 @@ def prepare(
         )
         warn = (rec.get("tiles") or {}).get("warning")
         print(f"  {wu}: {tag}" + (f" | {warn}" if warn else ""))
-    return manifest

@@ -180,9 +180,17 @@ def _apply_vrt_normalization(vrt_fn: Path, params: list[dict]) -> None:
     if nd is None:
         nd = ET.SubElement(band, "NoDataValue")
     nd.text = f"{NORM_NODATA:g}"
-    for source in band.findall("ComplexSource"):
+    # BuildVRT emits ComplexSource when a source declares nodata (always
+    # true for our per-project mosaics) and SimpleSource otherwise, e.g. an
+    # externally ingested raster. Both must get a LUT: skipping one would
+    # leave it un-normalized while the metadata claims the whole composite
+    # was normalized.
+    sources = band.findall("ComplexSource") + band.findall("SimpleSource")
+    if not sources:
+        raise ValueError(f"{vrt_fn.name}: no VRT sources to normalize")
+    for source in sources:
         el = source.find("SourceFilename")
-        assert el is not None and el.text, f"sourceless ComplexSource in {vrt_fn}"
+        assert el is not None and el.text, f"sourceless VRT source in {vrt_fn}"
         key = (
             (vrt_fn.parent / el.text) if el.get("relativeToVRT") == "1"
             else Path(el.text)
@@ -393,8 +401,9 @@ def merge(
 ) -> None:
     """
     Merge the per-project products of a rasterize-projects batch into
-    per-product VRTs (highest-priority project on top, no resampling; see
-    merge_projects).
+    per-product VRTs: one composite per product, with the highest-priority
+    project painted on top and no resampling (all projects must already
+    share a grid). Intensity is normalized to a common range by default.
 
     Parameters
     ----------

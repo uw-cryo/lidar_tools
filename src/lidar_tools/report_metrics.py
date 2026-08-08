@@ -31,14 +31,17 @@ occupancy.
 
 import re
 import shutil
+import sys
 import subprocess
 from pathlib import Path
 
 import yaml
 
-#: PDFs larger than this are still parsed (they are usually THE vendor
-#: report); the limit only guards against pathological inputs.
-MAX_PDF_BYTES = 500 * 1024 * 1024
+#: PDFs larger than this are skipped. Vendor accuracy reports are routinely
+#: hundreds of MB (the NV5 "FOCUS on Accuracy" report for AZ_PimaCo_2 is
+#: 587 MB and carries the NVA tables), so the cap only guards against
+#: pathological inputs — it must stay well above real report sizes.
+MAX_PDF_BYTES = 4 * 1024 * 1024 * 1024
 
 
 def _pdf_text(fn: Path) -> str:
@@ -48,7 +51,16 @@ def _pdf_text(fn: Path) -> str:
             "pdftotext not found: report-metrics needs poppler "
             "(shipped in the pixi environment)."
         )
-    if fn.stat().st_size > MAX_PDF_BYTES:
+    size = fn.stat().st_size
+    if size > MAX_PDF_BYTES:
+        # loudly: a silently skipped report reads as "vendor published no
+        # numbers", which is a different claim entirely
+        print(
+            f"WARNING: skipping {fn.name} ({size / 1024**3:.1f} GiB > "
+            f"{MAX_PDF_BYTES / 1024**3:.1f} GiB cap); its metrics will be "
+            "absent from the record",
+            file=sys.stderr,
+        )
         return ""
     proc = subprocess.run(
         ["pdftotext", "-layout", str(fn), "-"],

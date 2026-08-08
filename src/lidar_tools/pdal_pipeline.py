@@ -259,6 +259,12 @@ def rasterize(
         'nad83_2011' (the source realization of 3DEP; ellipsoidal heights,
         no epoch stamp, no ITRF Helmert). For any other target, pass an
         explicit `dst_crs` WKT file.
+    coord_epoch
+        Target coordinate epoch (decimal year) for a DYNAMIC output frame:
+        the transformation is pinned to this epoch and the epoch is stamped
+        on the outputs. Only meaningful with a dynamic `output_datum`
+        (ITRF/WGS84 realizations); rejected for the plate-fixed
+        'nad83_2011'. Default None stamps the frame's own reference epoch.
     resolution
         Square output raster posting in units of `dst_crs`.
     dsm_gridding_choice
@@ -270,21 +276,25 @@ def rasterize(
         requested products for a tile are generated from a single point
         read.
     threedep_project
-        "all" processes all available 3DEP EPT point clouds which intersect with the input polygon.
-        "first" 3DEP project encountered will be processed.
-        "specific" should be a string that matches the "project" name in the 3DEP metadata.
+        Which 3DEP survey(s) to read. A WESM workunit name (e.g.
+        "AZ_PimaCo_1_2021") processes that survey; its EPT resource name is
+        resolved automatically. "all" processes every EPT collection
+        intersecting the AOI. "latest" (default) processes the FIRST
+        intersecting collection in the EPT index — the index carries no
+        acquisition dates, so this is NOT date-ordered despite the name
+        (gh #68); name the workunit explicitly when the survey matters.
     tile_size
         The size of rasterized tiles processed from input EPT point clouds in units of `dst_crs`.
-    num_processes
+    num_process
         Number of processes to run PDAL pipelines in parallel.
     overwrite
         Overwrite output files if they already exist.
     cleanup
         Remove the intermediate tif files, keep only final mosaiced rasters.
     proj_pipeline
-        A PROJ pipeline string to be used for reprojection of the point cloud. If specified, this will be used in combination with the target_wkt option.
-    local_utm
-        If true, automatically compute the local UTM zone from the extent polygon for final output products. If false, use the CRS defined in the target_wkt file.
+        An explicit PROJ pipeline string for the point-cloud reprojection,
+        used together with `dst_crs`. Leave unset to let PROJ select the
+        operation (the pre-run gate verifies it is rigorous).
     filter_noise
         Remove noise points (classification==18 and classification==7) from the point cloud before DSM, DTM and surface intensity processing. Default is True.
     height_above_ground_threshold

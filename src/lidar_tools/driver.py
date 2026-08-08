@@ -100,9 +100,11 @@ def rasterize_projects(
         and written to the base directory once.
     output_datum
         Datum realization of the auto-built shared UTM target, used only
-        when `dst_crs` is not given: 'wgs84_g2139' (default) or 'nad83_2011'
-        (static source realization; ellipsoidal heights, no epoch). Passed
-        through to every project; ignored when an explicit `dst_crs` is set.
+        when `dst_crs` is not given. Dynamic frames: 'wgs84_g2139'
+        (default), 'wgs84_g1674', 'itrf2020', 'itrf2014', 'itrf2008'.
+        Static: 'nad83_2011' (the source realization of 3DEP; ellipsoidal
+        heights, no epoch stamp). Passed through to every project; ignored
+        when an explicit `dst_crs` is set.
     ept_vertical
         Vertical interpretation override passed through to rasterize
         (applies to every project in the batch; use per-project runs when

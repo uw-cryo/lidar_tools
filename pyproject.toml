@@ -1,6 +1,6 @@
 [project]
 name = "lidar_tools"
-version="0.2.0"
+version="0.3.0"
 authors = [
   { name = "Scott Henderson", email = "scottyh@uw.edu" },
   { name = "David Shean", email = "dshean@uw.edu" },
@@ -26,6 +26,7 @@ dependencies = [
   "distributed",
   "gdal",
   "geopandas",
+  "matplotlib",
   "ipykernel",
   "planetary-computer",
   # NOTE: from pip this installs *python-pdal*, just get from conda
@@ -120,7 +121,7 @@ ruff = ">=0.14.8,<0.15"
 # https://github.com/prefix-dev/pixi/issues/3166
 [tool.pixi.package]
 name = "lidar_tools"
-version = "0.2.0"
+version = "0.3.0"
 
 [tool.pixi.package.build.backend]
 name = "pixi-build-python"
@@ -145,3 +146,10 @@ rioxarray = ">=0.20.0"
 requests = ">=2.32.5"
 scipy = ">=1.16.3"
 odc-stac = ">=0.5.0"
+# imported by preview.py — missing here meant `lidar-tools preview`
+# raised ImportError in the built conda package
+matplotlib = ">=3.9"
+# imported by nearly every module for metadata I/O
+pyyaml = ">=6"
+# report-metrics shells out to pdftotext
+poppler = ">=24"
