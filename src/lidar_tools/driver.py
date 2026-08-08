@@ -100,9 +100,11 @@ def rasterize_projects(
         and written to the base directory once.
     output_datum
         Datum realization of the auto-built shared UTM target, used only
-        when `dst_crs` is not given: 'wgs84_g2139' (default) or 'nad83_2011'
-        (static source realization; ellipsoidal heights, no epoch). Passed
-        through to every project; ignored when an explicit `dst_crs` is set.
+        when `dst_crs` is not given. Dynamic frames: 'wgs84_g2139'
+        (default), 'wgs84_g1674', 'itrf2020', 'itrf2014', 'itrf2008'.
+        Static: 'nad83_2011' (the source realization of 3DEP; ellipsoidal
+        heights, no epoch stamp). Passed through to every project; ignored
+        when an explicit `dst_crs` is set.
     ept_vertical
         Vertical interpretation override passed through to rasterize
         (applies to every project in the batch; use per-project runs when
@@ -181,9 +183,60 @@ def rasterize_projects(
             print(f"ERROR: {workunit} failed: {e}")
             status[workunit] = f"failed: {e}"
 
-    with open(outbase / "batch_status.yaml", "w") as f:
+    # Carry forward projects from earlier invocations into the same batch
+    # directory: merge / preview / fetch-reports / report-metrics all default
+    # to the workunits recorded here, so overwriting with just this run's
+    # list silently shrinks their input (Casa Grande: a later single-project
+    # run left the 5-project batch listing one, and the re-merge had to name
+    # all five by hand).
+    status_fn = outbase / "batch_status.yaml"
+    projects: dict = {}
+    if status_fn.exists():
+        prior: object = {}
+        try:
+            with open(status_fn) as f:
+                prior = yaml.safe_load(f) or {}
+        except yaml.YAMLError as e:
+            print(
+                f"WARNING: {status_fn} is not readable YAML ({e}); starting a "
+                "fresh batch status",
+                file=sys.stderr,
+            )
+        if not isinstance(prior, dict):
+            print(
+                f"WARNING: {status_fn} is not a mapping; starting a fresh "
+                "batch status",
+                file=sys.stderr,
+            )
+            prior = {}
+        # Only carry projects forward within the SAME batch: the downstream
+        # defaults (merge/preview/fetch-reports/report-metrics) act on this
+        # list, so inheriting another AOI's or grid's projects would point
+        # them at products that do not belong together.
+        same_batch = str(prior.get("geometry")) == str(geometry) and str(
+            prior.get("dst_crs")
+        ) == str(dst_crs)
+        if prior and not same_batch:
+            print(
+                f"WARNING: {status_fn} records a different AOI/target grid "
+                f"({prior.get('geometry')}, {prior.get('dst_crs')}); its "
+                "projects are NOT carried forward",
+                file=sys.stderr,
+            )
+        elif same_batch:
+            carried = prior.get("projects")
+            if isinstance(carried, dict):
+                projects = dict(carried)
+            elif carried is not None:
+                print(
+                    f"WARNING: 'projects' in {status_fn} is not a mapping; "
+                    "ignoring it",
+                    file=sys.stderr,
+                )
+    projects.update(status)
+    with open(status_fn, "w") as f:
         yaml.dump(
-            {"geometry": str(geometry), "dst_crs": str(dst_crs), "projects": status},
+            {"geometry": str(geometry), "dst_crs": str(dst_crs), "projects": projects},
             f,
             default_flow_style=False,
             sort_keys=False,

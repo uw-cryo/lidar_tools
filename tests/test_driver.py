@@ -139,3 +139,60 @@ def test_rasterize_projects_passes_geoid_override(tmp_path, aoi_file, monkeypatc
         aoi_file, "WU_A", str(tmp_path / "b2"), geoid_override="best-available"
     )
     assert seen[1]["geoid_override"] == "best-available"
+
+
+def test_batch_status_accumulates_across_invocations(tmp_path, aoi_file, monkeypatch):
+    """merge/preview/fetch-reports/report-metrics default to the workunits in
+    batch_status.yaml, so a later run over one project must not drop the
+    others from the batch."""
+    out = tmp_path / "batch"
+    out.mkdir()
+    (out / "batch_status.yaml").write_text(
+        yaml.dump(
+            {
+                "geometry": aoi_file,
+                "dst_crs": "utm.wkt",
+                "projects": {"WU_A": "completed", "WU_B": "completed"},
+            }
+        )
+    )
+    monkeypatch.setattr(driver, "rasterize", lambda **kw: None)
+
+    driver.rasterize_projects(
+        geometry=aoi_file, workunits="WU_C", output=str(out), dst_crs="utm.wkt"
+    )
+    projects = yaml.safe_load((out / "batch_status.yaml").read_text())["projects"]
+    assert set(projects) == {"WU_A", "WU_B", "WU_C"}
+
+
+def test_batch_status_does_not_inherit_a_different_batch(
+    tmp_path, aoi_file, monkeypatch
+):
+    """Downstream commands default to the workunits in batch_status.yaml, so a
+    directory reused for a different AOI/grid must not carry the old projects
+    forward — nor crash on a malformed file."""
+    out = tmp_path / "batch"
+    out.mkdir()
+    (out / "batch_status.yaml").write_text(
+        yaml.dump(
+            {
+                "geometry": "some_other_aoi.geojson",
+                "dst_crs": "other.wkt",
+                "projects": {"WU_ELSEWHERE": "completed"},
+            }
+        )
+    )
+    monkeypatch.setattr(driver, "rasterize", lambda **kw: None)
+    driver.rasterize_projects(
+        geometry=aoi_file, workunits="WU_C", output=str(out), dst_crs="utm.wkt"
+    )
+    projects = yaml.safe_load((out / "batch_status.yaml").read_text())["projects"]
+    assert set(projects) == {"WU_C"}  # the foreign batch is not inherited
+
+    # a malformed status file degrades to a fresh batch instead of raising
+    (out / "batch_status.yaml").write_text("- not\n- a mapping\n")
+    driver.rasterize_projects(
+        geometry=aoi_file, workunits="WU_D", output=str(out), dst_crs="utm.wkt"
+    )
+    projects = yaml.safe_load((out / "batch_status.yaml").read_text())["projects"]
+    assert set(projects) == {"WU_D"}

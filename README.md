@@ -50,15 +50,48 @@ Run our example workflow to create DSM, DTM without interpolation, DTM with inte
 pixi run example
 ```
 
-## CLI Commands:
+## CLI Commands
 
 Once installed, you can run processing scripts from a terminal:
 
 ```bash
 export PIXI_FROZEN=true # NOTE: set this to always use locked environment
 pixi shell # NOTE: 'exit' deactivates the environment
-lidar-tools rasterize --help
+lidar-tools --help            # all commands
+lidar-tools rasterize --help  # options for one command
 ```
+
+| Command | What it does |
+| --- | --- |
+| `survey` | Report the lidar collections covering an AOI: quality level, acquisition dates, declared CRS/datum/geoid, EPT availability, AOI overlap, and the uncovered fraction. |
+| `prepare` | Stage discovery metadata for an AOI into `site_manifest.yaml`: pinned WESM records, EPT name resolution, TESM-vs-links tile reconciliation, staged-LAZ cache layout. |
+| `rasterize` | Create DSM, DTM (with and without gap filling) and/or intensity rasters from 3DEP EPT or local LAS/LAZ. |
+| `rasterize-projects` | Run `rasterize` once per survey into per-project subdirectories sharing one target grid, so the outputs are co-registered. |
+| `merge` | Merge a batch's per-project products into per-product VRT composites (priority order, no resampling), normalizing intensity to a common range. |
+| `preview` | Write a one-page preview figure (shaded relief, scale bar, processing footer) for a run or for every project in a batch. |
+| `fetch-reports` | Stage each project's vendor QA/QC, survey and mapping reports plus the USGS vertical-accuracy checkpoints next to its products. |
+| `report-metrics` | Extract standardized metrics (acquisition period, tested vertical/horizontal accuracy, point density) from those reports into one record per project, with per-number source evidence. |
+
+### Multi-project workflow
+
+For an AOI covered by more than one 3DEP survey, the commands chain:
+
+```bash
+lidar-tools survey aoi.geojson                       # what covers this AOI?
+lidar-tools prepare aoi.geojson batch/               # pin the metadata once
+lidar-tools rasterize-projects aoi.geojson \
+    AZ_PimaCo_1_2021,AZ_PimaCo_2_2021 \
+    batch/ --resolution 1                            # co-registered per-project products
+lidar-tools merge batch/                             # per-product composites
+lidar-tools preview batch/                           # QA figures
+lidar-tools fetch-reports batch/                     # vendor reports
+lidar-tools report-metrics batch/                    # standardized accuracy table
+```
+
+Projects are listed in priority order: the first one wins where they overlap.
+See [docs/vendor_reports.md](https://github.com/uw-cryo/lidar_tools/blob/main/docs/vendor_reports.md)
+for the report staging and metric extraction details (repo-only: `docs/` is not
+shipped in the built package).
 
 ## Development
 
