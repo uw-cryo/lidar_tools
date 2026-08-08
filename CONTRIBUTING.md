@@ -11,3 +11,11 @@ git checkout -b newfeature
 pixi shell -e dev # type `exit` to deactivate
 pixi run test
 ```
+
+Before opening a pull request, run the regression gate and read the review
+process in [docs/pr_review.md](docs/pr_review.md):
+
+```bash
+pixi run -e dev test
+pixi run -e dev check-regressions
+```

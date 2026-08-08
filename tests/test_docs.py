@@ -10,7 +10,11 @@ README = Path(__file__).resolve().parents[1] / "README.md"
 
 
 def _registered_command_names() -> set[str]:
-    return {name for name in cli.app if isinstance(name, str)} - {"--help", "-h", "--version"}
+    return {name for name in cli.app if isinstance(name, str)} - {
+        "--help",
+        "-h",
+        "--version",
+    }
 
 
 def test_readme_documents_every_registered_command():
