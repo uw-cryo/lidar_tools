@@ -257,10 +257,12 @@ def merge_projects(
     for suffix in PRODUCT_SUFFIXES:
         # sources in priority order (first = highest priority)
         sources: list[Path] = []
+        source_wus: list[str] = []
         for wu in workunits:
             hits = sorted((batch_dir / wu).glob(f"*-{suffix}.tif"))
             if hits:
                 sources.append(hits[0])
+                source_wus.append(wu)
         if not sources:
             continue
 
@@ -272,7 +274,11 @@ def merge_projects(
                 f"to merge without resampling:\n{detail}"
             )
 
-        out_fn = output_dir / f"{sources[0].name.rsplit('.', 1)[0]}.vrt"
+        # the composite drops the per-project token from the source name
+        # (aoi_1m_AZ_PimaCo_1_2021-DSM_mos.tif -> aoi_1m-DSM_mos.vrt);
+        # sources without the token (older runs) pass through unchanged
+        base = sources[0].name.rsplit(".", 1)[0]
+        out_fn = output_dir / f"{base.replace(f'_{source_wus[0]}-', '-')}.vrt"
         # VRT sources paint in list order (last on top) -> reverse so the
         # highest-priority project wins in overlaps. Build from inside the
         # output dir with relative paths so the VRT stays portable when the
@@ -280,6 +286,10 @@ def merge_projects(
         rel_sources = [
             os.path.relpath(fn, output_dir) for fn in reversed(sources)
         ]
+        # a previous merge left the VRT read-only (see the chmod below);
+        # BuildVRT cannot truncate it in place
+        if out_fn.exists():
+            out_fn.unlink()
         cwd = os.getcwd()
         try:
             os.chdir(output_dir)
@@ -294,6 +304,13 @@ def merge_projects(
         if suffix == "intensity_mos" and normalize_intensity and len(sources) > 1:
             norm_params = _intensity_normalization(sources)
             _apply_vrt_normalization(out_fn, norm_params)
+        # GDAL uses a writable VRT as its own PAM store: any reader that
+        # computes statistics (e.g. QGIS symbology) serializes its in-memory
+        # copy of the ENTIRE XML back to disk on flush, so a long-lived
+        # viewer session can silently revert the VRT to a stale source list
+        # (Casa Grande large merge, 2026-07-15). Read-only diverts PAM to a
+        # .vrt.aux.xml sidecar and leaves the sources alone.
+        out_fn.chmod(0o444)
         print(
             f"{suffix}: merged {len(sources)} project(s) -> {out_fn} "
             f"({n_ovr} virtual overview levels)"
@@ -323,7 +340,10 @@ def merge_projects(
             }
 
     if written:
-        with open(output_dir / "merge_metadata.yaml", "w") as f:
+        # inherit the composite prefix (AOI + posting; product suffixes
+        # carry no '-', so rsplit is safe even for dashed AOI names)
+        prefix = written[0].name.rsplit("-", 1)[0]
+        with open(output_dir / f"{prefix}-merge_metadata.yaml", "w") as f:
             yaml.dump(merge_meta, f, default_flow_style=False, sort_keys=False)
     return written
 

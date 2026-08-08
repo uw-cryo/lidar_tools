@@ -45,7 +45,7 @@ def test_cleanup_intermediates_nested_layout(tmp_path):
     keep = [
         d / "aoi-DSM_mos.tif",
         d / "UTM_12N_NAD83_2011_3D.wkt",
-        d / "processing_metadata.yaml",
+        d / "aoi-processing_metadata.yaml",
         d / "tiles" / "dsm" / "aoi_dsm_tile_aoi_000.laz.laz",  # saved pointcloud
     ]
     remove = [
@@ -55,6 +55,7 @@ def test_cleanup_intermediates_nested_layout(tmp_path):
         d / "pipelines" / "pipeline_fetch_000.json",
         d / "pipelines" / "pipeline_dsm_intensity_000.json",
         d / "aoi-DSM_mos-temp.tif",
+        d / "judicious_extent_polygon.geojson",
     ]
     for fn in keep + remove:
         fn.parent.mkdir(parents=True, exist_ok=True)

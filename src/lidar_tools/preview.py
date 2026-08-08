@@ -148,22 +148,32 @@ def _read_decimated(fn: Path, max_dim: int) -> dict:
     }
 
 
+def _metadata_file(dirname: Path, kind: str) -> Path | None:
+    """<prefix>-<kind>.yaml in dirname, falling back to the legacy bare
+    <kind>.yaml of pre-2026-07-13 runs; None if neither exists."""
+    hits = sorted(dirname.glob(f"*-{kind}.yaml"))
+    if hits:
+        return hits[0]
+    legacy = dirname / f"{kind}.yaml"
+    return legacy if legacy.exists() else None
+
+
 def _project_metadata_files(project_dir: Path) -> list[Path]:
-    """processing_metadata.yaml files feeding this directory's products —
+    """Processing-metadata files feeding this directory's products —
     the directory's own file, or every source project's for a merge dir."""
-    own = project_dir / "processing_metadata.yaml"
-    if own.exists():
+    own = _metadata_file(project_dir, "processing_metadata")
+    if own is not None:
         return [own]
-    merge_meta = project_dir / "merge_metadata.yaml"
+    merge_meta = _metadata_file(project_dir, "merge_metadata")
     found: list[Path] = []
-    if merge_meta.exists():
+    if merge_meta is not None:
         with open(merge_meta) as f:
             meta = yaml.safe_load(f)
         seen = set()
         for prod in meta.get("products", {}).values():
             for src in prod.get("sources_priority_order", []):
-                fn = Path(src).parent / "processing_metadata.yaml"
-                if fn not in seen and fn.exists():
+                fn = _metadata_file(Path(src).parent, "processing_metadata")
+                if fn is not None and fn not in seen:
                     seen.add(fn)
                     found.append(fn)
     return found
@@ -238,7 +248,9 @@ def product_preview(
         A rasterize output directory (one project) or a merge directory
         containing *_mos.tif / *_mos.vrt products.
     out_fn
-        Output PNG path, by default <project_dir>/preview.png.
+        Output PNG path, by default <project_dir>/<prefix>-preview.png
+        where prefix is the product filename prefix (AOI name + grid
+        posting, e.g. aoi_1m-preview.png).
     max_dim
         Decimated read size for the long edge, by default 1600 px.
     dpi
@@ -256,19 +268,23 @@ def product_preview(
 
     project_dir = Path(project_dir)
     panels = []
+    prefix = None
     for suffix, label, kind in _PRODUCT_PANELS:
         # .tif = per-project mosaics, .vrt = merge-stage composites
         hits = sorted(project_dir.glob(f"*-{suffix}.tif")) or sorted(
             project_dir.glob(f"*-{suffix}.vrt")
         )
         if hits:
+            if prefix is None:
+                prefix = hits[0].name.rsplit(f"-{suffix}", 1)[0]
             panels.append(
                 {**_read_decimated(hits[0], max_dim), "label": label, "kind": kind}
             )
     if not panels:
         return None
     if out_fn is None:
-        out_fn = project_dir / "preview.png"
+        # inherit the product prefix (AOI name + grid posting)
+        out_fn = project_dir / f"{prefix}-preview.png"
 
     elev_parts = [
         np.ma.compressed(p["arr"]) for p in panels if p["kind"] == "elevation"

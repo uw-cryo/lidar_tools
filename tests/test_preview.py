@@ -26,7 +26,8 @@ def test_product_preview(tmp_path):
     _make_product(tmp_path / "aoi-DTM_no_fill_mos.tif", 100.0)
     _make_product(tmp_path / "aoi-intensity_mos.tif", 30000.0)
     out = preview.product_preview(tmp_path)
-    assert out == tmp_path / "preview.png"
+    # inherits the product prefix (AOI name + grid posting)
+    assert out == tmp_path / "aoi-preview.png"
     assert out.exists() and out.stat().st_size > 0
 
 
@@ -40,5 +41,5 @@ def test_preview_batch_dir(tmp_path, capsys):
     proj.mkdir()
     _make_product(proj / "aoi-DSM_mos.tif")
     preview.preview(str(tmp_path))
-    assert (proj / "preview.png").exists()
+    assert (proj / "aoi-preview.png").exists()
     assert "Wrote preview" in capsys.readouterr().out
