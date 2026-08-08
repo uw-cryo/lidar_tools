@@ -67,3 +67,26 @@ def test_footer_survives_null_collect_dates(tmp_path):
     )
     out = preview.product_preview(tmp_path)
     assert out is not None and out.exists()
+
+
+def test_preview_footer_uses_the_previewed_prefix(tmp_path):
+    """Two runs' metadata in one directory: the footer must report the
+    previewed product's own provenance, not whichever file sorts first."""
+    import yaml
+
+    _make_product(tmp_path / "aoi_1m-DSM_mos.tif", 105.0)
+    # sorts first, and would be picked by a bare glob
+    (tmp_path / "aoi_0.5m-processing_metadata.yaml").write_text(
+        yaml.dump({"survey_records": [{"workunit": "WRONG_RUN", "ql": "QL 1"}]})
+    )
+    (tmp_path / "aoi_1m-processing_metadata.yaml").write_text(
+        yaml.dump({"survey_records": [{"workunit": "RIGHT_RUN", "ql": "QL 2"}]})
+    )
+    picked = preview._project_metadata_files(tmp_path, "aoi_1m")
+    assert [p.name for p in picked] == ["aoi_1m-processing_metadata.yaml"]
+    assert preview.product_preview(tmp_path) is not None
+
+    # and with NO metadata for the previewed prefix, report nothing rather
+    # than the other run's record
+    (tmp_path / "aoi_1m-processing_metadata.yaml").unlink()
+    assert preview._project_metadata_files(tmp_path, "aoi_1m") == []

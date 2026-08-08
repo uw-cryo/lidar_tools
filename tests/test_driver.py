@@ -71,3 +71,71 @@ def test_rasterize_projects_one_failure_does_not_stop_batch(
     status = yaml.safe_load((outbase / "batch_status.yaml").read_text())
     assert status["projects"]["WU_A"].startswith("failed")
     assert status["projects"]["WU_B"] == "completed"
+
+
+def test_rasterize_projects_flags_no_data_runs(tmp_path, aoi_file, monkeypatch, capsys):
+    from pathlib import Path
+
+    def fake_rasterize(**kw):
+        outdir = Path(kw["output"])
+        outdir.mkdir(parents=True, exist_ok=True)
+        wu = kw["threedep_project"]
+        run_status = {"state": "completed"}
+        if wu == "WU_A":
+            run_status["note"] = "no data (survey does not cover AOI)"
+        (outdir / f"aoi_1m_{wu}-processing_metadata.yaml").write_text(
+            yaml.dump({"run_status": run_status})
+        )
+
+    monkeypatch.setattr(driver, "rasterize", fake_rasterize)
+    outbase = tmp_path / "batch"
+    # a no-data project is a real outcome: the batch must NOT raise ...
+    driver.rasterize_projects(aoi_file, "WU_A,WU_B", str(outbase))
+    status = yaml.safe_load((outbase / "batch_status.yaml").read_text())
+    # ... but it must never be recorded as a plain success
+    assert status["projects"]["WU_A"].startswith("completed (no data)")
+    assert "survey does not cover" in status["projects"]["WU_A"]
+    assert status["projects"]["WU_B"] == "completed"
+    err = capsys.readouterr().err
+    assert "WU_A" in err and "WITHOUT products" in err
+    assert "1/2" in err  # end-of-batch warning names the count
+
+
+def test_rasterize_projects_warns_on_unreadable_metadata(
+    tmp_path, aoi_file, monkeypatch, capsys
+):
+    from pathlib import Path
+
+    def fake_rasterize(**kw):
+        outdir = Path(kw["output"])
+        outdir.mkdir(parents=True, exist_ok=True)
+        # corrupt YAML: the run returned cleanly but its status is unreadable
+        (outdir / "aoi_1m_WU_A-processing_metadata.yaml").write_text("{::not yaml")
+
+    monkeypatch.setattr(driver, "rasterize", fake_rasterize)
+    outbase = tmp_path / "batch"
+    driver.rasterize_projects(aoi_file, "WU_A", str(outbase))
+    status = yaml.safe_load((outbase / "batch_status.yaml").read_text())
+    # still counted completed (the run itself succeeded) ...
+    assert status["projects"]["WU_A"] == "completed"
+    # ... but the operator is told the products could not be verified
+    err = capsys.readouterr().err
+    assert "unreadable processing metadata" in err
+
+
+def test_rasterize_projects_passes_geoid_override(tmp_path, aoi_file, monkeypatch):
+    from pathlib import Path
+
+    seen = []
+
+    def fake_rasterize(**kw):
+        Path(kw["output"]).mkdir(parents=True, exist_ok=True)
+        seen.append(kw)
+
+    monkeypatch.setattr(driver, "rasterize", fake_rasterize)
+    driver.rasterize_projects(aoi_file, "WU_A", str(tmp_path / "b1"))
+    assert seen[0]["geoid_override"] == "declared"  # hard-fail is the default
+    driver.rasterize_projects(
+        aoi_file, "WU_A", str(tmp_path / "b2"), geoid_override="best-available"
+    )
+    assert seen[1]["geoid_override"] == "best-available"

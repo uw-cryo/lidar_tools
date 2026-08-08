@@ -196,6 +196,87 @@ def test_fetch_reports_stages_report_files(tmp_path, monkeypatch):
     ]
 
 
+def test_resolve_ept_resource_tiers():
+    import pandas as pd
+
+    ept = pd.DataFrame(
+        {
+            "name": [
+                "NV_ClarkCo_2_B22",
+                "NV_LasVegasValley_2010",
+                "USGS_LPC_NV_LasVegas_QL2_2016_LAS_2018",
+                "AK_Fairbanks-NSBorough_2010",
+                "ARRA-AK_EkluntaGlacier_2010",
+            ],
+            "count": [10, 20, 30, 40, 50],
+        }
+    )
+    # tier 1: exact
+    r = survey.resolve_ept_resource("NV_ClarkCo_2_B22", ept)
+    assert (r["ept_name"], r["tier"]) == ("NV_ClarkCo_2_B22", 1)
+    # tier 2: WESM legacy ALL-CAPS vs mixed-case EPT build
+    r = survey.resolve_ept_resource("NV_LASVEGASVALLEY_2010", ept)
+    assert (r["ept_name"], r["tier"]) == ("NV_LasVegasValley_2010", 2)
+    # tier 3: FTP-era USGS_LPC_/_LAS_<yr> wrapper
+    r = survey.resolve_ept_resource("NV_LasVegas_QL2_2016", ept)
+    assert (r["ept_name"], r["tier"]) == (
+        "USGS_LPC_NV_LasVegas_QL2_2016_LAS_2018",
+        3,
+    )
+    # tier 4: hyphen/underscore drift (WESM legacy names are underscored caps)
+    r = survey.resolve_ept_resource("AK_FAIRBANKS_NSBOROUGH_2010", ept)
+    assert (r["ept_name"], r["tier"]) == ("AK_Fairbanks-NSBorough_2010", 4)
+    # tier 4 must also cover the ARRA drift: WESM spells the funding prefix
+    # ARRA_ (underscore), the EPT build spells it ARRA- (hyphen) — hyphen
+    # folding on BOTH sides resolves the pair without stripping the prefix
+    r = survey.resolve_ept_resource("ARRA_AK_EKLUNTAGLACIER_2010", ept)
+    assert (r["ept_name"], r["tier"]) == ("ARRA-AK_EkluntaGlacier_2010", 4)
+    # and the un-stripped prefix must NOT capture an unrelated workunit
+    import pytest
+
+    with pytest.raises(LookupError):
+        survey.resolve_ept_resource("AK_EKLUNTAGLACIER_2010", ept)
+
+
+def test_resolve_ept_resource_count_tiebreak_and_tier_precedence():
+    import pandas as pd
+
+    # re-released build: same workunit reachable at the same tier twice ->
+    # the larger build wins the tie
+    ept = pd.DataFrame(
+        {
+            "name": [
+                "USGS_LPC_X_Co_2016_LAS_2016",
+                "USGS_LPC_X_Co_2016_LAS_2018",
+            ],
+            "count": [5, 500],
+        }
+    )
+    r = survey.resolve_ept_resource("X_Co_2016", ept)
+    assert r["ept_name"] == "USGS_LPC_X_Co_2016_LAS_2018"  # larger build
+    assert sorted(r["candidates"]) == sorted(ept["name"])
+    # tier precedence: an exact-name build short-circuits at tier 1, so a
+    # larger re-release at a later tier is never even considered
+    ept2 = pd.DataFrame(
+        {"name": ["X_Co_2016", "USGS_LPC_X_Co_2016_LAS_2018"], "count": [5, 500]}
+    )
+    r2 = survey.resolve_ept_resource("X_Co_2016", ept2)
+    assert (r2["ept_name"], r2["tier"]) == ("X_Co_2016", 1)
+
+
+def test_resolve_ept_resource_unresolvable_raises():
+    import pandas as pd
+    import pytest
+
+    ept = pd.DataFrame(
+        {"name": ["NV_Southern_5_D23", "CA_MountainPass_B1_2019"], "count": [1, 2]}
+    )
+    with pytest.raises(LookupError, match="NV_Southern_4_D23"):
+        survey.resolve_ept_resource("NV_Southern_4_D23", ept)
+    # the message points at the fallback path and lists same-state names
+    with pytest.raises(LookupError, match="staged-LAZ"):
+        survey.resolve_ept_resource("NV_Southern_4_D23", ept)
+
 def test_fetch_reports_survives_listing_failure(tmp_path, monkeypatch):
     """A transient S3 listing failure skips the workunit — it must not
     truncate the previous run's remote_inventory.txt or abort the batch."""
@@ -253,3 +334,20 @@ def test_area_fractions_equal_area_not_degrees():
     )
     gaps = survey.coverage_gaps(out, aoi)
     np.testing.assert_allclose(gaps["gap_frac"].sum(), 1 - expected, atol=0.005)
+
+
+def test_zero_area_aoi_rejected():
+    """A degenerate (point/line) AOI must raise a clear error, not
+    ZeroDivisionError, from the coverage-fraction math."""
+    import pytest
+
+    point_aoi = gpd.GeoDataFrame(
+        geometry=[shapely.Point(-115.0, 36.0)], crs="EPSG:4326"
+    )
+    wesm = gpd.GeoDataFrame(
+        {"workunit": ["WU"]},
+        geometry=[_square(-116, 35, -114, 37)],
+        crs="EPSG:4326",
+    )
+    with pytest.raises(ValueError, match="zero area"):
+        survey.summarize_surveys(wesm, point_aoi)

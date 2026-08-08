@@ -53,6 +53,7 @@ def _write_processing_metadata(
     quiet: bool,
     ept_vertical: str = "auto",
     resume: bool = False,
+    geoid_override: str = "declared",
 ) -> None:
     """
     Write processing metadata to a YAML file in the output directory.
@@ -72,7 +73,7 @@ def _write_processing_metadata(
     """
     metadata: dict = {
         "lidar_tools_version": version("lidar_tools"),
-        "processing_timestamp": datetime.now().isoformat(),
+        "processing_timestamp": datetime.now().astimezone().isoformat(),
         "input_parameters": {
             "geometry": str(geometry),
             "input": str(input),
@@ -93,6 +94,7 @@ def _write_processing_metadata(
             "quiet": quiet,
             "ept_vertical": ept_vertical,
             "resume": resume,
+            "geoid_override": geoid_override,
         }
     }
     # exact code state for reproducing branch-based production runs
@@ -113,11 +115,21 @@ def _write_processing_metadata(
     print(f"Processing metadata written to {metadata_file}")
 
 
-def _metadata_path(output_dir: Path) -> Path:
+def _metadata_path(output_dir: Path, filename_prefix: str | None = None) -> Path:
     """The directory's processing-metadata file: <prefix>-processing_metadata
     .yaml (prefix = AOI + posting + project), falling back to the legacy bare
-    processing_metadata.yaml of pre-2026-07-13 runs."""
-    hits = sorted(Path(output_dir).glob("*-processing_metadata.yaml"))
+    processing_metadata.yaml of pre-2026-07-13 runs.
+
+    A run passes its own `filename_prefix` so its updates always land in its
+    own record, even when the directory holds another run's metadata (e.g.
+    a resume at a different resolution). Without one, the file must be
+    unambiguous."""
+    output_dir = Path(output_dir)
+    if filename_prefix is not None:
+        own = output_dir / f"{filename_prefix}-processing_metadata.yaml"
+        if own.exists():
+            return own
+    hits = sorted(output_dir.glob("*-processing_metadata.yaml"))
     if len(hits) > 1:
         # e.g. a --resume into the same directory at a different resolution:
         # updates would silently land in the alphabetically-first (stale)
@@ -131,7 +143,9 @@ def _metadata_path(output_dir: Path) -> Path:
     return hits[0] if hits else Path(output_dir) / "processing_metadata.yaml"
 
 
-def _update_processing_metadata(output_dir: Path, section: str, data) -> None:
+def _update_processing_metadata(
+    output_dir: Path, section: str, data, filename_prefix: str | None = None
+) -> None:
     """
     Merge a top-level section into an existing processing-metadata file.
 
@@ -143,12 +157,15 @@ def _update_processing_metadata(output_dir: Path, section: str, data) -> None:
         Top-level key to set or replace.
     data
         YAML-serializable content for the section.
+    filename_prefix
+        The calling run's filename prefix; targets that run's own record
+        when the directory holds more than one.
 
     Returns
     -------
     None
     """
-    metadata_file = _metadata_path(output_dir)
+    metadata_file = _metadata_path(output_dir, filename_prefix)
     metadata: dict = {}
     if metadata_file.exists():
         with open(metadata_file) as f:
@@ -199,7 +216,8 @@ def rasterize(
     src_crs: str = None,
     dst_crs: str = None,
     output_datum: Literal[
-        "wgs84_g2139", "nad83_2011", "wgs84_g1674", "itrf2020"
+        "wgs84_g2139", "nad83_2011", "wgs84_g1674", "itrf2020",
+        "itrf2008", "itrf2014",
     ] = "wgs84_g2139",
     resolution: float = 1.0,
     dsm_gridding_choice: str = "first_idw",
@@ -214,6 +232,7 @@ def rasterize(
     height_above_ground_threshold: float = None,
     quiet: Annotated[bool, cyclopts.Parameter(negative="")] = False,
     ept_vertical: Literal["auto", "geoid", "ellipsoid"] = "auto",
+    geoid_override: Literal["declared", "best-available"] = "declared",
     resume: Annotated[bool, cyclopts.Parameter(negative="")] = False,
     coord_epoch: float = None,
 ) -> None:
@@ -234,10 +253,12 @@ def rasterize(
         Path to file with PROJ-supported CRS definition for the output. If unspecified, a local UTM CRS is auto-built for the AOI (datum per `output_datum`).
     output_datum
         Datum realization of the auto-built local-UTM target, used only when
-        `dst_crs` is not given: 'wgs84_g2139' (default; dynamic frame,
-        outputs stamped at epoch 2010.0) or 'nad83_2011' (static source
-        realization of 3DEP; ellipsoidal heights, no epoch, no ITRF Helmert).
-        For any other target, pass an explicit `dst_crs` WKT file.
+        `dst_crs` is not given. Dynamic frames (outputs stamped at epoch
+        2010.0, or at `coord_epoch` when given): 'wgs84_g2139' (default),
+        'wgs84_g1674', 'itrf2020', 'itrf2014', 'itrf2008'. Static:
+        'nad83_2011' (the source realization of 3DEP; ellipsoidal heights,
+        no epoch stamp, no ITRF Helmert). For any other target, pass an
+        explicit `dst_crs` WKT file.
     resolution
         Square output raster posting in units of `dst_crs`.
     dsm_gridding_choice
@@ -276,6 +297,15 @@ def rasterize(
         orthometric) or 'ellipsoid' skip the empirical check when the
         source datum is known (e.g. from per-survey metadata) or when the
         check cannot sample reliably (steep terrain, snow, small AOIs).
+    geoid_override
+        'declared' (default) REQUIRES the survey's declared production
+        geoid grids for the vertical transform — the run hard-fails rather
+        than silently substituting another model (cm-level bias), and also
+        hard-fails when the WESM record (the declaration's source) cannot
+        be fetched. 'best-available' consciously accepts substitution when
+        the declared grids (or the WESM record) cannot be used; it does
+        NOT force the ranked model when the declared grids are usable —
+        the declared geoid still wins.
     resume
         Continue an interrupted run in an existing output directory: tiles
         whose outputs already exist and pass a deep validity check are
@@ -303,6 +333,15 @@ def rasterize(
 
     if overwrite and resume:
         raise ValueError("--overwrite and --resume are mutually exclusive")
+    if coord_epoch is not None and dst_crs is None and output_datum == "nad83_2011":
+        # fail here with the reason, not hours later deep in
+        # epoch_pinned_pipeline's +proj=helmert requirement
+        raise ValueError(
+            "--coord-epoch applies to dynamic-frame targets only: "
+            "NAD83(2011) is plate-fixed (epoch-invariant), so there is no "
+            "epoch-dependent transformation to pin. Drop --coord-epoch or "
+            "choose a dynamic --output-datum (e.g. itrf2020, wgs84_g2139)."
+        )
 
     outdir = Path(output)
     if outdir.exists():
@@ -356,11 +395,13 @@ def rasterize(
         quiet=quiet,
         ept_vertical=ept_vertical,
         resume=resume,
+        geoid_override=geoid_override,
     )
     _update_processing_metadata(
         outdir,
         "run_status",
-        {"state": "started", "timestamp": datetime.now().isoformat()},
+        {"state": "started", "timestamp": datetime.now().astimezone().isoformat()},
+        filename_prefix=filename_prefix,
     )
 
     # Create custom 3D CRS UTM WKT2 for the AOI's local zone on the selected
@@ -442,15 +483,38 @@ def rasterize(
                     f"No WESM record pinned for local input "
                     f"'{pin_workunit}' ({e})"
                 )
+            elif input != "EPT_AWS":
+                # explicit workunit on the local path: the record is
+                # metadata-only, so a fetch failure only loses provenance
+                print(
+                    f"WARNING: could not fetch the WESM record for "
+                    f"'{pin_workunit}' ({e}); no survey record will be "
+                    "pinned for this local-input run",
+                    file=sys.stderr,
+                )
+            elif geoid_override == "declared":
+                # Without the WESM record there is no declared geoid to
+                # require, so proceeding would silently reintroduce
+                # best-available substitution — a network blip must not
+                # decide the geoid.
+                raise RuntimeError(
+                    f"Could not fetch the WESM record for "
+                    f"'{pin_workunit}' ({e}), so the survey's "
+                    "declared production geoid cannot be required. Retry (WESM "
+                    "reads are transient-failure-prone), or consciously accept "
+                    "best-available datum handling with "
+                    "--geoid-override best-available."
+                ) from e
             else:
                 print(
                     f"WARNING: could not fetch the WESM record for "
-                    f"'{pin_workunit}' ({e}); using default datum "
-                    "handling (NAD83(2011), best available geoid)",
+                    f"'{pin_workunit}' ({e}); geoid-override "
+                    "accepted — using default datum handling (NAD83(2011), best "
+                    "available geoid)",
                     file=sys.stderr,
                 )
         if survey_record is not None:
-            _update_processing_metadata(outdir, "survey_records", [survey_record])
+            _update_processing_metadata(outdir, "survey_records", [survey_record], filename_prefix=filename_prefix)
         if survey_record is not None and input == "EPT_AWS":
             # datum-handling side effects apply to the EPT path only; local
             # inputs keep their file-declared CRS handling unchanged
@@ -459,7 +523,28 @@ def rasterize(
                 ept_base_epsg = geodesy.geographic_base_epsg(
                     survey_record["horiz_crs"]
                 )
-            geoid_hint = geodesy.geoid_grid_hint(survey_record.get("geoid"))
+            # Resolve the declared production geoid to the exact PROJ grid
+            # files for this AOI (GEOID12A -> GEOID12B grids outside PR/USVI
+            # per NGS; declared-but-unmappable raises rather than substituting)
+            declared_geoid = geodesy.resolve_declared_geoid(
+                survey_record.get("geoid"), aoi_lonlat
+            )
+            geoid_hint = declared_geoid["grids"] if declared_geoid else None
+            if declared_geoid is not None:
+                _update_processing_metadata(
+                    outdir, "declared_geoid", declared_geoid,
+                    filename_prefix=filename_prefix,
+                )
+                sub = (
+                    f" (using {declared_geoid['model']} grids: NGS-identical "
+                    "outside Puerto Rico/USVI)"
+                    if declared_geoid["substituted_for"]
+                    else ""
+                )
+                print(
+                    f"Declared geoid {declared_geoid['declared']} -> "
+                    f"required grids {declared_geoid['grids']}{sub}"
+                )
             print(
                 f"Survey record pinned: {pin_workunit} "
                 f"(base datum EPSG:{ept_base_epsg}, geoid "
@@ -472,6 +557,37 @@ def rasterize(
                 f"{survey_record.get('collect_start')} - "
                 f"{survey_record.get('collect_end')})"
             )
+
+    # EPT resource names are frozen at entwine-build time and drift from
+    # current WESM workunit names; resolve the alias once, loudly, before
+    # any tiling — a bare == join silently yields 0 readers for most of
+    # the pre-2018 archive. The WESM record above keeps the workunit name;
+    # only the reader join uses the resolved EPT name.
+    ept_index_gdf = None
+    if input == "EPT_AWS" and process_specific_3dep_survey is not None:
+        ept_index_gdf = survey.load_ept_resources()
+        ept_resolution = survey.resolve_ept_resource(
+            process_specific_3dep_survey, ept_index_gdf
+        )
+        resolved_ept_name = ept_resolution["ept_name"]
+        print(
+            f"EPT resource resolved: {process_specific_3dep_survey} -> "
+            f"{resolved_ept_name} (tier {ept_resolution['tier']}, "
+            f"{len(ept_resolution['candidates'])} candidate(s))"
+        )
+        boundary = ept_index_gdf[ept_index_gdf["name"] == resolved_ept_name]
+        intersects_aoi = bool(
+            boundary.to_crs(gdf.crs).intersects(gdf.union_all()).any()
+        )
+        if not intersects_aoi:
+            print(
+                f"NOTE: resolved EPT boundary for {resolved_ept_name} does "
+                "not intersect the AOI; expecting a no-data outcome",
+                file=sys.stderr,
+            )
+        ept_resolution["boundary_intersects_aoi"] = intersects_aoi
+        _update_processing_metadata(outdir, "ept_resolution", ept_resolution, filename_prefix=filename_prefix)
+        process_specific_3dep_survey = resolved_ept_name
 
     # TODO: create EPT for local laz for common workflow? https://github.com/uw-cryo/lidar_tools/issues/14#issuecomment-3076045321
     # SB note: The main reason for seperate EPT and local laz pipelines is the difference in projection handling, not much due to difference in file formats.
@@ -503,25 +619,16 @@ def rasterize(
                     None,
                 ),
             ]:
-                try:
-                    record = geodesy.preflight_vertical_transform(
-                        ept_src_crs,
-                        out_crs,
-                        aoi_bounds=aoi_lonlat,
-                        prefer_grids=grids_hint,
-                    )
-                except RuntimeError:
-                    if grids_hint is None:
-                        raise
-                    print(
-                        f"WARNING: no transformation using the survey's "
-                        f"declared geoid ('{grids_hint}') is available; "
-                        "falling back to the best available geoid model",
-                        file=sys.stderr,
-                    )
-                    record = geodesy.preflight_vertical_transform(
-                        ept_src_crs, out_crs, aoi_bounds=aoi_lonlat
-                    )
+                # no silent geoid fallback: the declared grids are REQUIRED
+                # (constructed explicitly when EPSG supersession hides the
+                # operation); substitution only via --geoid-override
+                record = geodesy.preflight_vertical_transform(
+                    ept_src_crs,
+                    out_crs,
+                    aoi_bounds=aoi_lonlat,
+                    require_grids=grids_hint,
+                    allow_geoid_fallback=(geoid_override == "best-available"),
+                )
                 record["branch"] = branch
                 transform_checks.append(record)
                 ept_checks[key] = record
@@ -535,6 +642,7 @@ def rasterize(
             dsm_gridding_choice=dsm_gridding_choice,
             process_specific_3dep_survey=process_specific_3dep_survey,
             process_all_intersecting_surveys=process_all_intersecting_surveys,
+            ept_index_gdf=ept_index_gdf,
             filter_high_noise=filter_high_noise,
             filter_low_noise=filter_low_noise,
             hag_nn=height_above_ground_threshold,
@@ -579,7 +687,7 @@ def rasterize(
         "vertical_transform_preflight": transform_checks,
         "coordinate_epoch": None,
     }
-    _update_processing_metadata(outdir, "geodesy", geodesy_record)
+    _update_processing_metadata(outdir, "geodesy", geodesy_record, filename_prefix=filename_prefix)
 
     # BuildVRT opens every tile at once during mosaicking; the default soft
     # open-file limit fails for large AOIs (issue #43)
@@ -696,8 +804,9 @@ def rasterize(
             {
                 "state": "completed",
                 "note": "no data (survey does not cover AOI)",
-                "timestamp": datetime.now().isoformat(),
+                "timestamp": datetime.now().astimezone().isoformat(),
             },
+            filename_prefix=filename_prefix,
         )
         if cleanup:
             _cleanup_intermediates(outdir)
@@ -980,7 +1089,7 @@ def rasterize(
     ]
     geodesy_record["coordinate_epoch"] = epoch_to_stamp if stamped else None
     geodesy_record["epoch_stamped_products"] = [Path(fn).name for fn in stamped]
-    _update_processing_metadata(outdir, "geodesy", geodesy_record)
+    _update_processing_metadata(outdir, "geodesy", geodesy_record, filename_prefix=filename_prefix)
 
     print("****Building Gaussian overviews for all rasters****")
     print("Running overview creation sequentially")
@@ -1004,6 +1113,7 @@ def rasterize(
                 "file": Path(footprint_fn).name,
                 "source": Path(footprint_source).name,
             },
+            filename_prefix=filename_prefix,
         )
         print(f"Valid-data footprint: {footprint_fn}")
     except Exception as e:
@@ -1014,11 +1124,12 @@ def rasterize(
         "run_status",
         {
             "state": "completed",
-            "timestamp": datetime.now().isoformat(),
+            "timestamp": datetime.now().astimezone().isoformat(),
             "tiles_total": num_pipelines,
             "tiles_empty": n_empty,
             "tiles_data": data_total,
         },
+        filename_prefix=filename_prefix,
     )
 
     if cleanup:

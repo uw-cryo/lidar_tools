@@ -64,10 +64,12 @@ def _read_decimated_band(fn: Path, max_dim: int = 8000) -> tuple:
     ds = gdal.OpenEx(str(fn))
     band = ds.GetRasterBand(1)
     scale = max(1, int(np.ceil(max(ds.RasterXSize, ds.RasterYSize) / max_dim)))
+    # float32: at max_dim=8000 a float64 array is ~512 MB per source, and
+    # the composite/fit only carry UInt16-range DNs (exactly representable)
     arr = band.ReadAsArray(
         buf_xsize=max(1, ds.RasterXSize // scale),
         buf_ysize=max(1, ds.RasterYSize // scale),
-    ).astype(np.float64)
+    ).astype(np.float32)
     nodata = band.GetNoDataValue()
     mask = np.isfinite(arr) if nodata is None else (arr != nodata)
     dtype_max = {
@@ -76,6 +78,10 @@ def _read_decimated_band(fn: Path, max_dim: int = 8000) -> tuple:
         "Int16": 32767.0,
         "UInt32": float(2**32 - 1),
     }.get(gdal.GetDataTypeName(band.DataType), np.inf)
+    # release the handle: a merge walks every source, and the caller may
+    # rewrite these files afterwards
+    band = None
+    ds = None
     return arr, mask, nodata, dtype_max
 
 
@@ -130,7 +136,7 @@ def _intensity_normalization(sources: list[Path]) -> list[dict]:
                 file=sys.stderr,
             )
         if composite is None:
-            composite = np.full(arr.shape, np.nan)
+            composite = np.full(arr.shape, np.nan, dtype=np.float32)
             comp_mask = np.zeros(arr.shape, dtype=bool)
         assert comp_mask is not None
         newly = mask & ~comp_mask
@@ -181,6 +187,14 @@ def _apply_vrt_normalization(vrt_fn: Path, params: list[dict]) -> None:
             (vrt_fn.parent / el.text) if el.get("relativeToVRT") == "1"
             else Path(el.text)
         ).resolve()
+        if key not in by_path:
+            # path normalization drift (symlinked volume, mount alias)
+            # would otherwise surface as a bare KeyError mid-rewrite
+            raise KeyError(
+                f"{vrt_fn.name}: VRT source {key} has no normalization "
+                f"parameters; fitted sources were "
+                f"{[str(k) for k in by_path]}"
+            )
         p = by_path[key]
         # raw DNs whose mapped values hit the target endpoints; the LUT
         # interpolates linearly between them and clamps beyond
@@ -190,6 +204,28 @@ def _apply_vrt_normalization(vrt_fn: Path, params: list[dict]) -> None:
             f"{src_lo:.10g}:{INTENSITY_TARGET[0]:g},"
             f"{src_hi:.10g}:{INTENSITY_TARGET[1]:g}"
         )
+    tree.write(vrt_fn)
+
+
+
+def _relativize_vrt_sources(vrt_fn: Path) -> None:
+    """
+    Rewrite a VRT's SourceFilename entries as paths relative to the VRT
+    itself (relativeToVRT="1") so the merge stays valid when the volume is
+    mounted elsewhere.
+
+    BuildVRT cannot do this directly: it resolves relative source paths
+    against the process CWD (so passing them fails unless the caller
+    chdir's into the output directory) and writes relativeToVRT="0" for
+    absolute ones. Rewriting the XML afterwards keeps the build free of
+    process-global state.
+    """
+    tree = ET.parse(vrt_fn)
+    for el in tree.getroot().iter("SourceFilename"):
+        if not el.text or el.get("relativeToVRT") == "1":
+            continue
+        el.text = os.path.relpath(el.text, vrt_fn.parent)
+        el.set("relativeToVRT", "1")
     tree.write(vrt_fn)
 
 
@@ -278,28 +314,25 @@ def merge_projects(
         # (aoi_1m_AZ_PimaCo_1_2021-DSM_mos.tif -> aoi_1m-DSM_mos.vrt);
         # sources without the token (older runs) pass through unchanged
         base = sources[0].name.rsplit(".", 1)[0]
-        out_fn = output_dir / f"{base.replace(f'_{source_wus[0]}-', '-')}.vrt"
+        # the project token sits immediately before the product suffix;
+        # drop that occurrence only (an AOI name could repeat the pattern)
+        token = f"_{source_wus[0]}-"
+        head, sep, tail = base.rpartition(token)
+        out_fn = output_dir / f"{(head + '-' + tail) if sep else base}.vrt"
         # VRT sources paint in list order (last on top) -> reverse so the
-        # highest-priority project wins in overlaps. Build from inside the
-        # output dir with relative paths so the VRT stays portable when the
-        # volume is mounted elsewhere.
-        rel_sources = [
-            os.path.relpath(fn, output_dir) for fn in reversed(sources)
-        ]
+        # highest-priority project wins in overlaps.
+        build_sources = [str(fn) for fn in reversed(sources)]
         # a previous merge left the VRT read-only (see the chmod below);
         # BuildVRT cannot truncate it in place
         if out_fn.exists():
             out_fn.unlink()
-        cwd = os.getcwd()
-        try:
-            os.chdir(output_dir)
-            ds = gdal.BuildVRT(out_fn.name, rel_sources)
-            ds.FlushCache()
-            band = ds.GetRasterBand(1)
-            n_ovr = band.GetOverviewCount()
-            ds = None
-        finally:
-            os.chdir(cwd)
+        ds = gdal.BuildVRT(str(out_fn), build_sources)
+        ds.FlushCache()
+        band = ds.GetRasterBand(1)
+        n_ovr = band.GetOverviewCount()
+        ds = None
+        # portable sources, without chdir'ing the whole process
+        _relativize_vrt_sources(out_fn)
         norm_params = None
         if suffix == "intensity_mos" and normalize_intensity and len(sources) > 1:
             norm_params = _intensity_normalization(sources)
@@ -327,7 +360,11 @@ def merge_projects(
         written.append(out_fn)
         merge_meta["products"][suffix] = {
             "vrt": out_fn.name,
-            "sources_priority_order": [str(fn) for fn in sources],
+            # relative to this metadata file, like the VRT's own sources:
+            # absolute paths break provenance once the batch dir moves
+            "sources_priority_order": [
+                os.path.relpath(fn, output_dir) for fn in sources
+            ],
             "virtual_overviews": n_ovr,
         }
         if norm_params:

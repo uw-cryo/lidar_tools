@@ -149,23 +149,39 @@ def _read_decimated(fn: Path, max_dim: int) -> dict:
     }
 
 
-def _metadata_file(dirname: Path, kind: str) -> Path | None:
+def _metadata_file(dirname: Path, kind: str, prefix: str | None = None) -> Path | None:
     """<prefix>-<kind>.yaml in dirname, falling back to the legacy bare
-    <kind>.yaml of pre-2026-07-13 runs; None if neither exists."""
+    <kind>.yaml of pre-2026-07-13 runs; None if neither exists.
+
+    `prefix` is the product filename prefix being previewed: a directory
+    holding more than one run's metadata (different resolutions) must
+    report the previewed product's own provenance, not whichever file
+    sorts first."""
+    legacy = dirname / f"{kind}.yaml"
+    if prefix is not None:
+        # exact match only: falling back to whichever file sorts first
+        # would report ANOTHER run's provenance under this product's
+        # header — no footer beats a wrong footer
+        own = dirname / f"{prefix}-{kind}.yaml"
+        if own.exists():
+            return own
+        return legacy if legacy.exists() else None
     hits = sorted(dirname.glob(f"*-{kind}.yaml"))
     if hits:
         return hits[0]
-    legacy = dirname / f"{kind}.yaml"
     return legacy if legacy.exists() else None
 
 
-def _project_metadata_files(project_dir: Path) -> list[Path]:
+def _project_metadata_files(
+    project_dir: Path, prefix: str | None = None
+) -> list[Path]:
     """Processing-metadata files feeding this directory's products —
-    the directory's own file, or every source project's for a merge dir."""
-    own = _metadata_file(project_dir, "processing_metadata")
+    the directory's own file, or every source project's for a merge dir.
+    `prefix` disambiguates a directory holding several runs' metadata."""
+    own = _metadata_file(project_dir, "processing_metadata", prefix)
     if own is not None:
         return [own]
-    merge_meta = _metadata_file(project_dir, "merge_metadata")
+    merge_meta = _metadata_file(project_dir, "merge_metadata", prefix)
     found: list[Path] = []
     if merge_meta is not None:
         with open(merge_meta) as f:
@@ -173,7 +189,10 @@ def _project_metadata_files(project_dir: Path) -> list[Path]:
         seen = set()
         for prod in meta.get("products", {}).values():
             for src in prod.get("sources_priority_order", []):
-                srcdir = Path(src).parent
+                # paths are recorded relative to this metadata file (older
+                # merges wrote absolute ones — both must resolve, and
+                # neither may be interpreted against the process CWD)
+                srcdir = (merge_meta.parent / src).resolve().parent
                 fn = _metadata_file(srcdir, "processing_metadata")
                 if fn is None:
                     # resampled staging copies (<workunit>_<posting>, e.g.
@@ -191,7 +210,9 @@ def _project_metadata_files(project_dir: Path) -> list[Path]:
     return found
 
 
-def _footer_lines(project_dir: Path, panel: dict) -> list[str]:
+def _footer_lines(
+    project_dir: Path, panel: dict, prefix: str | None = None
+) -> list[str]:
     """Processing-details footer: 3D CRS + epoch, acquisition range
     (datetime + decimal year), grid, tile counts, projects, provenance."""
     epoch_txt = (
@@ -202,7 +223,7 @@ def _footer_lines(project_dir: Path, panel: dict) -> list[str]:
         f" | grid: {panel['res']:g} m, {panel['size'][0]} x {panel['size'][1]} px"
     ]
     metas = []
-    for fn in _project_metadata_files(project_dir):
+    for fn in _project_metadata_files(project_dir, prefix):
         with open(fn) as f:
             metas.append(yaml.safe_load(f))
     if not metas:
@@ -359,7 +380,7 @@ def product_preview(
         ax.set_yticks([])
         _add_scalebar(ax)
 
-    footer = _footer_lines(project_dir, panels[0])
+    footer = _footer_lines(project_dir, panels[0], prefix)
     title = project_dir.name
     if title in ("merge",) and project_dir.parent.name:
         title = f"{project_dir.parent.name} / merge"

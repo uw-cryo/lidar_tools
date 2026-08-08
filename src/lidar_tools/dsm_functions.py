@@ -106,6 +106,7 @@ def return_readers(
     buffer_value: int = 5,
     return_specific_3dep_survey: str = None,
     return_all_intersecting_surveys: bool = False,
+    ept_index_gdf: gpd.GeoDataFrame = None,
 ) -> tuple[list, list, list, list]:
     """
     This method takes an input aoi and finds overlapping 3DEP EPT data from https://s3-us-west-2.amazonaws.com/usgs-lidar-public/{usgs_dataset_name}/ept.json
@@ -122,9 +123,14 @@ def return_readers(
     buffer_value
         The buffer value in meters to apply to each tile for querying sorrounding tiles, by default 5.
     return_specific_3dep_survey
-        A specific 3DEP survey to return, by default first intersecting survey is returned
+        A specific 3DEP survey to return, by default first intersecting survey is returned.
+        Must be the EPT resource name (callers resolve WESM workunit aliases first;
+        see survey.resolve_ept_resource).
     return_all_intersecting_surveys
         If True, return all intersecting surveys, by default False.
+    ept_index_gdf
+        Preloaded EPT resource boundary index (any CRS). When None, the hobu
+        index is fetched and spatially filtered to the AOI here.
 
     Returns
     -------
@@ -138,11 +144,18 @@ def return_readers(
 
     #Load EPT polygon boundary index for user AOI
     #Reproject to EPSG:3857 for subsequent intersection operations
-    ept_index_gdf = gpd.read_file(
-        "https://raw.githubusercontent.com/hobuinc/usgs-lidar/master/boundaries/resources.geojson",
-        mask=input_aoi
-    ).to_crs(CRS.from_epsg(3857))
-    # Can read from copy stored in the github repo if necessary 
+    if ept_index_gdf is None:
+        ept_index_gdf = gpd.read_file(
+            "https://raw.githubusercontent.com/hobuinc/usgs-lidar/master/boundaries/resources.geojson",
+            mask=input_aoi
+        ).to_crs(CRS.from_epsg(3857))
+    else:
+        # preloaded full index (avoids a second fetch): apply the same
+        # AOI spatial filter the masked read would have
+        ept_index_gdf = ept_index_gdf.to_crs(CRS.from_epsg(3857))
+        aoi_union_3857 = input_aoi.to_crs(CRS.from_epsg(3857)).union_all()
+        ept_index_gdf = ept_index_gdf[ept_index_gdf.intersects(aoi_union_3857)]
+    # Can read from copy stored in the github repo if necessary
     # ept_index_gdf = gpd.read_file('../data/shapefiles/resources.geojson')
 
     print(f"Identified {len(ept_index_gdf)} 3DEP projects intersecting user AOI:")
@@ -1355,19 +1368,23 @@ def gdal_warp(
         cli_resampling = {"nearest": "near", "cubic_spline": "cubicspline"}.get(
             resampling_alogrithm, resampling_alogrithm
         )
-        opts = (
-            f"-overwrite -r {cli_resampling} -tr {res} {res} -et {tolerance} "
-            f"-ot {dtype} -multi -t_coord_epoch {coord_epoch} "
-            f'-s_srs "{src_srs}" -t_srs "{dst_srs}" '
-            "-co COMPRESS=LZW -co TILED=YES -co COPY_SRC_OVERVIEWS=YES "
-            "-co BIGTIFF=IF_SAFER"
-        )
+        # pre-tokenized argv form: same parser as the CLI string (keeps
+        # -t_coord_epoch, which the WarpOptions kwargs lack), but SRS values
+        # are single tokens — a WKT string with embedded quotes cannot
+        # mis-parse (CLI-string form broke on them)
+        opts = [
+            "-overwrite", "-r", cli_resampling, "-tr", str(res), str(res),
+            "-et", str(tolerance), "-ot", dtype, "-multi",
+            "-t_coord_epoch", str(coord_epoch),
+            "-s_srs", str(src_srs), "-t_srs", str(dst_srs),
+            "-co", "COMPRESS=LZW", "-co", "TILED=YES",
+            "-co", "COPY_SRC_OVERVIEWS=YES", "-co", "BIGTIFF=IF_SAFER",
+        ]
         if target_aligned_pixels:
-            opts += " -tap"
+            opts += ["-tap"]
         if out_extent is not None:
-            opts += (f" -te {out_extent[0]} {out_extent[1]}"
-                     f" {out_extent[2]} {out_extent[3]}")
-        print(f"gdal.Warp CLI options: {opts}")
+            opts += ["-te"] + [str(v) for v in out_extent]
+        print(f"gdal.Warp CLI options: {' '.join(opts)}")
         ds = gdal.Warp(dst_fn, src_fn, options=opts,
                        callback=gdal.TermProgress_nocb)
     else:
@@ -1979,7 +1996,8 @@ def create_ept_3dep_pipeline(
     hag_nn: float = None,
     process_specific_3dep_survey: str = None,
     process_all_intersecting_surveys: bool = False,
-    products: list[str] | None = None) -> list[dict]:
+    products: list[str] | None = None,
+    ept_index_gdf: gpd.GeoDataFrame = None) -> list[dict]:
 
     """
     Create single-read PDAL tile jobs for processing 3DEP EPT point clouds to generate DEM products.
@@ -2011,6 +2029,10 @@ def create_ept_3dep_pipeline(
     products
         Canonical product names to build (see parse_products); by default
         all products.
+    ept_index_gdf
+        Preloaded EPT resource boundary index passed through to
+        return_readers (avoids re-fetching the hobu index when the caller
+        already loaded it for name resolution).
 
     Returns
     -------
@@ -2033,6 +2055,7 @@ def create_ept_3dep_pipeline(
         buffer_value=buffer_value,
         return_specific_3dep_survey=process_specific_3dep_survey,
         return_all_intersecting_surveys=process_all_intersecting_surveys,
+        ept_index_gdf=ept_index_gdf,
     )
 
     output_path = Path(output_prefix).parent
