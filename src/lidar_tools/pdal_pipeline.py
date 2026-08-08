@@ -404,26 +404,46 @@ def rasterize(
         filter_high_noise = False
         filter_low_noise = False
 
-    # Per-survey record (WESM): pinned into processing metadata and used to
-    # drive datum handling — declared horizontal realization (base datum for
-    # the EPT null-tie interpretation) and production geoid model. Only
-    # available when a specific workunit was requested; 'latest'/'all' runs
-    # fall back to the NAD83(2011)+best-geoid defaults.
+    # Per-survey record (WESM): pinned into processing metadata and — on the
+    # EPT path — used to drive datum handling (declared horizontal realization
+    # as the base datum for the EPT null-tie interpretation, and production
+    # geoid model). The workunit is the one explicitly requested, or, for
+    # local (staged-LAZ) inputs, the input directory's name when it matches a
+    # WESM workunit — staged 3DEP downloads are conventionally named by
+    # workunit, and without this fallback local-path runs carried NO survey
+    # record, so downstream consumers (preview footers, report-metrics,
+    # fetch-reports) under-reported the batch's projects.
     survey_record = None
     ept_base_epsg = geodesy.NAD83_2011_EPSG
     geoid_hint = None
-    if input == "EPT_AWS" and process_specific_3dep_survey is not None:
+    pin_workunit = process_specific_3dep_survey
+    workunit_derived = False
+    if pin_workunit is None and input != "EPT_AWS":
+        pin_workunit = Path(input).name
+        workunit_derived = True
+    if pin_workunit is not None:
         try:
-            survey_record = survey.workunit_record(gdf, process_specific_3dep_survey)
+            survey_record = survey.workunit_record(gdf, pin_workunit)
         except Exception as e:
-            print(
-                f"WARNING: could not fetch the WESM record for "
-                f"'{process_specific_3dep_survey}' ({e}); using default datum "
-                "handling (NAD83(2011), best available geoid)",
-                file=sys.stderr,
-            )
+            if workunit_derived:
+                # a local dir not named after a WESM workunit is normal —
+                # note it and move on
+                print(
+                    f"No WESM record pinned for local input "
+                    f"'{pin_workunit}' ({e})"
+                )
+            else:
+                print(
+                    f"WARNING: could not fetch the WESM record for "
+                    f"'{pin_workunit}' ({e}); using default datum "
+                    "handling (NAD83(2011), best available geoid)",
+                    file=sys.stderr,
+                )
         if survey_record is not None:
             _update_processing_metadata(outdir, "survey_records", [survey_record])
+        if survey_record is not None and input == "EPT_AWS":
+            # datum-handling side effects apply to the EPT path only; local
+            # inputs keep their file-declared CRS handling unchanged
             if survey_record.get("horiz_crs"):
                 # hard-errors on non-NAD83-family (e.g. Pacific-plate PA11)
                 ept_base_epsg = geodesy.geographic_base_epsg(
@@ -431,9 +451,16 @@ def rasterize(
                 )
             geoid_hint = geodesy.geoid_grid_hint(survey_record.get("geoid"))
             print(
-                f"Survey record pinned: {process_specific_3dep_survey} "
+                f"Survey record pinned: {pin_workunit} "
                 f"(base datum EPSG:{ept_base_epsg}, geoid "
                 f"{survey_record.get('geoid')}, ql {survey_record.get('ql')})"
+            )
+        elif survey_record is not None:
+            print(
+                f"Survey record pinned (metadata only, local input): "
+                f"{pin_workunit} (ql {survey_record.get('ql')}, "
+                f"{survey_record.get('collect_start')} - "
+                f"{survey_record.get('collect_end')})"
             )
 
     # TODO: create EPT for local laz for common workflow? https://github.com/uw-cryo/lidar_tools/issues/14#issuecomment-3076045321
