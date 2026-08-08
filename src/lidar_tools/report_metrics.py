@@ -354,17 +354,28 @@ def extract_project_metrics(pdir: Path, workunit: str) -> dict:
     record["wesm"] = wesm or None
     # flag vendor-XML acquisition dates that fall outside the WESM window
     # (± 45 d slack for WESM day-precision and mobilization edges)
-    if fgdc.get("acquisition_start") and wesm.get("collect_start"):
+    if (
+        fgdc.get("acquisition_start")
+        and fgdc.get("acquisition_end")
+        and wesm.get("collect_start")
+        and wesm.get("collect_end")
+    ):
         import datetime as dt
 
         slack = dt.timedelta(days=45)
-        f0 = dt.datetime.fromisoformat(fgdc["acquisition_start"])
-        f1 = dt.datetime.fromisoformat(fgdc["acquisition_end"])
-        w0 = dt.datetime.fromisoformat(str(wesm["collect_start"]))
-        w1 = dt.datetime.fromisoformat(str(wesm["collect_end"]))
-        record["acquisition_dates_consistent"] = bool(
-            w0 - slack <= f0 and f1 <= w1 + slack
-        )
+        try:
+            f0 = dt.datetime.fromisoformat(fgdc["acquisition_start"])
+            f1 = dt.datetime.fromisoformat(fgdc["acquisition_end"])
+            w0 = dt.datetime.fromisoformat(str(wesm["collect_start"]))
+            w1 = dt.datetime.fromisoformat(str(wesm["collect_end"]))
+        except ValueError:
+            # unparseable date (vendor template blank passed through the
+            # FGDC extractor): no verdict beats crashing the whole batch
+            pass
+        else:
+            record["acquisition_dates_consistent"] = bool(
+                w0 - slack <= f0 and f1 <= w1 + slack
+            )
 
     if metrics.get("first_return_density_ppsm") or metrics.get("anpd_ppsm"):
         dens = metrics.get("first_return_density_ppsm") or metrics["anpd_ppsm"]
@@ -510,6 +521,11 @@ def report_metrics(
         print(f"Extracting report metrics: {wu}")
         rec = extract_project_metrics(pdir, wu)
         records.append(rec)
+        if not pdir.is_dir():
+            # extract_project_metrics produced a note-only record for the
+            # absent directory; keep it in the table, nothing to write
+            print(f"  (no project directory for {wu}; YAML record skipped)")
+            continue
         hits = sorted(pdir.glob("*-processing_metadata.yaml"))
         prefix = (
             hits[0].name.rsplit("-", 1)[0] if hits else wu

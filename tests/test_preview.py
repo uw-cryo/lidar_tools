@@ -43,3 +43,27 @@ def test_preview_batch_dir(tmp_path, capsys):
     preview.preview(str(tmp_path))
     assert (proj / "aoi-preview.png").exists()
     assert "Wrote preview" in capsys.readouterr().out
+
+
+def test_footer_survives_null_collect_dates(tmp_path):
+    """Pinned survey records with null collect dates (WESM NaT, stored as
+    null) must not crash the preview footer."""
+    import yaml
+
+    _make_product(tmp_path / "aoi-DSM_mos.tif", 105.0)
+    (tmp_path / "aoi-processing_metadata.yaml").write_text(
+        yaml.dump(
+            {
+                "survey_records": [
+                    {
+                        "workunit": "wu_legacy",
+                        "ql": "QL 2",
+                        "collect_start": None,
+                        "collect_end": None,
+                    }
+                ]
+            }
+        )
+    )
+    out = preview.product_preview(tmp_path)
+    assert out is not None and out.exists()

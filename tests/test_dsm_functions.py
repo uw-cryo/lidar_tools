@@ -1091,3 +1091,38 @@ def test_return_readers_injected_index_offline(monkeypatch):
     assert all("TEST_EPT_RESOURCE" in r["filename"] for r in readers)
     assert all(c.to_epsg() == 3857 for c in crs_list)
     assert len(readers) == len(extents) == len(original_extents)
+
+def test_execute_tile_job_empty_without_fetch(tmp_path, monkeypatch):
+    """A zero-point tile on the no-fetch path (single filter-chain group,
+    e.g. --products dsm) is classified empty, not failed, and leaves no
+    invalid nodata raster behind for --resume to trip over."""
+    d = lidar_tools.dsm_functions
+    laz = tmp_path / "points.laz"
+    _make_multiclass_laz(laz)
+    reader = {"type": "readers.las", "filename": str(laz)}
+    job = d.create_tile_pipelines(
+        [reader],
+        tile_id="000",
+        output_path=tmp_path,
+        prefix="aoi",
+        extent=_TILE_EXTENT,
+        raster_resolution=1.0,
+        products=d.parse_products("dsm"),
+    )
+    assert job["fetch"] is None  # single group: no separate fetch step
+
+    # Simulate the EPT zero-read (readers.ept bounds outside the survey's
+    # coverage, or every point dropped by the class filters): the pipeline
+    # runs and writes its raster, but processes 0 points.
+    real = d._execute_pipeline_with_retries
+
+    def zero_points(pipeline_json, attempts):
+        real(pipeline_json, attempts)
+        return 0
+
+    monkeypatch.setattr(d, "_execute_pipeline_with_retries", zero_points)
+    result = d.execute_tile_job(job)
+    assert result["empty"]
+    assert all(fn is None for fn in result["outputs"].values())
+    # the nodata raster the writer produced was removed
+    assert not list(Path(tmp_path).rglob("*_tile_aoi_*.tif"))

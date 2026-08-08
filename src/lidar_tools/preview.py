@@ -213,14 +213,25 @@ def _footer_lines(project_dir: Path, panel: dict) -> list[str]:
         projs = ", ".join(
             f"{r['workunit']} ({r.get('ql', '?')})" for r in records
         )
-        starts = [datetime.fromisoformat(r["collect_start"]) for r in records]
-        ends = [datetime.fromisoformat(r["collect_end"]) for r in records]
-        t0, t1 = min(starts), max(ends)
+        # WESM NaT collect dates are stored as null in the pinned record
+        # (legacy surveys) — skip them rather than crash the whole preview
+        starts = [
+            datetime.fromisoformat(r["collect_start"])
+            for r in records
+            if r.get("collect_start")
+        ]
+        ends = [
+            datetime.fromisoformat(r["collect_end"])
+            for r in records
+            if r.get("collect_end")
+        ]
         lines.append(f"projects: {projs}")
-        lines.append(
-            f"acquisition: {t0.date()} to {t1.date()} "
-            f"({_decimal_year(t0):.2f} to {_decimal_year(t1):.2f})"
-        )
+        if starts and ends:
+            t0, t1 = min(starts), max(ends)
+            lines.append(
+                f"acquisition: {t0.date()} to {t1.date()} "
+                f"({_decimal_year(t0):.2f} to {_decimal_year(t1):.2f})"
+            )
     ip = metas[0].get("input_parameters", {})
     prov = []
     # per-project tile accounting recorded at run completion (runs after

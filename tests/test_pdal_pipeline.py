@@ -241,3 +241,24 @@ def test_rasterize_wesm_failure_geoid_modes(tmp_path, monkeypatch):
         geoid_override="best-available",
         quiet=True,
     )
+
+
+def test_metadata_path_rejects_mixed_run_prefixes(tmp_path):
+    """A directory holding metadata from two runs (e.g. --resume at a new
+    resolution) must error, not silently update the alphabetically-first
+    stale record."""
+    from lidar_tools import pdal_pipeline
+
+    only = tmp_path / "aoi_0.5m-processing_metadata.yaml"
+    only.write_text("a: 1\n")
+    assert pdal_pipeline._metadata_path(tmp_path) == only
+
+    (tmp_path / "aoi_1m-processing_metadata.yaml").write_text("b: 2\n")
+    with pytest.raises(RuntimeError, match="Multiple processing-metadata"):
+        pdal_pipeline._metadata_path(tmp_path)
+
+    legacy = tmp_path / "legacy"
+    legacy.mkdir()
+    assert (
+        pdal_pipeline._metadata_path(legacy).name == "processing_metadata.yaml"
+    )

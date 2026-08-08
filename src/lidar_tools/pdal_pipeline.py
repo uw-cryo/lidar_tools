@@ -120,6 +120,16 @@ def _metadata_path(output_dir: Path) -> Path:
     .yaml (prefix = AOI + posting + project), falling back to the legacy bare
     processing_metadata.yaml of pre-2026-07-13 runs."""
     hits = sorted(Path(output_dir).glob("*-processing_metadata.yaml"))
+    if len(hits) > 1:
+        # e.g. a --resume into the same directory at a different resolution:
+        # updates would silently land in the alphabetically-first (stale)
+        # run's record and corrupt it with mixed-run sections
+        raise RuntimeError(
+            f"Multiple processing-metadata files in {output_dir}: "
+            f"{[h.name for h in hits]}. The directory mixes runs with "
+            "different filename prefixes (resolution/project); use a fresh "
+            "output directory or remove the stale run's files."
+        )
     return hits[0] if hits else Path(output_dir) / "processing_metadata.yaml"
 
 
@@ -772,6 +782,20 @@ def rasterize(
             _cleanup_intermediates(outdir)
         print("****Processing complete (no data)****")
         return
+
+    # Per-product guard: a product whose every data tile failed has nothing
+    # to mosaic — drop it loudly so the surviving products still get their
+    # mosaics instead of crashing on an empty file list here.
+    all_failed = [name for name in requested if not results[name]]
+    if all_failed:
+        print(
+            "ERROR: no valid tiles for "
+            f"{', '.join(product_labels[n] for n in all_failed)}; skipping "
+            "those products (see ERROR messages above for the failing "
+            "pipelines).",
+            file=sys.stderr,
+        )
+        requested = [name for name in requested if results[name]]
 
     # Mosaicing
     # ===========
