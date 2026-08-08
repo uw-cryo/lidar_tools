@@ -8,7 +8,8 @@ from .driver import rasterize_projects
 from .merge import merge
 from .pdal_pipeline import rasterize
 from .preview import preview
-from .survey import survey
+from .report_metrics import report_metrics
+from .survey import fetch_reports, survey
 
 
 app = cyclopts.App()
@@ -17,6 +18,8 @@ app.command()(rasterize_projects)
 app.command()(survey)
 app.command()(preview)
 app.command()(merge)
+app.command()(fetch_reports)
+app.command()(report_metrics)
 
 
 if __name__ == "__main__":
