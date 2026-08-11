@@ -27,6 +27,7 @@ gdal.UseExceptions()
 
 odc.stac.configure_rio(cloud_defaults=True)
 
+
 def nearest_floor(x: int | float, a: int | float) -> int | float:
     """
     Round down to the nearest smaller multiple of a.
@@ -92,11 +93,12 @@ def _ept_srs_wkt(url: str, attempts: int = 4, backoff_s: float = 2.0) -> str:
             return wkt
         except Exception as exc:  # transient S3 / network errors
             last_exc = exc
-            print(f"ept.json fetch attempt {i + 1}/{attempts} failed for "
-                  f"{url}: {exc}", file=sys.stderr)
+            print(
+                f"ept.json fetch attempt {i + 1}/{attempts} failed for {url}: {exc}",
+                file=sys.stderr,
+            )
             time.sleep(backoff_s * (i + 1))
-    raise RuntimeError(f"could not fetch {url} after {attempts} attempts") \
-        from last_exc
+    raise RuntimeError(f"could not fetch {url} after {attempts} attempts") from last_exc
 
 
 def return_readers(
@@ -143,12 +145,12 @@ def return_readers(
          - original extents
     """
 
-    #Load EPT polygon boundary index for user AOI
-    #Reproject to EPSG:3857 for subsequent intersection operations
+    # Load EPT polygon boundary index for user AOI
+    # Reproject to EPSG:3857 for subsequent intersection operations
     if ept_index_gdf is None:
         ept_index_gdf = gpd.read_file(
             "https://raw.githubusercontent.com/hobuinc/usgs-lidar/master/boundaries/resources.geojson",
-            mask=input_aoi
+            mask=input_aoi,
         ).to_crs(CRS.from_epsg(3857))
     else:
         # preloaded full index (avoids a second fetch): apply the same
@@ -160,7 +162,7 @@ def return_readers(
     # ept_index_gdf = gpd.read_file('../data/shapefiles/resources.geojson')
 
     print(f"Identified {len(ept_index_gdf)} 3DEP projects intersecting user AOI:")
-    print(ept_index_gdf['name'], end="\n\n")
+    print(ept_index_gdf["name"], end="\n\n")
 
     # Reproject input AOI to EPSG:3857 (units of meters)
     input_aoi_3857 = input_aoi.to_crs(CRS.from_epsg(3857))
@@ -178,11 +180,13 @@ def return_readers(
     original_extents = []
     extents = []
 
-    print(f"Preparing PDAL pipelines for each {tile_size_km} x {tile_size_km} km tile: {n_cols} cols x {n_rows} rows, {n_tiles} total tiles\n")
+    print(
+        f"Preparing PDAL pipelines for each {tile_size_km} x {tile_size_km} km tile: {n_cols} cols x {n_rows} rows, {n_tiles} total tiles\n"
+    )
 
     for i in range(n_cols):
         for j in range(n_rows):
-            tilenum = (i*n_rows) + (j+1)
+            tilenum = (i * n_rows) + (j + 1)
             aoi = shapely.geometry.Polygon.from_bounds(
                 xmin + i * x_step,
                 ymin + j * y_step,
@@ -196,29 +200,38 @@ def return_readers(
 
             # create tap bounds for the tile
             src_bounds_transformed_3857 = tap_bounds(aoi.bounds, pointcloud_resolution)
-            aoi_3857 = shapely.geometry.Polygon.from_bounds(*src_bounds_transformed_3857)
-            #print(aoi.bounds, src_bounds_transformed_3857)
+            aoi_3857 = shapely.geometry.Polygon.from_bounds(
+                *src_bounds_transformed_3857
+            )
+            # print(aoi.bounds, src_bounds_transformed_3857)
 
-            #Check to make sure the tile intersects the original user AOI, not just the bbox envelope
+            # Check to make sure the tile intersects the original user AOI, not just the bbox envelope
             if (input_aoi_3857.geometry.intersects(aoi_3857)).any():
-                print(f"Column {i+1} of {n_cols}, Row {j+1} of {n_rows}, Tile {tilenum} of {n_tiles}")
+                print(
+                    f"Column {i + 1} of {n_cols}, Row {j + 1} of {n_rows}, Tile {tilenum} of {n_tiles}"
+                )
                 if buffer_value:
-                    #print(f"The tile polygon will be buffered by {buffer_value:.2f} m")
+                    # print(f"The tile polygon will be buffered by {buffer_value:.2f} m")
                     # buffer the tile polygon by the buffer value
                     aoi_3857 = aoi_3857.buffer(buffer_value)
                     # now create tap bounds for the buffered tile
                     aoi_3857_bounds = tap_bounds(aoi_3857.bounds, pointcloud_resolution)
                     # now convert the buffered tile to a polygon
                     aoi_3857 = shapely.geometry.Polygon.from_bounds(*aoi_3857_bounds)
-                    #print("The buffered tile bound is: ", aoi_3857.bounds)
+                    # print("The buffered tile bound is: ", aoi_3857.bounds)
 
                 # one survey per run, by construction: only tiles whose
                 # boundary polygon intersects this tile get a reader
-                hits = ept_index_gdf[
-                    (ept_index_gdf["name"] == survey_name)
-                    & ept_index_gdf.intersects(aoi)
-                ]
-                for _, row in hits.iterrows():
+                # at most ONE reader per tile: the index can hold several
+                # boundary polygons for one resource, and a second reader
+                # would re-read the same points into the same tile
+                intersects = bool(
+                    ept_index_gdf[
+                        (ept_index_gdf["name"] == survey_name)
+                        & ept_index_gdf.intersects(aoi)
+                    ].shape[0]
+                )
+                if intersects:
                     url = f"https://s3-us-west-2.amazonaws.com/usgs-lidar-public/{survey_name}/ept.json"
                     reader = {
                         "type": "readers.ept",
@@ -520,16 +533,17 @@ def create_pdal_pipeline(
             pipeline.append(stage_filter_low_noise)
         if hag_nn is not None:
             # if hag_nn is specified, we classify all points with HAG greater than hag_nn as high noise
-            stage_hag_nn = {
-                "type": "filters.hag_nn"}
+            stage_hag_nn = {"type": "filters.hag_nn"}
             stage_hag_nn_filter = {
                 "type": "filters.assign",
-                "value": [f"Classification = 18 WHERE HeightAboveGround > {hag_nn}"]
+                "value": [f"Classification = 18 WHERE HeightAboveGround > {hag_nn}"],
             }
             pipeline.append(stage_hag_nn)
             pipeline.append(stage_hag_nn_filter)
 
-            filter_high_noise = True # ensure that we filter high noise points if hag_nn is specified
+            filter_high_noise = (
+                True  # ensure that we filter high noise points if hag_nn is specified
+            )
         if percentile_filter or filter_high_noise:
             pipeline.append(stage_filter_high_noise)
         if filter_road:
@@ -542,10 +556,16 @@ def create_pdal_pipeline(
 
     if (output_crs is not None) & (input_crs is not None) and (reproject is True):
         if proj_pipeline is not None:
-            stage_reprojection = {"type": "filters.projpipeline", "out_srs": str(output_crs)}
+            stage_reprojection = {
+                "type": "filters.projpipeline",
+                "out_srs": str(output_crs),
+            }
             stage_reprojection["coord_op"] = proj_pipeline
         else:
-            stage_reprojection = {"type": "filters.reprojection", "out_srs": str(output_crs)}
+            stage_reprojection = {
+                "type": "filters.reprojection",
+                "out_srs": str(output_crs),
+            }
             stage_reprojection["in_srs"] = str(input_crs)
         pipeline.append(stage_reprojection)
 
@@ -596,14 +616,15 @@ def create_dem_stage(
     # compute raster width and height
     width = (extent[2] - extent[0]) / pointcloud_resolution
     height = (extent[3] - extent[1]) / pointcloud_resolution
-    #fix origin extent precision with respect to input resolution
-    #from https://www.reddit.com/r/pythontips/comments/zw5ana/how_to_count_decimal_places/
+    # fix origin extent precision with respect to input resolution
+    # from https://www.reddit.com/r/pythontips/comments/zw5ana/how_to_count_decimal_places/
     import decimal
+
     d = decimal.Decimal(str(pointcloud_resolution))
     precision = abs(d.as_tuple().exponent)
 
-    origin_x = np.round(extent[0],precision)
-    origin_y = np.round(extent[1],precision)
+    origin_x = np.round(extent[0], precision)
+    origin_y = np.round(extent[1], precision)
     dem_stage = {
         "type": "writers.gdal",
         "filename": dem_filename,
@@ -623,7 +644,8 @@ def create_dem_stage(
 
     return [dem_stage]
 
- # Dictionary mapping common dtype strings to GDAL data types
+
+# Dictionary mapping common dtype strings to GDAL data types
 DTYPE_TO_GDAL = {
     "Byte": gdal.GDT_Byte,
     "UInt16": gdal.GDT_UInt16,
@@ -637,6 +659,8 @@ DTYPE_TO_GDAL = {
     "CFloat32": gdal.GDT_CFloat32,
     "CFloat64": gdal.GDT_CFloat64,
 }
+
+
 def raise_file_limit(max_soft: int = 65536) -> int:
     """
     Raise the process soft open-file limit (RLIMIT_NOFILE) toward the hard limit.
@@ -674,7 +698,6 @@ def raster_mosaic(
     outfn: str,
     cog: bool = False,
     out_extent: list = None,
-
 ) -> None:
     """
     Given a list of input images, mosaic them into a COG raster by using vrt and gdal_translate
@@ -713,7 +736,7 @@ def raster_mosaic(
     if out_extent is not None:
         minx, miny, maxx, maxy = out_extent
         out_extent = [minx, maxy, maxx, miny]
-    
+
     if cog:
         # translate to COG
         print(out_extent)
@@ -1262,9 +1285,7 @@ def _open_decimated_dataarray(raster_fn: str, max_dim: int = 1024):
             resampling=rasterio.enums.Resampling.average,
             masked=True,
         )
-        transform = src.transform * rasterio.Affine.scale(
-            src.width / w, src.height / h
-        )
+        transform = src.transform * rasterio.Affine.scale(src.width / w, src.height / h)
         xs = transform.c + transform.a * (np.arange(w) + 0.5)
         ys = transform.f + transform.e * (np.arange(h) + 0.5)
         da = xr.DataArray(
@@ -1283,7 +1304,7 @@ def gdal_warp(
     res: float = 1.0,
     resampling_alogrithm: str = "bilinear",
     out_extent: list = None,
-    dtype: str = 'Float32',
+    dtype: str = "Float32",
     target_aligned_pixels: bool = True,
     coordinate_operation: str = None,
     coord_epoch: float = None,
@@ -1335,8 +1356,6 @@ def gdal_warp(
     This function does not return anything, it writes the output raster to the specified file.
     """
 
-   
-
     tolerance = 0
     resampling_mapping = {
         "nearest": gdalconst.GRA_NearestNeighbour,
@@ -1365,20 +1384,38 @@ def gdal_warp(
         # are single tokens — a WKT string with embedded quotes cannot
         # mis-parse (CLI-string form broke on them)
         opts = [
-            "-overwrite", "-r", cli_resampling, "-tr", str(res), str(res),
-            "-et", str(tolerance), "-ot", dtype, "-multi",
-            "-t_coord_epoch", str(coord_epoch),
-            "-s_srs", str(src_srs), "-t_srs", str(dst_srs),
-            "-co", "COMPRESS=LZW", "-co", "TILED=YES",
-            "-co", "COPY_SRC_OVERVIEWS=YES", "-co", "BIGTIFF=IF_SAFER",
+            "-overwrite",
+            "-r",
+            cli_resampling,
+            "-tr",
+            str(res),
+            str(res),
+            "-et",
+            str(tolerance),
+            "-ot",
+            dtype,
+            "-multi",
+            "-t_coord_epoch",
+            str(coord_epoch),
+            "-s_srs",
+            str(src_srs),
+            "-t_srs",
+            str(dst_srs),
+            "-co",
+            "COMPRESS=LZW",
+            "-co",
+            "TILED=YES",
+            "-co",
+            "COPY_SRC_OVERVIEWS=YES",
+            "-co",
+            "BIGTIFF=IF_SAFER",
         ]
         if target_aligned_pixels:
             opts += ["-tap"]
         if out_extent is not None:
             opts += ["-te"] + [str(v) for v in out_extent]
         print(f"gdal.Warp CLI options: {' '.join(opts)}")
-        ds = gdal.Warp(dst_fn, src_fn, options=opts,
-                       callback=gdal.TermProgress_nocb)
+        ds = gdal.Warp(dst_fn, src_fn, options=opts, callback=gdal.TermProgress_nocb)
     else:
         ds = gdal.Warp(
             dst_fn,
@@ -1396,7 +1433,12 @@ def gdal_warp(
             # use directly output format as COG when gaussian overview resampling is implemented upstream in GDAL
             outputBounds=out_extent,
             outputType=DTYPE_TO_GDAL.get(dtype),
-            creationOptions=["COMPRESS=LZW", "TILED=YES", "COPY_SRC_OVERVIEWS=YES","BIGTIFF=IF_SAFER"],
+            creationOptions=[
+                "COMPRESS=LZW",
+                "TILED=YES",
+                "COPY_SRC_OVERVIEWS=YES",
+                "BIGTIFF=IF_SAFER",
+            ],
             callback=gdal.TermProgress_nocb,
             multithread=True,
         )
@@ -1404,8 +1446,9 @@ def gdal_warp(
     ds.Close()
 
 
-
-def gdal_add_overview(raster_fn: str, ensure_cog=True, resampling: str = "AVERAGE") -> None:
+def gdal_add_overview(
+    raster_fn: str, ensure_cog=True, resampling: str = "AVERAGE"
+) -> None:
     """
     Add overviews to a raster file using GDAL.
     Converts the raster to a COG,
@@ -1430,25 +1473,21 @@ def gdal_add_overview(raster_fn: str, ensure_cog=True, resampling: str = "AVERAG
     print(f"Adding {resampling} overviews to {raster_fn}")
     with gdal.OpenEx(raster_fn, 1, open_options=["IGNORE_COG_LAYOUT_BREAK=YES"]) as ds:
         gdal.SetConfigOption("COMPRESS_OVERVIEW", "DEFLATE")
-        ds.BuildOverviews(
-            resampling, [2, 4, 8, 16], callback=gdal.TermProgress_nocb
-        )
+        ds.BuildOverviews(resampling, [2, 4, 8, 16], callback=gdal.TermProgress_nocb)
 
     if ensure_cog:
-        temp_fn =Path(raster_fn).parent / f"{Path(raster_fn).stem}-cop-temp.tif"
+        temp_fn = Path(raster_fn).parent / f"{Path(raster_fn).stem}-cop-temp.tif"
         gdal.Translate(
             str(temp_fn),
             raster_fn,
             format="COG",
-            creationOptions=["OVERVIEWS=FORCE_USE_EXISTING","BIGTIFF=IF_SAFER"],
+            creationOptions=["OVERVIEWS=FORCE_USE_EXISTING", "BIGTIFF=IF_SAFER"],
             callback=gdal.TermProgress_nocb,
         )
         rename_rasters(str(temp_fn), raster_fn)
 
 
-def raster_footprint(
-    raster_fn: str, out_fn: str, simplify_px: float = 32.0
-) -> str:
+def raster_footprint(raster_fn: str, out_fn: str, simplify_px: float = 32.0) -> str:
     """
     Write the valid-data footprint of a raster as a polygon GeoPackage in
     the raster CRS. Ships with every per-project mosaic so downstream QA
@@ -1502,7 +1541,8 @@ def create_lpc_pipeline(
     filter_low_noise: bool = True,
     hag_nn: float = None,
     buffer_value: float = 5.0,
-    products: list[str] | None = None) -> list[dict]:
+    products: list[str] | None = None,
+) -> list[dict]:
     """
     Create single-read PDAL tile jobs for processing local LiDAR point clouds (LPC) to generate DEM products
 
@@ -1574,7 +1614,7 @@ def create_lpc_pipeline(
     output_path.mkdir(exist_ok=True)
     print(f"Number of readers: {len(readers)}")
 
-    #Determine number of digits for unique pipeline id with zero padding
+    # Determine number of digits for unique pipeline id with zero padding
     ndigits = len(str(len(readers)))
 
     with open(target_wkt, "r") as f:
@@ -1615,6 +1655,7 @@ def create_lpc_pipeline(
 
     return tile_jobs
 
+
 def _set_dsm_gridding_params(dsm_gridding_choice: str):
     if dsm_gridding_choice == "first_idw":
         dsm_group_filter = "first,only"
@@ -1624,10 +1665,15 @@ def _set_dsm_gridding_params(dsm_gridding_choice: str):
     else:
         dsm_group_filter = None
         dsm_gridding_method = "max"
-        percentile_threshold = int(dsm_gridding_choice.split("-pct")[0])/100.0
+        percentile_threshold = int(dsm_gridding_choice.split("-pct")[0]) / 100.0
         percentile_filter = True
 
-    return dsm_group_filter, dsm_gridding_method, percentile_filter, percentile_threshold
+    return (
+        dsm_group_filter,
+        dsm_gridding_method,
+        percentile_filter,
+        percentile_threshold,
+    )
 
 
 # Canonical gridded products, in construction/reporting order. User-facing
@@ -1988,8 +2034,8 @@ def create_ept_3dep_pipeline(
     hag_nn: float = None,
     survey_name: str = None,
     products: list[str] | None = None,
-    ept_index_gdf: gpd.GeoDataFrame = None) -> list[dict]:
-
+    ept_index_gdf: gpd.GeoDataFrame = None,
+) -> list[dict]:
     """
     Create single-read PDAL tile jobs for processing ONE 3DEP EPT survey
     to generate DEM products. Multi-survey combination is the merge
@@ -2015,7 +2061,7 @@ def create_ept_3dep_pipeline(
     filter_high_noise
         Remove high noise points (classification==18) from the point cloud before DSM and surface intensity processing. Default is True.
     filter_low_noise
-        Remove low points (classification==7) from the point cloud before DSM, DTM and surface intensity processing. Default is True.    
+        Remove low points (classification==7) from the point cloud before DSM, DTM and surface intensity processing. Default is True.
     hag_nn
         If specified, the height above ground (HAG) will be calculated using all nearest ground classified points, and all points greater than this value will be classified as high noise, by default None.
     products
@@ -2034,15 +2080,15 @@ def create_ept_3dep_pipeline(
         per-filter-chain product executions, executable with
         execute_tile_job.
     """
-    
+
     if not survey_name:
         # selection is upstream policy (catalog.select_workunits /
         # select_latest_workunit); reading without a named survey would
         # re-create the old index-file-order arbitrariness (gh #68)
         raise ValueError("survey_name is required (EPT resource name)")
 
-    #Load the user-specified polygon dataset
-    #Should check that this is EPSG:4326 (default for geojson)
+    # Load the user-specified polygon dataset
+    # Should check that this is EPSG:4326 (default for geojson)
     gdf = gpd.read_file(extent_polygon)
 
     # fetch the readers for the pointclouds
@@ -2062,7 +2108,7 @@ def create_ept_3dep_pipeline(
 
     print(f"Number of readers: {len(readers)}")
 
-    #Determine number of digits for unique pipeline id with zero padding
+    # Determine number of digits for unique pipeline id with zero padding
     ndigits = len(str(len(readers)))
 
     if products is None:
@@ -2201,9 +2247,7 @@ def _execute_pipeline_with_retries(pipeline_json_path: str, attempts: int) -> in
             time.sleep(wait)
 
 
-def execute_tile_job(
-    job: dict, skip_existing: bool = False, attempts: int = 3
-) -> dict:
+def execute_tile_job(job: dict, skip_existing: bool = False, attempts: int = 3) -> dict:
     """
     Execute one single-read tile job (see create_tile_pipelines): fetch the
     tile's points into a local cache once, then run each pending product

@@ -72,7 +72,9 @@ def test_return_readers():
     ]
 
 
-def _make_const_uint16_raster(fn, value=120, origin=(-13615000, 6045000), size=100, res=0.5):
+def _make_const_uint16_raster(
+    fn, value=120, origin=(-13615000, 6045000), size=100, res=0.5
+):
     """Constant UInt16 raster in EPSG:3857 (default origin near Seattle, UTM 10N)."""
     from osgeo import gdal, osr
 
@@ -225,9 +227,12 @@ def test_execute_pdal_pipeline_skip_existing(tmp_path):
     pipeline_fn = tmp_path / "pipeline.json"
     pipeline_fn.write_text(
         json.dumps(
-            {"pipeline": [{"type": "readers.las", "filename": "/nonexistent.laz"},
-                          {"type": "writers.gdal", "filename": str(outfn),
-                           "resolution": 1.0}]}
+            {
+                "pipeline": [
+                    {"type": "readers.las", "filename": "/nonexistent.laz"},
+                    {"type": "writers.gdal", "filename": str(outfn), "resolution": 1.0},
+                ]
+            }
         )
     )
     result = lidar_tools.dsm_functions.execute_pdal_pipeline(
@@ -266,9 +271,7 @@ def test_raise_file_limit():
 def _make_test_laz(fn, epsg=32611):
     import pdal
 
-    arr = np.zeros(
-        10, dtype=[("X", np.float64), ("Y", np.float64), ("Z", np.float64)]
-    )
+    arr = np.zeros(10, dtype=[("X", np.float64), ("Y", np.float64), ("Z", np.float64)])
     arr["X"] = np.linspace(500000, 500100, 10)
     arr["Y"] = np.linspace(4000000, 4000100, 10)
     arr["Z"] = 100.0
@@ -370,8 +373,9 @@ def _read_raster(fn):
     return da
 
 
-def _legacy_product_pipelines(reader, outdir, prefix, hag_nn=None,
-                              dsm_gridding_choice="first_idw"):
+def _legacy_product_pipelines(
+    reader, outdir, prefix, hag_nn=None, dsm_gridding_choice="first_idw"
+):
     """
     Replicate the pre-F3 per-product pipeline construction verbatim (one
     standalone pipeline per product, each embedding its own reader) so a
@@ -430,7 +434,9 @@ def _legacy_product_pipelines(reader, outdir, prefix, hag_nn=None,
         "dtm_no_fill": dict(gridmethod="idw", dimension="Z"),
         "dtm_fill": dict(gridmethod="idw", dimension="Z"),
         "intensity": dict(
-            gridmethod="idw", dimension="Intensity", nodata_value=0,
+            gridmethod="idw",
+            dimension="Intensity",
+            nodata_value=0,
             data_type="UInt16",
         ),
     }
@@ -445,9 +451,7 @@ def _legacy_product_pipelines(reader, outdir, prefix, hag_nn=None,
         if name == "dtm_fill":
             stage[0]["window_size"] = 4
         pipeline_fn = outdir / f"legacy_pipeline_{name}.json"
-        pipeline_fn.write_text(
-            json.dumps({"pipeline": [reader] + chain + stage})
-        )
+        pipeline_fn.write_text(json.dumps({"pipeline": [reader] + chain + stage}))
         paths[name] = (pipeline_fn, files[name])
     return paths
 
@@ -489,16 +493,16 @@ def test_tile_job_structure_first_idw(tmp_path):
     assert job["fetch"]["cache_file"].endswith("_cache_tile_aoi_000.laz")
     assert len(job["executions"]) == 2
     # dsm+intensity share one execution (identical chains): pinned sequence
-    dsm_int = json.loads(
-        Path(job["executions"][0]["pipeline_json"]).read_text()
-    )["pipeline"]
+    dsm_int = json.loads(Path(job["executions"][0]["pipeline_json"]).read_text())[
+        "pipeline"
+    ]
     assert [s["type"] for s in dsm_int] == [
         "readers.las",
-        "filters.range",     # low noise
+        "filters.range",  # low noise
         "filters.hag_nn",
         "filters.assign",
-        "filters.range",     # high noise
-        "filters.returns",   # first,only
+        "filters.range",  # high noise
+        "filters.returns",  # first,only
         "writers.gdal",
         "writers.gdal",
     ]
@@ -517,14 +521,14 @@ def test_tile_job_structure_first_idw(tmp_path):
     assert dsm_int[-2]["origin_x"] == _TILE_EXTENT[0]
     assert dsm_int[-2]["width"] == 20 and dsm_int[-2]["height"] == 20
     # the DTM pair shares the ground execution, fill differs only by writer
-    dtm = json.loads(
-        Path(job["executions"][1]["pipeline_json"]).read_text()
-    )["pipeline"]
+    dtm = json.loads(Path(job["executions"][1]["pipeline_json"]).read_text())[
+        "pipeline"
+    ]
     assert [s["type"] for s in dtm] == [
         "readers.las",
-        "filters.range",     # low noise
-        "filters.range",     # high noise
-        "filters.range",     # ground only
+        "filters.range",  # low noise
+        "filters.range",  # high noise
+        "filters.range",  # ground only
         "writers.gdal",
         "writers.gdal",
     ]
@@ -552,9 +556,9 @@ def test_tile_job_structure_npct(tmp_path):
     assert len(job["executions"]) == 3
     import json
 
-    dsm = json.loads(
-        Path(job["executions"][0]["pipeline_json"]).read_text()
-    )["pipeline"]
+    dsm = json.loads(Path(job["executions"][0]["pipeline_json"]).read_text())[
+        "pipeline"
+    ]
     assert any(s["type"] == "filters.python" for s in dsm)
     assert [s for s in dsm if s["type"] == "writers.gdal"][0]["output_type"] == "max"
 
@@ -576,9 +580,9 @@ def test_tile_job_single_product_inlines_reader(tmp_path):
     # cache would be pure overhead: reader inlined, no fetch step
     assert job["fetch"] is None
     assert len(job["executions"]) == 1
-    stages = json.loads(
-        Path(job["executions"][0]["pipeline_json"]).read_text()
-    )["pipeline"]
+    stages = json.loads(Path(job["executions"][0]["pipeline_json"]).read_text())[
+        "pipeline"
+    ]
     assert stages[0]["type"] == "readers.ept"
     # dtm pair alone still merges into one two-writer execution
     job2 = d.create_tile_pipelines(
@@ -604,7 +608,10 @@ def _run_equivalence(tmp_path, hag_nn, dsm_gridding_choice):
     legacy_dir = tmp_path / "legacy"
     legacy_dir.mkdir()
     legacy = _legacy_product_pipelines(
-        reader, legacy_dir, "aoi", hag_nn=hag_nn,
+        reader,
+        legacy_dir,
+        "aoi",
+        hag_nn=hag_nn,
         dsm_gridding_choice=dsm_gridding_choice,
     )
     for name, (pipeline_fn, _) in legacy.items():
@@ -640,9 +647,7 @@ def _run_equivalence(tmp_path, hag_nn, dsm_gridding_choice):
         )
         # 0.011 m = one cache quantum; intensity DNs must be exact
         atol = 0.0 if name == "intensity" else 0.011
-        np.testing.assert_allclose(
-            old.values, new.values, atol=atol, err_msg=name
-        )
+        np.testing.assert_allclose(old.values, new.values, atol=atol, err_msg=name)
 
 
 def test_tile_job_equivalence_first_idw_hag(tmp_path):
@@ -738,8 +743,11 @@ def test_execute_tile_job_empty_branch(tmp_path):
     arr["NumberOfReturns"] = 1
     arr["Intensity"] = 500
     pipeline = pdal.Writer.las(
-        filename=str(laz), a_srs="EPSG:32611", minor_version=4,
-        dataformat_id=6, forward="all",
+        filename=str(laz),
+        a_srs="EPSG:32611",
+        minor_version=4,
+        dataformat_id=6,
+        forward="all",
     ).pipeline(arr)
     pipeline.execute()
 
@@ -781,8 +789,10 @@ def test_lpc_tile_jobs(tmp_path):
     aoi = gpd.GeoDataFrame(
         geometry=[
             gpd.GeoSeries.from_wkt(
-                ["POLYGON((499990 3999990, 500030 3999990, 500030 4000030,"
-                 " 499990 4000030, 499990 3999990))"]
+                [
+                    "POLYGON((499990 3999990, 500030 3999990, 500030 4000030,"
+                    " 499990 4000030, 499990 3999990))"
+                ]
             )
             .set_crs("EPSG:32611")
             .to_crs("EPSG:4326")
@@ -812,9 +822,9 @@ def test_lpc_tile_jobs(tmp_path):
     assert job["fetch"] is None
     assert len(job["executions"]) == 2
 
-    dsm_int = json.loads(
-        Path(job["executions"][0]["pipeline_json"]).read_text()
-    )["pipeline"]
+    dsm_int = json.loads(Path(job["executions"][0]["pipeline_json"]).read_text())[
+        "pipeline"
+    ]
     types = [s["type"] for s in dsm_int]
     assert types[0] == "readers.las"
     # in-pipeline reprojection shared by the chain
@@ -826,9 +836,9 @@ def test_lpc_tile_jobs(tmp_path):
     assert types.index("writers.las") < types.index("writers.gdal")
     assert len([t for t in types if t == "writers.gdal"]) == 2
 
-    dtm = json.loads(
-        Path(job["executions"][1]["pipeline_json"]).read_text()
-    )["pipeline"]
+    dtm = json.loads(Path(job["executions"][1]["pipeline_json"]).read_text())[
+        "pipeline"
+    ]
     dtm_types = [s["type"] for s in dtm]
     assert "filters.reprojection" in dtm_types
     assert "writers.las" not in dtm_types  # pointcloud saved only with dsm
@@ -919,9 +929,9 @@ def test_override_srs_recovers_crs_from_untagged_cache(tmp_path):
     arr["ReturnNumber"] = 1
     arr["NumberOfReturns"] = 1
     arr["Intensity"] = 500
-    pdal.Writer.las(
-        filename=str(cache), minor_version=4, dataformat_id=6
-    ).pipeline(arr).execute()
+    pdal.Writer.las(filename=str(cache), minor_version=4, dataformat_id=6).pipeline(
+        arr
+    ).execute()
 
     def _grid(reader_stage, out):
         stages = [
@@ -947,7 +957,9 @@ def test_override_srs_recovers_crs_from_untagged_cache(tmp_path):
 
     # WITHOUT override_srs: writers.gdal produces a CRS-less raster ->
     # check_raster_validity fails it (this is the failure signature)
-    plain = _grid({"type": "readers.las", "filename": str(cache)}, tmp_path / "plain.tif")
+    plain = _grid(
+        {"type": "readers.las", "filename": str(cache)}, tmp_path / "plain.tif"
+    )
     assert plain is None
     da_plain = rioxarray.open_rasterio(str(tmp_path / "plain.tif"), masked=True)
     assert da_plain.rio.crs is None
@@ -1089,6 +1101,7 @@ def test_return_readers_injected_index_offline(monkeypatch):
     assert all(c.to_epsg() == 3857 for c in crs_list)
     assert len(readers) == len(extents) == len(original_extents)
 
+
 def test_execute_tile_job_empty_without_fetch(tmp_path, monkeypatch):
     """A zero-point tile on the no-fetch path (single filter-chain group,
     e.g. --products dsm) is classified empty, not failed, and leaves no
@@ -1123,3 +1136,38 @@ def test_execute_tile_job_empty_without_fetch(tmp_path, monkeypatch):
     assert all(fn is None for fn in result["outputs"].values())
     # the nodata raster the writer produced was removed
     assert not list(Path(tmp_path).rglob("*_tile_aoi_*.tif"))
+
+
+def test_return_readers_one_reader_per_tile_for_duplicate_boundaries(monkeypatch):
+    """The EPT index can carry several boundary polygons for one resource;
+    a second reader would re-read the same points into the same tile."""
+    import shapely
+
+    aoi = gpd.GeoDataFrame(
+        geometry=[shapely.box(-115.005, 36.0, -115.0, 36.004)], crs="EPSG:4326"
+    )
+    dup_index = gpd.GeoDataFrame(
+        {"name": ["DUP_EPT", "DUP_EPT"], "count": [10, 20]},
+        geometry=[
+            shapely.box(-115.01, 35.99, -114.99, 36.01),
+            shapely.box(-115.02, 35.98, -114.98, 36.02),
+        ],
+        crs="EPSG:4326",
+    )
+    monkeypatch.setattr(
+        lidar_tools.dsm_functions,
+        "_ept_srs_wkt",
+        lambda url: pyproj.CRS.from_epsg(3857).to_wkt(),
+    )
+    readers, crs_list, extents, original_extents = (
+        lidar_tools.dsm_functions.return_readers(
+            aoi,
+            "DUP_EPT",
+            pointcloud_resolution=1,
+            tile_size_km=1,
+            buffer_value=5,
+            ept_index_gdf=dup_index,
+        )
+    )
+    assert readers, "no readers built"
+    assert len(readers) == len(set(r["polygon"] for r in readers))

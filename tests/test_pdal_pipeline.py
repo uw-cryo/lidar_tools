@@ -451,3 +451,60 @@ def test_engine_keyword_rejection_is_case_insensitive():
             pdal_pipeline.rasterize_project(
                 geometry="unused.geojson", output="/tmp/x", threedep_project=kw
             )
+
+
+def test_metadata_roundtrip_allows_identical_resume(tmp_path):
+    """The gap Copilot caught: my earlier check only exercised LEGACY
+    records (no fingerprint key -> unverifiable -> warn). A record written
+    by THIS code has the key, so a null there compares as a MISMATCH
+    against a real fingerprint and refuses the identical re-run. Write a
+    record the way the engine does, then resume against it."""
+    import yaml
+
+    from lidar_tools import pdal_pipeline
+
+    fp = "abc123def456"
+    pdal_pipeline._write_processing_metadata(
+        output_dir=tmp_path,
+        filename_prefix="aoi_1m_WU_A",
+        geometry="aoi.geojson",
+        input="EPT_AWS",
+        output=str(tmp_path),
+        src_crs=None,
+        dst_crs="/tmp/utm.wkt",
+        resolution=1.0,
+        dsm_gridding_choice="first_idw",
+        products="all",
+        threedep_project="WU_A",
+        tile_size=1.0,
+        num_process=1,
+        overwrite=False,
+        cleanup=True,
+        proj_pipeline=None,
+        filter_noise=True,
+        height_above_ground_threshold=None,
+        quiet=False,
+        geometry_fingerprint=fp,
+    )
+    rec = yaml.safe_load(
+        (tmp_path / "aoi_1m_WU_A-processing_metadata.yaml").read_text()
+    )
+    prior = rec["input_parameters"]
+    assert prior["geometry_fingerprint"] == fp  # actually recorded, not null
+
+    current = {k: prior.get(k) for k in pdal_pipeline.RESUME_TILE_PARAMS}
+    assert pdal_pipeline.check_resume_compatible(prior, current) == []
+
+
+def test_proj_pipeline_string_is_not_treated_as_a_path():
+    """A PROJ pipeline string must compare literally; resolving it would
+    make the comparison depend on the current working directory."""
+    from lidar_tools import pdal_pipeline
+
+    pipe = "+proj=pipeline +step +proj=unitconvert +xy_in=deg"
+    assert pdal_pipeline._normalize_param("proj_pipeline", pipe) == pipe
+    prior = _resume_params(proj_pipeline=pipe)
+    assert (
+        pdal_pipeline.check_resume_compatible(prior, _resume_params(proj_pipeline=pipe))
+        == []
+    )

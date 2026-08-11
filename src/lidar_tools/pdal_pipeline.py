@@ -71,10 +71,12 @@ RESUME_TILE_PARAMS = (
 def _normalize_param(key: str, value):
     """Path-valued parameters compare by resolved path, so the same
     directory spelled relatively or with a trailing slash is the same
-    value; everything else compares as-is."""
+    value; everything else compares as-is. proj_pipeline is deliberately
+    NOT in that set -- it is a PROJ pipeline string ('+proj=pipeline
+    ...'), and resolving it would make the comparison cwd-dependent."""
     if value is None:
         return None
-    if key in ("input", "src_crs", "dst_crs", "proj_pipeline"):
+    if key in ("input", "src_crs", "dst_crs"):
         if key == "input" and value == "EPT_AWS":
             return value
         try:
@@ -640,6 +642,8 @@ def rasterize_project(
         resume=resume,
         output_datum=output_datum,
         coord_epoch=coord_epoch,
+        geometry_fingerprint=geometry_fingerprint,
+        resume_unverified=resume_unverified or None,
         geoid_override=geoid_override,
     )
     _update_processing_metadata(
