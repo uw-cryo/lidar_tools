@@ -124,10 +124,23 @@ def _resolve_projects(
             # engine keys the run on the input dir name
             return [None], None, None
         return [tokens[0]], None, None
-    # one catalog fetch per batch: the selectors need the frames, and
-    # explicit lists need them per project for pinning/name resolution
-    wesm_gdf = catalog.load_wesm(gdf)
-    ept_gdf = catalog.load_ept_resources()
+    # One catalog fetch per batch, shared by selection and by every
+    # per-project run. A selector cannot proceed without it; an explicit
+    # list can (each engine run fetches its own), so a transient read
+    # failure degrades to the slower path instead of aborting the batch
+    # before any project has run.
+    try:
+        wesm_gdf = catalog.load_wesm(gdf)
+        ept_gdf = catalog.load_ept_resources()
+    except Exception as e:
+        if selector in ("auto", "latest"):
+            raise
+        print(
+            f"WARNING: could not pre-load the catalog ({e}); each project "
+            "will fetch it individually",
+            file=sys.stderr,
+        )
+        wesm_gdf = ept_gdf = None
     if selector == "auto":
         selected = catalog.select_workunits(gdf, wesm_gdf, ept_gdf)
         print(f"Auto-selected {len(selected)} EPT-backed survey(s):")
@@ -469,7 +482,17 @@ def rasterize(
         )
     failed = [w for w, s in status.items() if s.startswith("failed")]
     if failed:
+        # "re-run the same command" is the right advice for a transient
+        # failure and exactly the wrong advice for a resume-compatibility
+        # refusal, which is deterministic
+        blocked = [w for w in failed if "Cannot resume" in status[w]]
+        advice = (
+            "re-invoke with the same arguments to resume"
+            if not blocked
+            else f"{blocked} cannot resume into their existing output "
+            "directories (see above); use a fresh output directory or "
+            "delete those project subdirectories to rebuild"
+        )
         raise RuntimeError(
-            f"{len(failed)}/{len(status)} project runs failed: {failed} "
-            "(re-invoke with the same arguments to resume)"
+            f"{len(failed)}/{len(status)} project runs failed: {failed} ({advice})"
         )

@@ -391,3 +391,49 @@ def test_comma_output_allowed_when_directory_exists(tmp_path, aoi_file, monkeypa
     out.mkdir()
     driver.rasterize(aoi_file, str(out), projects="WU_A", dst_crs="utm.wkt")
     assert len(calls) == 1
+
+
+def test_catalog_prefetch_failure_degrades_for_explicit_lists(
+    tmp_path, aoi_file, monkeypatch, capsys
+):
+    """A transient catalog read must not abort a whole batch before any
+    project runs: explicit lists fall back to per-project fetching."""
+
+    def boom(*a, **k):
+        raise OSError("connection reset by peer")
+
+    monkeypatch.setattr(driver.catalog, "load_wesm", boom)
+    calls = []
+    monkeypatch.setattr(driver, "rasterize_project", lambda **kw: calls.append(kw))
+    driver.rasterize(aoi_file, str(tmp_path / "b"), projects="WU_A,WU_B")
+    assert [c["threedep_project"] for c in calls] == ["WU_A", "WU_B"]
+    assert all(c["wesm_gdf"] is None for c in calls)  # engine fetches its own
+    assert "could not pre-load the catalog" in capsys.readouterr().err
+
+
+def test_catalog_prefetch_failure_still_fatal_for_selectors(
+    tmp_path, aoi_file, monkeypatch
+):
+    """auto/latest cannot proceed without the catalog, so the failure stays."""
+
+    def boom(*a, **k):
+        raise OSError("connection reset by peer")
+
+    monkeypatch.setattr(driver.catalog, "load_wesm", boom)
+    monkeypatch.setattr(driver, "rasterize_project", lambda **kw: None)
+    with pytest.raises(OSError, match="connection reset"):
+        driver.rasterize(aoi_file, str(tmp_path / "b"), projects="auto")
+
+
+def test_resume_refusal_advice_is_not_rerun_the_same_command(
+    tmp_path, aoi_file, monkeypatch
+):
+    """gh review: the batch advice told users to repeat a command that is
+    deterministically going to fail the same way."""
+
+    def refuse(**kw):
+        raise ValueError("Cannot resume into this output directory: changed")
+
+    monkeypatch.setattr(driver, "rasterize_project", refuse)
+    with pytest.raises(RuntimeError, match="cannot resume into their existing"):
+        driver.rasterize(aoi_file, str(tmp_path / "b"), projects="WU_A")

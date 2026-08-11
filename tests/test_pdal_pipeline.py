@@ -324,43 +324,112 @@ def test_engine_rejects_unnameable_local_input():
         )
 
 
-def test_resume_rejects_mismatched_tile_parameters(tmp_path):
-    """gh review: a default-on resume must not silently mix tile-shaping
-    parameters while rewriting the metadata to claim the new ones."""
-    import geopandas as gpd
+def _resume_params(**over):
+    base = {
+        "geometry_fingerprint": "abc123",
+        "input": "EPT_AWS",
+        "src_crs": None,
+        "dst_crs": "/tmp/utm.wkt",
+        "dsm_gridding_choice": "first_idw",
+        "tile_size": 1.0,
+        "filter_noise": True,
+        "height_above_ground_threshold": None,
+        "proj_pipeline": None,
+        "ept_vertical": "auto",
+        "geoid_override": "declared",
+        "output_datum": "wgs84_g2139",
+        "coord_epoch": None,
+    }
+    base.update(over)
+    return base
+
+
+def test_resume_accepts_identical_parameters():
+    """The design center: a user re-running the identical command after a
+    failure must resume, not be blocked."""
+    from lidar_tools import pdal_pipeline
+
+    p = _resume_params()
+    pdal_pipeline.check_resume_compatible(dict(p), dict(p))  # no raise
+
+
+def test_resume_rejects_changed_tile_parameters():
     import pytest
-    import shapely
-    import yaml
-    from pyproj import CRS
 
     from lidar_tools import pdal_pipeline
 
-    aoi = tmp_path / "aoi.geojson"
-    gpd.GeoDataFrame(
-        geometry=[shapely.box(-122.32, 47.64, -122.30, 47.66)], crs="EPSG:4326"
-    ).to_file(aoi, driver="GeoJSON")
-    dst = tmp_path / "utm.wkt"
-    dst.write_text(CRS.from_epsg(32610).to_wkt())
-    laz_dir = tmp_path / "wu_x"
-    laz_dir.mkdir()
-    outdir = tmp_path / "out"
-    outdir.mkdir()
-    # a prior run's record: same prefix, different gridding choice
-    (outdir / "aoi_1m_wu_x-processing_metadata.yaml").write_text(
-        yaml.dump({"input_parameters": {"dsm_gridding_choice": "first_idw"}})
-    )
     with pytest.raises(ValueError, match="dsm_gridding_choice"):
-        pdal_pipeline.rasterize_project(
-            geometry=str(aoi),
-            input=str(laz_dir),
-            output=str(outdir),
-            dst_crs=str(dst),
-            dsm_gridding_choice="95-pct",
-            resume=True,
+        pdal_pipeline.check_resume_compatible(
+            _resume_params(), _resume_params(dsm_gridding_choice="95-pct")
         )
-    # unchanged parameters resume fine past the check (fails later only
-    # because the input dir holds no LAZ files, which is expected here)
-    prior = yaml.safe_load(
-        (outdir / "aoi_1m_wu_x-processing_metadata.yaml").read_text()
+
+
+def test_resume_rejects_edited_aoi_at_the_same_path():
+    """Tiles are named by a bare index over a grid derived from the AOI
+    bounds, so an AOI edited in place would silently re-use tiles covering
+    different ground -- the path cannot detect that, the fingerprint can."""
+    import pytest
+
+    from lidar_tools import pdal_pipeline
+
+    with pytest.raises(ValueError, match="geometry_fingerprint"):
+        pdal_pipeline.check_resume_compatible(
+            _resume_params(), _resume_params(geometry_fingerprint="deadbeef")
+        )
+
+
+def test_resume_refuses_when_prior_record_is_unverifiable():
+    """Missing/corrupt record, or one predating a parameter: absence is not
+    agreement, because the caller is about to overwrite the record."""
+    import pytest
+
+    from lidar_tools import pdal_pipeline
+
+    with pytest.raises(ValueError, match="missing or unreadable"):
+        pdal_pipeline.check_resume_compatible(None, _resume_params())
+
+    legacy = _resume_params()
+    del legacy["output_datum"]
+    del legacy["coord_epoch"]
+    with pytest.raises(ValueError, match="unverifiable"):
+        pdal_pipeline.check_resume_compatible(legacy, _resume_params())
+
+
+def test_resume_path_spelling_does_not_block(tmp_path):
+    """An identical resume spelled with a relative path or trailing slash
+    must not throw away hours of valid tiles."""
+    from lidar_tools import pdal_pipeline
+
+    d = tmp_path / "wu_a"
+    d.mkdir()
+    prior = _resume_params(input=str(d))
+    now = _resume_params(input=str(d) + "/")
+    pdal_pipeline.check_resume_compatible(prior, now)  # no raise
+
+
+def test_aoi_fingerprint_tracks_content_not_path(tmp_path):
+    import geopandas as gpd
+    import shapely
+
+    from lidar_tools import pdal_pipeline
+
+    a = gpd.GeoDataFrame(geometry=[shapely.box(0, 0, 1, 1)], crs="EPSG:4326")
+    b = gpd.GeoDataFrame(geometry=[shapely.box(0, 0, 2, 2)], crs="EPSG:4326")
+    assert pdal_pipeline._aoi_fingerprint(a) == pdal_pipeline._aoi_fingerprint(
+        gpd.GeoDataFrame(geometry=[shapely.box(0, 0, 1, 1)], crs="EPSG:4326")
     )
-    assert prior["input_parameters"]["dsm_gridding_choice"] == "first_idw"
+    assert pdal_pipeline._aoi_fingerprint(a) != pdal_pipeline._aoi_fingerprint(b)
+
+
+def test_engine_keyword_rejection_is_case_insensitive():
+    """The driver casefolds these; the engine must agree or 'AUTO' reaches
+    the misleading WESM lookup error."""
+    import pytest
+
+    from lidar_tools import pdal_pipeline
+
+    for kw in ("AUTO", "Latest", "ALL"):
+        with pytest.raises(ValueError, match="selection keyword"):
+            pdal_pipeline.rasterize_project(
+                geometry="unused.geojson", output="/tmp/x", threedep_project=kw
+            )

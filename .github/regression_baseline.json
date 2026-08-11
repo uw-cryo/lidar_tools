@@ -13,7 +13,6 @@
     "src/lidar_tools/filter_percentile.py",
     "src/lidar_tools/geodesy.py",
     "src/lidar_tools/merge.py",
-    "src/lidar_tools/pdal_pipeline.py",
     "src/lidar_tools/preview.py",
     "src/lidar_tools/report_metrics.py",
     "src/lidar_tools/staging.py",
