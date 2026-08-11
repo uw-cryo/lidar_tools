@@ -1,5 +1,5 @@
 """
-Priority merge of per-project products from a rasterize-projects batch.
+Priority merge of per-project products from a rasterize batch.
 
 The per-project mosaics share one target grid (same CRS file, same
 resolution, same tap-aligned origin), so the merge is a VRT composite with
@@ -248,16 +248,16 @@ def merge_projects(
     normalize_intensity: bool = True,
 ) -> list[Path]:
     """
-    Build per-product priority-merge VRTs from a rasterize-projects batch.
+    Build per-product priority-merge VRTs from a rasterize batch.
 
     Parameters
     ----------
     batch_dir
-        rasterize-projects base directory (per-project subdirectories +
+        rasterize base directory (per-project subdirectories +
         batch_status.yaml).
     workunits
         Project names in priority order, FIRST = highest priority (same
-        semantics as the rasterize-projects workunits argument: put the
+        semantics as the rasterize --projects argument: put the
         higher-quality / more recent survey first). Default: the project
         order recorded in batch_status.yaml.
     output_dir
@@ -404,7 +404,7 @@ def merge(
     normalize_intensity: bool = True,
 ) -> None:
     """
-    Merge the per-project products of a rasterize-projects batch into
+    Merge the per-project products of a rasterize batch into
     per-product VRTs: one composite per product, with the highest-priority
     project painted on top and no resampling (all projects must already
     share a grid). Intensity is normalized to a common range by default.
@@ -412,11 +412,11 @@ def merge(
     Parameters
     ----------
     batch_dir
-        rasterize-projects base directory.
+        rasterize base directory.
     workunits
         Comma-separated project names in priority order, first = highest
         priority. Default: the order recorded in batch_status.yaml (i.e.
-        the order given to rasterize-projects).
+        the order given to rasterize).
     output_dir
         Output directory for the VRTs, by default <batch_dir>/merge.
     normalize_intensity

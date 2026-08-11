@@ -46,11 +46,10 @@ def test_return_readers():
     readers, crslist, buff_reader_extent_list, original_dem_tile_grid_extent_list = (
         lidar_tools.dsm_functions.return_readers(
             gf,
+            "WA_KingCo_1_2021",
             pointcloud_resolution=1,
             tile_size_km=1,
             buffer_value=5,
-            return_specific_3dep_survey=None,
-            return_all_intersecting_surveys=False,
         )
     )
 
@@ -1081,7 +1080,7 @@ def test_return_readers_injected_index_offline(monkeypatch):
             pointcloud_resolution=1,
             tile_size_km=1,
             buffer_value=5,
-            return_specific_3dep_survey="TEST_EPT_RESOURCE",
+            survey_name="TEST_EPT_RESOURCE",
             ept_index_gdf=ept_index,
         )
     )

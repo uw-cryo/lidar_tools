@@ -509,7 +509,7 @@ def report_metrics(
     Parameters
     ----------
     batch_dir
-        rasterize-projects base directory with staged vendor_reports/
+        rasterize batch directory with staged vendor_reports/
         subdirectories.
     workunits
         Comma-separated project names, default: all projects in

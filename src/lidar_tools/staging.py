@@ -342,7 +342,7 @@ def build_site_manifest(
     tesm_counts = tesm_counts or {}
     links_counts = links_counts or {}
     manifest = {
-        # bump on any breaking schema change; consumers (rasterize-projects,
+        # bump on any breaking schema change; consumers (rasterize,
         # probes) must check this before reading
         "manifest_version": 1,
         "created": datetime.now(timezone.utc).isoformat(timespec="seconds"),
@@ -409,7 +409,7 @@ def prepare(
     output
         Batch output directory (manifest lands next to batch_status.yaml).
     workunits
-        Comma-separated WESM workunit names (as for rasterize-projects).
+        Comma-separated WESM workunit names (as for rasterize --projects).
         Default: every workunit whose WESM polygon intersects the AOI.
     """
     aoi = gpd.read_file(geometry)

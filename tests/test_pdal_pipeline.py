@@ -117,6 +117,7 @@ def test_rasterize_pins_wesm_name_but_reads_resolved_ept(tmp_path, monkeypatch):
     def spy_preflight(*a, **k):
         preflight_kwargs.append(k)
         return real_preflight_stub(*a, **k)
+
     monkeypatch.setattr(
         catalog,
         "load_ept_resources",
@@ -134,7 +135,7 @@ def test_rasterize_pins_wesm_name_but_reads_resolved_ept(tmp_path, monkeypatch):
     monkeypatch.setattr(dsm_functions, "create_ept_3dep_pipeline", fake_create)
 
     outdir = tmp_path / "out"
-    pdal_pipeline.rasterize(
+    pdal_pipeline.rasterize_project(
         geometry=_lv_aoi_file(tmp_path),
         output=str(outdir),
         threedep_project="NV_LasVegas_QL2_2016",
@@ -143,10 +144,7 @@ def test_rasterize_pins_wesm_name_but_reads_resolved_ept(tmp_path, monkeypatch):
     )
 
     # reader join got the RESOLVED EPT name
-    assert (
-        captured["process_specific_3dep_survey"]
-        == "USGS_LPC_NV_LasVegas_QL2_2016_LAS_2018"
-    )
+    assert captured["survey_name"] == "USGS_LPC_NV_LasVegas_QL2_2016_LAS_2018"
     metas = glob.glob(str(outdir / "*processing_metadata.yaml"))
     assert len(metas) == 1
     # output naming keeps the WESM workunit name, never the EPT alias
@@ -158,8 +156,7 @@ def test_rasterize_pins_wesm_name_but_reads_resolved_ept(tmp_path, monkeypatch):
     # resolution provenance recorded: who resolved to what, at which tier
     assert meta["ept_resolution"]["workunit"] == "NV_LasVegas_QL2_2016"
     assert (
-        meta["ept_resolution"]["ept_name"]
-        == "USGS_LPC_NV_LasVegas_QL2_2016_LAS_2018"
+        meta["ept_resolution"]["ept_name"] == "USGS_LPC_NV_LasVegas_QL2_2016_LAS_2018"
     )
     assert meta["ept_resolution"]["tier"] == 3
     assert meta["ept_resolution"]["boundary_intersects_aoi"] is True
@@ -196,7 +193,7 @@ def test_rasterize_unresolvable_ept_raises_lookuperror(tmp_path, monkeypatch):
         lambda *a, **k: {"ok": True, "stub": True},
     )
     with pytest.raises(LookupError, match="NV_Southern_4_D23"):
-        pdal_pipeline.rasterize(
+        pdal_pipeline.rasterize_project(
             geometry=_lv_aoi_file(tmp_path),
             output=str(tmp_path / "out"),
             threedep_project="NV_Southern_4_D23",
@@ -225,7 +222,7 @@ def test_rasterize_wesm_failure_geoid_modes(tmp_path, monkeypatch):
 
     aoi = _lv_aoi_file(tmp_path)
     with pytest.raises(RuntimeError, match="geoid-override best-available"):
-        pdal_pipeline.rasterize(
+        pdal_pipeline.rasterize_project(
             geometry=aoi,
             output=str(tmp_path / "o1"),
             threedep_project="WU_X",
@@ -233,7 +230,7 @@ def test_rasterize_wesm_failure_geoid_modes(tmp_path, monkeypatch):
             quiet=True,
         )
     # conscious override: run proceeds on default datum handling
-    pdal_pipeline.rasterize(
+    pdal_pipeline.rasterize_project(
         geometry=aoi,
         output=str(tmp_path / "o2"),
         threedep_project="WU_X",
@@ -259,9 +256,7 @@ def test_metadata_path_rejects_mixed_run_prefixes(tmp_path):
 
     legacy = tmp_path / "legacy"
     legacy.mkdir()
-    assert (
-        pdal_pipeline._metadata_path(legacy).name == "processing_metadata.yaml"
-    )
+    assert pdal_pipeline._metadata_path(legacy).name == "processing_metadata.yaml"
 
 
 def test_metadata_updates_target_the_running_prefix(tmp_path):
@@ -282,3 +277,23 @@ def test_metadata_updates_target_the_running_prefix(tmp_path):
     assert "geodesy" in yaml.safe_load(mine.read_text())
     # the other run's record is untouched
     assert yaml.safe_load(stale.read_text()) == {"run_status": {"state": "completed"}}
+
+
+def test_engine_validates_before_overwrite_deletes(tmp_path):
+    """Argument validation must precede the overwrite rmtree: a rejected
+    call must not destroy the prior products it was pointed at."""
+    import pytest
+
+    from lidar_tools import pdal_pipeline
+
+    outdir = tmp_path / "existing"
+    outdir.mkdir()
+    keep = outdir / "prior-DSM_mos.tif"
+    keep.write_bytes(b"precious")
+    with pytest.raises(ValueError, match="threedep_project is required"):
+        pdal_pipeline.rasterize_project(
+            geometry="unused.geojson",
+            output=str(outdir),
+            overwrite=True,
+        )
+    assert keep.read_bytes() == b"precious"  # nothing was deleted

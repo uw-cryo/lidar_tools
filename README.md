@@ -65,8 +65,7 @@ lidar-tools rasterize --help  # options for one command
 | --- | --- |
 | `search` | Search the lidar catalog: which collections cover an AOI, at what quality level and acquisition dates, with what declared CRS/datum/geoid, EPT availability, AOI overlap, and the uncovered fraction. |
 | `prepare` | Stage discovery metadata for an AOI into `site_manifest.yaml`: pinned WESM records, EPT name resolution, TESM-vs-links tile reconciliation, staged-LAZ cache layout. |
-| `rasterize` | Create DSM, DTM (with and without gap filling) and/or intensity rasters from 3DEP EPT or local LAS/LAZ. |
-| `rasterize-projects` | Run `rasterize` once per survey into per-project subdirectories sharing one target grid, so the outputs are co-registered. |
+| `rasterize` | Create DSM, DTM (with and without gap filling) and/or intensity rasters from 3DEP EPT or local LAS/LAZ: one subdirectory per selected survey (`--projects auto\|latest\|NAME\|A,B,C`), all on one shared target grid so `merge` can composite them without resampling. |
 | `merge` | Merge a batch's per-project products into per-product VRT composites (priority order, no resampling), normalizing intensity to a common range. |
 | `preview` | Write a one-page preview figure (shaded relief, scale bar, processing footer) for a run or for every project in a batch. |
 | `fetch-reports` | Stage each project's vendor QA/QC, survey and mapping reports plus the USGS vertical-accuracy checkpoints next to its products. |
@@ -79,9 +78,10 @@ For an AOI covered by more than one 3DEP survey, the commands chain:
 ```bash
 lidar-tools search aoi.geojson                       # what covers this AOI?
 lidar-tools prepare aoi.geojson batch/               # pin the metadata once
-lidar-tools rasterize-projects aoi.geojson \
-    AZ_PimaCo_1_2021,AZ_PimaCo_2_2021 \
-    batch/ --resolution 1                            # co-registered per-project products
+lidar-tools rasterize aoi.geojson batch/ \
+    --resolution 1                                   # co-registered per-project products
+                                                     # (--projects auto is the default;
+                                                     #  pass A,B,C for an explicit priority order)
 lidar-tools merge batch/                             # per-product composites
 lidar-tools preview batch/                           # QA figures
 lidar-tools fetch-reports batch/                     # vendor reports

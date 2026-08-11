@@ -401,7 +401,7 @@ def product_preview(
 def preview(path: str, max_dim: int = 1600, dpi: int = 300) -> None:
     """
     Write preview page(s) for a rasterize output directory, or for every
-    project subdirectory (and merge directory) of a rasterize-projects
+    project subdirectory (and merge directory) of a rasterize
     batch directory.
 
     Parameters

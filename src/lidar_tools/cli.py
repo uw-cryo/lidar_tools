@@ -5,9 +5,8 @@ A CLI following https://packaging.python.org/en/latest/guides/creating-command-l
 import cyclopts
 
 from .catalog import fetch_reports, search
-from .driver import rasterize_projects
+from .driver import rasterize
 from .merge import merge
-from .pdal_pipeline import rasterize
 from .preview import preview
 from .report_metrics import report_metrics
 from .staging import prepare
@@ -23,8 +22,7 @@ app = cyclopts.App()
 app.command(group=_discovery, sort_key=0)(search)
 app.command(group=_discovery, sort_key=1)(prepare)
 app.command(group=_processing, sort_key=0)(rasterize)
-app.command(group=_processing, sort_key=1)(rasterize_projects)
-app.command(group=_processing, sort_key=2)(merge)
+app.command(group=_processing, sort_key=1)(merge)
 app.command(group=_inspection, sort_key=0)(preview)
 app.command(group=_inspection, sort_key=1)(fetch_reports)
 app.command(group=_inspection, sort_key=2)(report_metrics)

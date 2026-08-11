@@ -42,7 +42,7 @@ def _write_processing_metadata(
     resolution: float,
     dsm_gridding_choice: str,
     products: str,
-    threedep_project: str,
+    threedep_project: str | None,
     tile_size: float,
     num_process: int,
     overwrite: bool,
@@ -216,7 +216,7 @@ def _cleanup_intermediates(outdir: Path) -> None:
     (outdir / "judicious_extent_polygon.geojson").unlink(missing_ok=True)
 
 
-def rasterize(
+def rasterize_project(
     geometry: str,
     input: str = "EPT_AWS",
     output: str = "/tmp/lidar-tools-output",
@@ -229,7 +229,7 @@ def rasterize(
     resolution: float = 1.0,
     dsm_gridding_choice: str = "first_idw",
     products: str = "all",
-    threedep_project: Literal["all", "latest"] | str = "latest",
+    threedep_project: str = None,
     tile_size: float = 1.0,
     num_process: int = 1,
     overwrite: Annotated[bool, cyclopts.Parameter(negative="")] = False,
@@ -242,6 +242,8 @@ def rasterize(
     geoid_override: Literal["declared", "best-available"] = "declared",
     resume: Annotated[bool, cyclopts.Parameter(negative="")] = False,
     coord_epoch: float = None,
+    wesm_gdf: gpd.GeoDataFrame = None,
+    ept_index_gdf: gpd.GeoDataFrame = None,
 ) -> None:
     """
     Create a Digital Surface Model (DSM), Digital Terrain Model (DTM) and/or Intensity raster from point cloud data.
@@ -285,15 +287,17 @@ def rasterize(
         "all" (default) = every product; "dtm" = both DTM variants. All
         requested products for a tile are generated from a single point
         read.
+    wesm_gdf, ept_index_gdf
+        Pre-loaded WESM rows / EPT boundary index handed down by the
+        batch driver so an N-project batch does not refetch them N
+        times; fetched here when omitted (direct API use).
     threedep_project
-        Which 3DEP survey(s) to read. A WESM workunit name (e.g.
-        "AZ_PimaCo_1_2021") processes that survey; its EPT resource name is
-        resolved automatically. "all" processes every EPT collection
-        intersecting the AOI. "latest" (default) processes the most recently
-        collected survey that has an EPT build, chosen from the WESM
-        acquisition dates. Note the newest survey often covers only part of
-        an AOI — the run reports its coverage and warns below 95%; use
-        `rasterize-projects` + `merge` to process and combine several.
+        The one concrete WESM workunit to read (e.g. "AZ_PimaCo_1_2021");
+        its EPT resource name is resolved automatically. Required on the
+        EPT path — selection policy ("auto"/"latest"/explicit lists) lives
+        in the public `rasterize` command, which resolves it before calling
+        here. On the local path (input = LAZ directory) it optionally names
+        the survey the files belong to, for WESM record pinning.
     tile_size
         The size of rasterized tiles processed from input EPT point clouds in units of `dst_crs`.
     num_process
@@ -345,6 +349,19 @@ def rasterize(
     # canonical product names (validates the selection early)
     requested = dsm_functions.parse_products(products)
 
+    # Argument-only validation precedes ANY filesystem or network step:
+    # with overwrite=True the branch further down deletes the existing
+    # output directory, so rejecting a call after it would destroy prior
+    # products in exchange for an error message.
+    # Selection policy (auto/latest/lists) lives in the public rasterize
+    # command; by the time this engine runs, the survey is one concrete
+    # workunit (EPT path) or None (local path, optionally pinned by name).
+    if input == "EPT_AWS" and threedep_project is None:
+        raise ValueError(
+            "threedep_project is required on the EPT path: pass one "
+            "concrete WESM workunit (selection happens in `rasterize`)"
+        )
+
     # Parse input polygon CRS and check that area isn't too large
     gdf = gpd.read_file(geometry)
     _check_polygon_area(gdf)
@@ -389,8 +406,12 @@ def rasterize(
     # directories stay distinguishable
     outdir.mkdir(parents=True, exist_ok=True)
     filename_prefix = f"{Path(geometry).stem}_{resolution:g}m"
-    if threedep_project not in (None, "all", "latest"):
+    if threedep_project is not None:
         filename_prefix = f"{filename_prefix}_{threedep_project}"
+    elif input != "EPT_AWS":
+        # local runs key on the input directory name, so two local runs
+        # into one output directory cannot collide on bare AOI+posting
+        filename_prefix = f"{filename_prefix}_{Path(input).name}"
     output_prefix = outdir / filename_prefix
 
     # Write processing metadata to YAML file
@@ -460,49 +481,8 @@ def rasterize(
     extent_polygon = outdir / "judicious_extent_polygon.geojson"
     gdf_out.to_file(extent_polygon, driver="GeoJSON")
 
-    # How to handle AOIs intersecting multiple 3DEP projects?
-    if threedep_project == "all":
-        process_all_intersecting_surveys = True
-        process_specific_3dep_survey = None
-    elif threedep_project == "latest":
-        process_all_intersecting_surveys = False
-        # Resolve "latest" to a concrete workunit here, so the run takes the
-        # normal per-workunit path: WESM record pinned, declared geoid
-        # enforced, EPT name resolved. Selecting inside return_readers could
-        # not be date-ordered — the EPT index carries no acquisition dates,
-        # so it took whichever collection came first in file order (gh #68).
-        latest = catalog.select_latest_workunit(gdf)
-        process_specific_3dep_survey = latest["workunit"]
-        if latest["undated"]:
-            print(
-                f"WARNING: no acquisition dates for any of the "
-                f"{latest['n_candidates']} EPT-backed collection(s) here; "
-                f"selected '{latest['workunit']}' (widest AOI coverage), "
-                "which may not be the most recent",
-                file=sys.stderr,
-            )
-        else:
-            print(
-                f"Latest survey selected: {latest['workunit']} "
-                f"(collected {latest['collect_start']} - "
-                f"{latest['collect_end']}, ql {latest['ql']}; "
-                f"{latest['n_candidates']} EPT-backed candidate(s))"
-            )
-        if latest["aoi_overlap_frac"] < 0.95:
-            # the most recent survey is frequently a sliver of the AOI, so a
-            # single-survey run silently leaves most of it empty (gh #68)
-            print(
-                f"WARNING: {latest['workunit']} covers only "
-                f"{latest['aoi_overlap_frac']:.1%} of the AOI, so this run "
-                f"will have no data over the rest. {latest['n_candidates']} "
-                "collection(s) cover this AOI — use `lidar-tools search` to "
-                "inspect them and `rasterize-projects` + `merge` to process "
-                "and combine several.",
-                file=sys.stderr,
-            )
-    else:
-        process_all_intersecting_surveys = False
-        process_specific_3dep_survey = threedep_project
+    # validated above, before the overwrite branch could delete anything
+    process_specific_3dep_survey = threedep_project
 
     if filter_noise:
         filter_high_noise = True
@@ -530,7 +510,11 @@ def rasterize(
         workunit_derived = True
     if pin_workunit is not None:
         try:
-            survey_record = catalog.workunit_record(gdf, pin_workunit)
+            survey_record = (
+                catalog.record_from_wesm(wesm_gdf, pin_workunit)
+                if wesm_gdf is not None
+                else catalog.workunit_record(gdf, pin_workunit)
+            )
         except Exception as e:
             if workunit_derived:
                 # a local dir not named after a WESM workunit is normal —
@@ -619,9 +603,11 @@ def rasterize(
     # any tiling — a bare == join silently yields 0 readers for most of
     # the pre-2018 archive. The WESM record above keeps the workunit name;
     # only the reader join uses the resolved EPT name.
-    ept_index_gdf = None
     if input == "EPT_AWS" and process_specific_3dep_survey is not None:
-        ept_index_gdf = catalog.load_ept_resources()
+        # the batch driver passes its already-loaded index; a direct API
+        # call fetches it here
+        if ept_index_gdf is None:
+            ept_index_gdf = catalog.load_ept_resources()
         ept_resolution = catalog.resolve_ept_resource(
             process_specific_3dep_survey, ept_index_gdf
         )
@@ -694,10 +680,8 @@ def rasterize(
             output_prefix,
             buffer_value=10*resolution, # buffer is based on output resolution
             tile_size_km=tile_size,  # TODO: ensure we can do non-km units
-            # TODO: handle new 3dep project keyword here
             dsm_gridding_choice=dsm_gridding_choice,
-            process_specific_3dep_survey=process_specific_3dep_survey,
-            process_all_intersecting_surveys=process_all_intersecting_surveys,
+            survey_name=process_specific_3dep_survey,
             ept_index_gdf=ept_index_gdf,
             filter_high_noise=filter_high_noise,
             filter_low_noise=filter_low_noise,

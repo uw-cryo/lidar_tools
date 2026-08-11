@@ -101,33 +101,34 @@ def _ept_srs_wkt(url: str, attempts: int = 4, backoff_s: float = 2.0) -> str:
 
 def return_readers(
     input_aoi: gpd.GeoDataFrame,
+    survey_name: str,
     pointcloud_resolution: float = 1.0,
     tile_size_km: float = 1.0,
     buffer_value: int = 5,
-    return_specific_3dep_survey: str = None,
-    return_all_intersecting_surveys: bool = False,
     ept_index_gdf: gpd.GeoDataFrame = None,
 ) -> tuple[list, list, list, list]:
     """
-    This method takes an input aoi and finds overlapping 3DEP EPT data from https://s3-us-west-2.amazonaws.com/usgs-lidar-public/{usgs_dataset_name}/ept.json
-    It then returns a series of readers corresponding to non-overlapping areas for PDAL processing pipelines
+    Build per-tile PDAL EPT readers for ONE 3DEP survey over an AOI, from
+    https://s3-us-west-2.amazonaws.com/usgs-lidar-public/{survey_name}/ept.json
+
+    Selection happens upstream (a concrete workunit resolved to its EPT
+    resource name before this runs), so a tile's reader list can never mix
+    surveys: multi-survey combination is the merge stage's job, where
+    overlap precedence is explicit rather than index file order.
 
     Parameters
     ----------
     input_aoi
         The area of interest as a polygon.
+    survey_name
+        The EPT resource name to read (callers resolve WESM workunit
+        aliases first; see catalog.resolve_ept_resource).
     pointcloud_resolution
         The resolution of the point cloud data, by default 1.
     tile_size_km
         The size of the EPT processing tiles in kilometers, by default 1.0.
     buffer_value
         The buffer value in meters to apply to each tile for querying sorrounding tiles, by default 5.
-    return_specific_3dep_survey
-        A specific 3DEP survey to return, by default first intersecting survey is returned.
-        Must be the EPT resource name (callers resolve WESM workunit aliases first;
-        see catalog.resolve_ept_resource).
-    return_all_intersecting_surveys
-        If True, return all intersecting surveys, by default False.
     ept_index_gdf
         Preloaded EPT resource boundary index (any CRS). When None, the hobu
         index is fetched and spatially filtered to the AOI here.
@@ -211,41 +212,32 @@ def return_readers(
                     aoi_3857 = shapely.geometry.Polygon.from_bounds(*aoi_3857_bounds)
                     #print("The buffered tile bound is: ", aoi_3857.bounds)
 
-                if return_specific_3dep_survey is not None:
-                    return_all_intersecting_surveys = True
-                #Better to do intersection with the geodataframe first, rather than looping through each polygon
-                for _, row in (ept_index_gdf[ept_index_gdf.intersects(aoi)]).iterrows():
-                    usgs_dataset_name = row["name"]
-                    if return_specific_3dep_survey is not None:
-                        if usgs_dataset_name == return_specific_3dep_survey:
-                            add_survey = True
-                        else:
-                            add_survey = False
-                    else:
-                        add_survey = True
-                    if add_survey:
-                        print(f"3DEP Dataset(s): {usgs_dataset_name}")
-                        url = f"https://s3-us-west-2.amazonaws.com/usgs-lidar-public/{usgs_dataset_name}/ept.json"
-                        reader = {
-                            "type": "readers.ept",
-                            "filename": url,
-                            "requests": 15,
-                            "resolution": pointcloud_resolution,
-                            "polygon": str(aoi_3857.wkt),
-                        }
+                # one survey per run, by construction: only tiles whose
+                # boundary polygon intersects this tile get a reader
+                hits = ept_index_gdf[
+                    (ept_index_gdf["name"] == survey_name)
+                    & ept_index_gdf.intersects(aoi)
+                ]
+                for _, row in hits.iterrows():
+                    url = f"https://s3-us-west-2.amazonaws.com/usgs-lidar-public/{survey_name}/ept.json"
+                    reader = {
+                        "type": "readers.ept",
+                        "filename": url,
+                        "requests": 15,
+                        "resolution": pointcloud_resolution,
+                        "polygon": str(aoi_3857.wkt),
+                    }
 
-                        # SRS associated with the 3DEP dataset — cached per
-                        # dataset + retried: this used to issue one S3 GET per
-                        # TILE (1000+ for large AOIs) and a single transient
-                        # non-JSON response (e.g. 503 SlowDown) killed the run
-                        srs_wkt = _ept_srs_wkt(url)
+                    # SRS associated with the 3DEP dataset — cached per
+                    # dataset + retried: this used to issue one S3 GET per
+                    # TILE (1000+ for large AOIs) and a single transient
+                    # non-JSON response (e.g. 503 SlowDown) killed the run
+                    srs_wkt = _ept_srs_wkt(url)
 
-                        pointcloud_input_crs.append(CRS.from_wkt(srs_wkt))
-                        readers.append(reader)
-                        extents.append(aoi_3857.bounds)
-                        original_extents.append(src_bounds_transformed_3857)
-                    if not return_all_intersecting_surveys:
-                        break
+                    pointcloud_input_crs.append(CRS.from_wkt(srs_wkt))
+                    readers.append(reader)
+                    extents.append(aoi_3857.bounds)
+                    original_extents.append(src_bounds_transformed_3857)
 
     return readers, pointcloud_input_crs, extents, original_extents
 
@@ -1994,13 +1986,14 @@ def create_ept_3dep_pipeline(
     filter_high_noise: bool = True,
     filter_low_noise: bool = True,
     hag_nn: float = None,
-    process_specific_3dep_survey: str = None,
-    process_all_intersecting_surveys: bool = False,
+    survey_name: str = None,
     products: list[str] | None = None,
     ept_index_gdf: gpd.GeoDataFrame = None) -> list[dict]:
 
     """
-    Create single-read PDAL tile jobs for processing 3DEP EPT point clouds to generate DEM products.
+    Create single-read PDAL tile jobs for processing ONE 3DEP EPT survey
+    to generate DEM products. Multi-survey combination is the merge
+    stage's job; a run never mixes surveys.
 
     Parameters
     ----------
@@ -2016,10 +2009,9 @@ def create_ept_3dep_pipeline(
         Processing tile dimension (square), default 1.0 km.
     buffer_value : float, optional
         Buffer distance to expand bounds when reading points ensuring sufficient tile collar for window operations, default 5.0 m.
-    process_specific_3dep_survey: str
-        Only process the specified 3DEP project name. This should be a string that matches the workunit name in the 3DEP metadata.
-    process_all_intersecting_surveys: bool
-        If true, process all available 3DEP EPT point clouds which intersect with the input polygon. If false, and process_specific_3dep_survey is not specified, first 3DEP project encountered will be processed.
+    survey_name: str
+        EPT resource name of the survey to process (callers resolve WESM
+        workunit aliases first; see catalog.resolve_ept_resource).
     filter_high_noise
         Remove high noise points (classification==18) from the point cloud before DSM and surface intensity processing. Default is True.
     filter_low_noise
@@ -2043,6 +2035,12 @@ def create_ept_3dep_pipeline(
         execute_tile_job.
     """
     
+    if not survey_name:
+        # selection is upstream policy (catalog.select_workunits /
+        # select_latest_workunit); reading without a named survey would
+        # re-create the old index-file-order arbitrariness (gh #68)
+        raise ValueError("survey_name is required (EPT resource name)")
+
     #Load the user-specified polygon dataset
     #Should check that this is EPSG:4326 (default for geojson)
     gdf = gpd.read_file(extent_polygon)
@@ -2050,11 +2048,10 @@ def create_ept_3dep_pipeline(
     # fetch the readers for the pointclouds
     readers, POINTCLOUD_CRS, extents, original_extents = return_readers(
         gdf,
+        survey_name,
         pointcloud_resolution=raster_resolution,
         tile_size_km=tile_size_km,
         buffer_value=buffer_value,
-        return_specific_3dep_survey=process_specific_3dep_survey,
-        return_all_intersecting_surveys=process_all_intersecting_surveys,
         ept_index_gdf=ept_index_gdf,
     )
 
