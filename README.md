@@ -50,6 +50,13 @@ Run our example workflow to create DSM, DTM without interpolation, DTM with inte
 pixi run example
 ```
 
+Outputs land in one subdirectory per selected survey
+(`<output>/<workunit>/`, e.g. `/tmp/lidar-tools-example/WA_KingCo_1_2021/`),
+plus a `batch_status.yaml` at the top level -- the same layout for one
+survey or many, so `merge`, `preview` and the report commands consume
+every run identically.
+
+
 ## CLI Commands
 
 Once installed, you can run processing scripts from a terminal:

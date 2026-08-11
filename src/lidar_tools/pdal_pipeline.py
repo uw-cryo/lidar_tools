@@ -361,6 +361,20 @@ def rasterize_project(
             "threedep_project is required on the EPT path: pass one "
             "concrete WESM workunit (selection happens in `rasterize`)"
         )
+    if threedep_project in ("all", "latest", "auto"):
+        # the old engine accepted these keywords; treating them as literal
+        # workunit names now would fail later with a misleading
+        # workunit-not-found error
+        raise ValueError(
+            f"threedep_project='{threedep_project}' is a selection keyword, "
+            "resolved by the public `rasterize` command; this engine takes "
+            "one concrete WESM workunit name"
+        )
+    if input != "EPT_AWS" and not Path(input).resolve().name:
+        raise ValueError(
+            f"cannot derive a project key from input '{input}' "
+            "(filesystem root?); the run needs a nameable input directory"
+        )
 
     # Parse input polygon CRS and check that area isn't too large
     gdf = gpd.read_file(geometry)
@@ -396,8 +410,9 @@ def rasterize_project(
                 shutil.rmtree(outdir)
         else:
             raise FileExistsError(
-                f"Output directory {outdir} already exists. Use --overwrite to "
-                "replace it or --resume to continue an interrupted run."
+                f"Output directory {outdir} already exists. Re-invoke with "
+                "--resume to continue an interrupted run, or delete the "
+                "directory to rebuild it from scratch."
             )
 
     # Set output filename prefix based on input polygon name + grid posting
@@ -409,10 +424,61 @@ def rasterize_project(
     if threedep_project is not None:
         filename_prefix = f"{filename_prefix}_{threedep_project}"
     elif input != "EPT_AWS":
-        # local runs key on the input directory name, so two local runs
-        # into one output directory cannot collide on bare AOI+posting
-        filename_prefix = f"{filename_prefix}_{Path(input).name}"
+        # local runs key on the input directory name (resolved, so '.'
+        # yields the real name), so two local runs into one output
+        # directory cannot collide on bare AOI+posting
+        filename_prefix = f"{filename_prefix}_{Path(input).resolve().name}"
     output_prefix = outdir / filename_prefix
+
+    # A resume skips existing valid tiles, so the parameters that shape
+    # tile CONTENT must match the run that produced them -- otherwise the
+    # final mosaic silently mixes settings while the metadata rewrite
+    # below records only the new ones (falsified provenance). Checked
+    # against the existing record before that rewrite destroys it.
+    # resolution and threedep_project live in the filename prefix (a
+    # mismatch lands in a different record and trips _metadata_path);
+    # products may differ (resuming to ADD products reuses shared tiles).
+    if resume:
+        prior_meta = outdir / f"{filename_prefix}-processing_metadata.yaml"
+        if prior_meta.exists():
+            try:
+                with open(prior_meta) as f:
+                    prior = (yaml.safe_load(f) or {}).get(
+                        "input_parameters"
+                    ) or {}
+            except yaml.YAMLError:
+                prior = {}
+            current = {
+                "input": str(input),
+                "src_crs": str(src_crs) if src_crs else None,
+                "dst_crs": str(dst_crs) if dst_crs else None,
+                "dsm_gridding_choice": dsm_gridding_choice,
+                "tile_size": tile_size,
+                "filter_noise": filter_noise,
+                "height_above_ground_threshold": height_above_ground_threshold,
+                "proj_pipeline": str(proj_pipeline) if proj_pipeline else None,
+                "ept_vertical": ept_vertical,
+                "geoid_override": geoid_override,
+                "output_datum": output_datum,
+                "coord_epoch": coord_epoch,
+            }
+            mismatched = {
+                k: (prior.get(k), v)
+                for k, v in current.items()
+                if k in prior and prior.get(k) != v
+            }
+            if mismatched:
+                detail = "; ".join(
+                    f"{k}: prior={a!r} vs now={b!r}"
+                    for k, (a, b) in sorted(mismatched.items())
+                )
+                raise ValueError(
+                    f"Cannot resume into {outdir}: the existing run used "
+                    f"different tile-shaping parameters ({detail}). "
+                    "Resuming would mix settings in one mosaic and record "
+                    "only the new ones. Use a fresh output directory, or "
+                    "delete this one to rebuild."
+                )
 
     # Write processing metadata to YAML file
     _write_processing_metadata(
@@ -506,7 +572,7 @@ def rasterize_project(
     pin_workunit = process_specific_3dep_survey
     workunit_derived = False
     if pin_workunit is None and input != "EPT_AWS":
-        pin_workunit = Path(input).name
+        pin_workunit = Path(input).resolve().name
         workunit_derived = True
     if pin_workunit is not None:
         try:

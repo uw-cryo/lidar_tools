@@ -297,3 +297,70 @@ def test_engine_validates_before_overwrite_deletes(tmp_path):
             overwrite=True,
         )
     assert keep.read_bytes() == b"precious"  # nothing was deleted
+
+
+def test_engine_rejects_selection_keywords():
+    """Old-API literals ('all'/'latest') must error with guidance, not be
+    treated as workunit names that fail later in WESM lookup."""
+    import pytest
+
+    from lidar_tools import pdal_pipeline
+
+    for kw in ("all", "latest", "auto"):
+        with pytest.raises(ValueError, match="selection keyword"):
+            pdal_pipeline.rasterize_project(
+                geometry="unused.geojson", output="/tmp/x", threedep_project=kw
+            )
+
+
+def test_engine_rejects_unnameable_local_input():
+    import pytest
+
+    from lidar_tools import pdal_pipeline
+
+    with pytest.raises(ValueError, match="nameable input directory"):
+        pdal_pipeline.rasterize_project(
+            geometry="unused.geojson", output="/tmp/x", input="/"
+        )
+
+
+def test_resume_rejects_mismatched_tile_parameters(tmp_path):
+    """gh review: a default-on resume must not silently mix tile-shaping
+    parameters while rewriting the metadata to claim the new ones."""
+    import geopandas as gpd
+    import pytest
+    import shapely
+    import yaml
+    from pyproj import CRS
+
+    from lidar_tools import pdal_pipeline
+
+    aoi = tmp_path / "aoi.geojson"
+    gpd.GeoDataFrame(
+        geometry=[shapely.box(-122.32, 47.64, -122.30, 47.66)], crs="EPSG:4326"
+    ).to_file(aoi, driver="GeoJSON")
+    dst = tmp_path / "utm.wkt"
+    dst.write_text(CRS.from_epsg(32610).to_wkt())
+    laz_dir = tmp_path / "wu_x"
+    laz_dir.mkdir()
+    outdir = tmp_path / "out"
+    outdir.mkdir()
+    # a prior run's record: same prefix, different gridding choice
+    (outdir / "aoi_1m_wu_x-processing_metadata.yaml").write_text(
+        yaml.dump({"input_parameters": {"dsm_gridding_choice": "first_idw"}})
+    )
+    with pytest.raises(ValueError, match="dsm_gridding_choice"):
+        pdal_pipeline.rasterize_project(
+            geometry=str(aoi),
+            input=str(laz_dir),
+            output=str(outdir),
+            dst_crs=str(dst),
+            dsm_gridding_choice="95-pct",
+            resume=True,
+        )
+    # unchanged parameters resume fine past the check (fails later only
+    # because the input dir holds no LAZ files, which is expected here)
+    prior = yaml.safe_load(
+        (outdir / "aoi_1m_wu_x-processing_metadata.yaml").read_text()
+    )
+    assert prior["input_parameters"]["dsm_gridding_choice"] == "first_idw"

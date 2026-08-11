@@ -6,6 +6,15 @@ import yaml
 from lidar_tools import driver
 
 
+@pytest.fixture(autouse=True)
+def offline_catalog(monkeypatch):
+    """The EPT path now loads WESM + the EPT index once per batch; tests
+    must never fetch them. Tests that need real selection behavior
+    override these stubs themselves."""
+    monkeypatch.setattr(driver.catalog, "load_wesm", lambda gdf: "WESM_STUB")
+    monkeypatch.setattr(driver.catalog, "load_ept_resources", lambda: "EPT_STUB")
+
+
 @pytest.fixture
 def aoi_file(tmp_path):
     fn = tmp_path / "aoi.geojson"
@@ -208,8 +217,6 @@ def test_projects_all_is_rejected_with_guidance(tmp_path, aoi_file, monkeypatch)
 def test_projects_auto_selects_and_orders(tmp_path, aoi_file, monkeypatch):
     """auto = catalog.select_workunits order, which is the default merge
     priority."""
-    monkeypatch.setattr(driver.catalog, "load_wesm", lambda gdf: "WESM")
-    monkeypatch.setattr(driver.catalog, "load_ept_resources", lambda: "EPT")
     monkeypatch.setattr(
         driver.catalog,
         "select_workunits",
@@ -338,3 +345,49 @@ def test_local_input_dot_resolves_to_real_directory_name(
     monkeypatch.chdir(laz)
     driver.rasterize(aoi_file, str(tmp_path / "b"), input=".", dst_crs="utm.wkt")
     assert calls[0]["output"] == str(tmp_path / "b" / "my_laz_dir")
+
+
+def test_explicit_lists_share_one_catalog_fetch(tmp_path, aoi_file, monkeypatch):
+    """An explicit N-project batch loads WESM + the EPT index once and
+    hands the frames to every engine run (no per-project refetch)."""
+    calls = []
+    monkeypatch.setattr(driver, "rasterize_project", lambda **kw: calls.append(kw))
+    driver.rasterize(aoi_file, str(tmp_path / "b"), projects="WU_A,WU_B")
+    assert len(calls) == 2
+    assert all(c["wesm_gdf"] == "WESM_STUB" for c in calls)
+    assert all(c["ept_index_gdf"] == "EPT_STUB" for c in calls)
+
+
+def test_coord_epoch_static_datum_fails_fast_from_driver(
+    tmp_path, aoi_file, monkeypatch
+):
+    """The engine's coord_epoch+nad83_2011 guard cannot fire from the CLI
+    (the driver resolves dst_crs first), so the driver must run it."""
+    monkeypatch.setattr(driver, "rasterize_project", lambda **kw: None)
+    with pytest.raises(ValueError, match="plate-fixed"):
+        driver.rasterize(
+            aoi_file,
+            str(tmp_path / "b"),
+            projects="WU_A",
+            output_datum="nad83_2011",
+            coord_epoch=2025.0,
+        )
+
+
+def test_path_shaped_projects_token_is_rejected(tmp_path, aoi_file, monkeypatch):
+    """`rasterize aoi.geojson WU_A batch/` (removed positional order, single
+    workunit) binds 'batch/' into projects: error with the new signature."""
+    monkeypatch.setattr(driver, "rasterize_project", lambda **kw: None)
+    with pytest.raises(ValueError, match="contains a path"):
+        driver.rasterize(aoi_file, "WU_A", projects="batch/")
+
+
+def test_comma_output_allowed_when_directory_exists(tmp_path, aoi_file, monkeypatch):
+    """The old-signature guard must not permanently ban comma-named output
+    directories: pre-creating one is the escape hatch."""
+    calls = []
+    monkeypatch.setattr(driver, "rasterize_project", lambda **kw: calls.append(kw))
+    out = tmp_path / "a,b"
+    out.mkdir()
+    driver.rasterize(aoi_file, str(out), projects="WU_A", dst_crs="utm.wkt")
+    assert len(calls) == 1

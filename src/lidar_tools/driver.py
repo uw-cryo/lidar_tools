@@ -67,10 +67,11 @@ def _resolve_projects(
     directory's name, with `None` passed to the engine so pinning stays
     best-effort.
 
-    Returns (keys, wesm_gdf, ept_gdf): the frames are loaded here only
-    when a selector needs them (auto/latest) and handed back so every
-    per-project engine run reuses them instead of refetching; explicit
-    lists stay lazy (frames None, engine fetches per project as before).
+    Returns (keys, wesm_gdf, ept_gdf): on the EPT path the frames are
+    loaded once here -- the selectors need them anyway, and explicit
+    lists need them for per-project pinning/name resolution -- and handed
+    back so every engine run reuses them instead of refetching. Local
+    runs return (keys, None, None).
     """
     tokens = [t.strip() for t in str(projects).split(",") if t.strip()]
     if not tokens:
@@ -81,6 +82,15 @@ def _resolve_projects(
         raise ValueError(
             "--projects is empty: pass 'auto' explicitly, 'latest', or a "
             "comma-separated workunit list"
+        )
+    if any("/" in t for t in tokens):
+        # workunit names never contain path separators; this is almost
+        # always the removed rasterize-projects positional order
+        # (geometry, workunits, output) binding a path into the projects
+        # slot
+        raise ValueError(
+            f"--projects '{projects}' contains a path; the signature is: "
+            "rasterize <geometry> <output> --projects A,B,C"
         )
     # selectors are recognized case-insensitively, and never as list
     # members: 'auto,WU_A' is a mistake, not a selection
@@ -114,12 +124,10 @@ def _resolve_projects(
             # engine keys the run on the input dir name
             return [None], None, None
         return [tokens[0]], None, None
-    wesm_gdf = ept_gdf = None
-    if selector in ("auto", "latest"):
-        # the selectors must read the catalog anyway: load once and hand
-        # the frames back so N per-project engine runs reuse them
-        wesm_gdf = catalog.load_wesm(gdf)
-        ept_gdf = catalog.load_ept_resources()
+    # one catalog fetch per batch: the selectors need the frames, and
+    # explicit lists need them per project for pinning/name resolution
+    wesm_gdf = catalog.load_wesm(gdf)
+    ept_gdf = catalog.load_ept_resources()
     if selector == "auto":
         selected = catalog.select_workunits(gdf, wesm_gdf, ept_gdf)
         print(f"Auto-selected {len(selected)} EPT-backed survey(s):")
@@ -160,7 +168,7 @@ def _resolve_projects(
             )
         return [latest["workunit"]], wesm_gdf, ept_gdf
     explicit: list[str | None] = list(tokens)
-    return explicit, None, None
+    return explicit, wesm_gdf, ept_gdf
 
 
 def rasterize(
@@ -279,13 +287,24 @@ def rasterize(
     -------
     None
     """
-    if "," in Path(output).name:
+    if coord_epoch is not None and dst_crs is None and output_datum == "nad83_2011":
+        # mirrors the engine's fail-fast, which cannot fire from here
+        # because dst_crs is resolved to a concrete file below
+        raise ValueError(
+            "--coord-epoch applies to dynamic-frame targets only: "
+            "NAD83(2011) is plate-fixed (epoch-invariant), so there is no "
+            "epoch-dependent transformation to pin. Drop --coord-epoch or "
+            "choose a dynamic --output-datum (e.g. itrf2020, wgs84_g2139)."
+        )
+    if not Path(output).exists() and "," in Path(output).name:
         # the removed rasterize-projects command took (geometry, workunits,
         # output); an old-style invocation binds the workunit list here and
         # would create a directory literally named after it
         raise ValueError(
             f"output '{output}' looks like a workunit list; the signature "
-            "is: rasterize <geometry> <output> --projects A,B,C"
+            "is: rasterize <geometry> <output> --projects A,B,C. (If the "
+            "output directory really is named with a comma, create it "
+            "first.)"
         )
     gdf = gpd.read_file(geometry)
     keys, wesm_gdf, ept_gdf = _resolve_projects(projects, input, gdf)
