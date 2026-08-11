@@ -21,7 +21,7 @@ import geopandas as gpd
 import shapely
 import yaml
 
-from lidar_tools import survey
+from lidar_tools import catalog
 
 TESM_URL = (
     "https://prd-tnm.s3.amazonaws.com/StagedProducts/Elevation/LPC/"
@@ -220,7 +220,7 @@ def count_links_tiles_in_bbox(links: list[str], aoi_gdf: gpd.GeoDataFrame) -> in
 def load_tesm_tiles(aoi_gdf: gpd.GeoDataFrame, tesm_source: str = TESM_URL) -> gpd.GeoDataFrame:
     """
     Read LPC_TESM tile-extent polygons intersecting the AOI bounds (remote
-    bbox read over /vsicurl, same pattern as `survey.load_wesm`). TESM rows
+    bbox read over /vsicurl, same pattern as `catalog.load_wesm`). TESM rows
     carry ``tile_id/project/project_id/workunit_id`` but NO tile URL, and
     TESM project names drift from WESM's — join by ``workunit_id`` only
     (`attach_workunits`). TESM may entirely lack a recently published
@@ -349,8 +349,8 @@ def build_site_manifest(
         "aoi": str(aoi_path),
         "output_dir": str(output_dir),
         "sources": {
-            "wesm": survey.WESM_URL,
-            "ept_index": survey.EPT_RESOURCES_URL,
+            "wesm": catalog.WESM_URL,
+            "ept_index": catalog.EPT_RESOURCES_URL,
             "tesm": TESM_URL,
         },
         "workunits": {},
@@ -358,12 +358,12 @@ def build_site_manifest(
     for wu in workunits:
         rec = {"wesm": None, "ept": None, "tiles": None, "probes": {}}
         try:
-            rec["wesm"] = survey.record_from_wesm(wesm_gdf, wu)
+            rec["wesm"] = catalog.record_from_wesm(wesm_gdf, wu)
         except ValueError as e:
             rec["wesm"] = {"error": str(e)}
         if ept_gdf is not None:
             try:
-                rec["ept"] = survey.resolve_ept_resource(wu, ept_gdf)
+                rec["ept"] = catalog.resolve_ept_resource(wu, ept_gdf)
             except LookupError as e:
                 rec["ept"] = {"error": str(e)}
         if wu in tesm_counts or wu in links_counts:
@@ -413,7 +413,7 @@ def prepare(
         Default: every workunit whose WESM polygon intersects the AOI.
     """
     aoi = gpd.read_file(geometry)
-    wesm = survey.load_wesm(aoi)
+    wesm = catalog.load_wesm(aoi)
     if workunits is None:
         # the WESM read is bbox-scoped; require true polygon intersection so
         # a diagonal or L-shaped AOI doesn't pull in bbox-only neighbors —
@@ -427,7 +427,7 @@ def prepare(
         wu_list = [w.strip() for w in str(workunits).split(",") if w.strip()]
     if not wu_list:
         raise ValueError("No workunits given and none intersect the AOI")
-    ept = survey.load_ept_resources()
+    ept = catalog.load_ept_resources()
     # None = TESM read failed (index truth unknown), {} = read fine, empty
     tesm_counts: dict | None = None
     links_counts: dict = {}
@@ -438,7 +438,7 @@ def prepare(
         print(f"WARNING: TESM read failed ({e}); index truth unknown")
     for wu in wu_list:
         try:
-            rec = survey.record_from_wesm(wesm, wu)
+            rec = catalog.record_from_wesm(wesm, wu)
         except ValueError:
             continue  # not in WESM: recorded as an error by the manifest
         if not rec.get("lpc_link"):

@@ -76,7 +76,7 @@ def rasterize_projects(
         Path to the AOI polygon (same AOI for every project).
     workunits
         Comma-separated WESM workunit names, in priority order (see
-        `lidar-tools survey` for the per-AOI inventory and proposed
+        `lidar-tools search` for the per-AOI inventory and proposed
         priorities).
     output
         Base output directory; each workunit writes to `<output>/<workunit>/`.

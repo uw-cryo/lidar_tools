@@ -100,7 +100,7 @@ def test_rasterize_pins_wesm_name_but_reads_resolved_ept(tmp_path, monkeypatch):
 
     import yaml
 
-    from lidar_tools import dsm_functions, geodesy, pdal_pipeline, survey
+    from lidar_tools import catalog, dsm_functions, geodesy, pdal_pipeline
 
     wesm_rec = {
         "workunit": "NV_LasVegas_QL2_2016",
@@ -109,7 +109,7 @@ def test_rasterize_pins_wesm_name_but_reads_resolved_ept(tmp_path, monkeypatch):
         "ql": "QL 2",
     }
     monkeypatch.setattr(
-        survey, "workunit_record", lambda gdf, wu, **k: dict(wesm_rec, workunit=wu)
+        catalog, "workunit_record", lambda gdf, wu, **k: dict(wesm_rec, workunit=wu)
     )
     preflight_kwargs = []
     real_preflight_stub = lambda *a, **k: {"ok": True, "stub": True}  # noqa: E731
@@ -118,7 +118,7 @@ def test_rasterize_pins_wesm_name_but_reads_resolved_ept(tmp_path, monkeypatch):
         preflight_kwargs.append(k)
         return real_preflight_stub(*a, **k)
     monkeypatch.setattr(
-        survey,
+        catalog,
         "load_ept_resources",
         lambda *a, **k: _fake_ept_index(
             ["USGS_LPC_NV_LasVegas_QL2_2016_LAS_2018"], [9]
@@ -178,15 +178,15 @@ def test_rasterize_pins_wesm_name_but_reads_resolved_ept(tmp_path, monkeypatch):
 
 def test_rasterize_unresolvable_ept_raises_lookuperror(tmp_path, monkeypatch):
     """No silent 0-reader runs: an unresolvable workunit fails loudly."""
-    from lidar_tools import geodesy, pdal_pipeline, survey
+    from lidar_tools import catalog, geodesy, pdal_pipeline
 
     monkeypatch.setattr(
-        survey,
+        catalog,
         "workunit_record",
         lambda gdf, wu, **k: {"workunit": wu, "horiz_crs": "6340", "geoid": "GEOID18"},
     )
     monkeypatch.setattr(
-        survey,
+        catalog,
         "load_ept_resources",
         lambda *a, **k: _fake_ept_index(["NV_Southern_5_D23"], [1]),
     )
@@ -209,14 +209,14 @@ def test_rasterize_wesm_failure_geoid_modes(tmp_path, monkeypatch):
     """A WESM fetch failure must not silently drop the declared-geoid
     requirement: hard error in 'declared' mode, loud proceed only when the
     operator already chose best-available."""
-    from lidar_tools import dsm_functions, geodesy, pdal_pipeline, survey
+    from lidar_tools import catalog, dsm_functions, geodesy, pdal_pipeline
 
     def no_wesm(gdf, wu, **k):
         raise OSError("connection reset by peer")
 
-    monkeypatch.setattr(survey, "workunit_record", no_wesm)
+    monkeypatch.setattr(catalog, "workunit_record", no_wesm)
     monkeypatch.setattr(
-        survey, "load_ept_resources", lambda *a, **k: _fake_ept_index(["WU_X"], [1])
+        catalog, "load_ept_resources", lambda *a, **k: _fake_ept_index(["WU_X"], [1])
     )
     monkeypatch.setattr(
         geodesy, "preflight_vertical_transform", lambda *a, **k: {"ok": True}

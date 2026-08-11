@@ -21,7 +21,9 @@ classifiers = [
 ]
 
 dependencies = [
-  "cyclopts",
+  # >=4 for Group/command sort_key used by the CLI help layout; <5 matches
+  # the tested pixi pin below
+  "cyclopts >=4,<5",
   "dask",
   "distributed",
   "gdal",

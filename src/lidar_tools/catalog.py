@@ -1,22 +1,27 @@
 """
-Survey discovery and metadata for an AOI: which lidar collections cover the
-area, with quality level, acquisition dates, CRS/datum/geoid declarations,
-and point-cloud-service (EPT) availability.
+Lidar catalog search and metadata for an AOI: which collections (surveys)
+cover the area, with quality level, acquisition dates, CRS/datum/geoid
+declarations, and point-cloud-service (EPT) availability.
 
 This is the metadata backbone for per-project processing: an explicit,
 inspectable inventory comes first; selection and processing consume its
 records. Sources are pluggable — USGS WESM is the primary provider for
 3DEP/CONUS, but the summarize/coverage logic is provider-agnostic
-(any polygon layer with per-collection attributes works).
+(any polygon layer with per-collection attributes works). Field names
+follow WESM's own column vocabulary (the org-wide `wesm:` STAC convention
+in uw-cryo/stac-3dep-1m uses the same names).
 
 Notes
 -----
 - WESM workunit polygons are read remotely with a bbox filter
   (GeoPackage spatial index over /vsicurl), so only the AOI's pages of the
   ~3.4 GB file are fetched. Pass a local path for offline/pinned use.
-- EPT availability is determined SPATIALLY against the hobu boundary index:
-  name joins between WESM workunits and EPT resources are unreliable
-  (renames, misspellings, FTP-era naming).
+- Per-survey EPT availability is resolved by NAME through the 4-tier
+  resolver (resolve_ept_resource): EPT boundary polygons overlap
+  neighbouring collections, so a spatial hit says "some resource covers
+  this ground", not "this survey was entwined". The spatial join against
+  the hobu boundary index feeds only the coverage-fraction columns of the
+  search report.
 """
 
 import re
@@ -369,7 +374,7 @@ def select_latest_workunit(
     if surveys.empty:
         raise LookupError(
             "No 3DEP collection intersects this AOI; nothing to select. "
-            "Run `lidar-tools survey` to inspect coverage."
+            "Run `lidar-tools search` to inspect coverage."
         )
     # "has an EPT build" must be the NAME resolution the pipeline will
     # actually perform, not summarize_surveys' spatial ept_names: EPT
@@ -490,6 +495,13 @@ def pick_anchor(surveys_gdf: gpd.GeoDataFrame) -> int:
         meets = c["lpc_category"].astype(str).str.startswith("Meets")
         if meets.any():
             c = c[meets]
+    if "collect_end" in c.columns:
+        # an undated collection cannot serve as the temporal reference
+        # frame: prefer dated candidates when any exist (gh #89); with
+        # none, the undated pick is reported as such downstream
+        dated = c[pd.to_datetime(c["collect_end"], errors="coerce").notna()]
+        if not dated.empty:
+            c = dated
     sort_cols = [x for x in ["aoi_overlap_frac", "collect_end"] if x in c.columns]
     return c.sort_values(sort_cols, ascending=False).index[0]
 
@@ -552,7 +564,10 @@ def rank_collections(surveys_gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
         s["_meets"] = (~s["lpc_category"].astype(str).str.startswith("Meets")).astype(int)
     else:
         s["_meets"] = 0
-    s["_absdt"] = s["dt_years"].abs().fillna(999.0)
+    # dt_years is None for undated collections (object dtype), and
+    # Series.abs() on Nones raises TypeError (gh #89): coerce first, so
+    # undated rows rank last (999) instead of crashing the inventory
+    s["_absdt"] = pd.to_numeric(s["dt_years"], errors="coerce").abs().fillna(999.0)
     s = s.sort_values(
         ["anchor", "_meets", "_ql", "_absdt", "aoi_overlap_frac"],
         ascending=[False, True, True, True, False],
@@ -814,7 +829,7 @@ def coverage_gaps(
     )
 
 
-def survey(
+def search(
     geometry: str,
     output: str = None,
     wesm_source: str = WESM_URL,
@@ -822,11 +837,12 @@ def survey(
     min_overlap: float = 0.0,
 ) -> None:
     """
-    Report the lidar collections covering an AOI.
+    Search the lidar catalog for collections covering an AOI.
 
-    Prints a per-collection table (quality level, acquisition dates,
-    declared CRS/datum/geoid, EPT availability, AOI overlap) and the
-    uncovered fraction of the AOI.
+    The pre-processing question: what data exist here, before committing
+    to anything? Prints a per-collection table (quality level, acquisition
+    dates, declared CRS/datum/geoid, EPT availability, AOI overlap) and
+    the uncovered fraction of the AOI.
 
     Parameters
     ----------

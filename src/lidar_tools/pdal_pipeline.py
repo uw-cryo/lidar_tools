@@ -15,7 +15,7 @@ os.environ.setdefault("PROJ_NETWORK", "ON")
 # off => heights silently wrong by the ~31 m geoid undulation in CONUS)
 os.environ.setdefault("PROJ_ONLY_BEST_DEFAULT", "YES")
 
-from lidar_tools import dsm_functions, geodesy, survey
+from lidar_tools import catalog, dsm_functions, geodesy
 from pyproj import CRS
 from shapely.geometry.polygon import orient as _orient
 import numpy as np
@@ -471,7 +471,7 @@ def rasterize(
         # enforced, EPT name resolved. Selecting inside return_readers could
         # not be date-ordered — the EPT index carries no acquisition dates,
         # so it took whichever collection came first in file order (gh #68).
-        latest = survey.select_latest_workunit(gdf)
+        latest = catalog.select_latest_workunit(gdf)
         process_specific_3dep_survey = latest["workunit"]
         if latest["undated"]:
             print(
@@ -495,7 +495,7 @@ def rasterize(
                 f"WARNING: {latest['workunit']} covers only "
                 f"{latest['aoi_overlap_frac']:.1%} of the AOI, so this run "
                 f"will have no data over the rest. {latest['n_candidates']} "
-                "collection(s) cover this AOI — use `lidar-tools survey` to "
+                "collection(s) cover this AOI — use `lidar-tools search` to "
                 "inspect them and `rasterize-projects` + `merge` to process "
                 "and combine several.",
                 file=sys.stderr,
@@ -530,7 +530,7 @@ def rasterize(
         workunit_derived = True
     if pin_workunit is not None:
         try:
-            survey_record = survey.workunit_record(gdf, pin_workunit)
+            survey_record = catalog.workunit_record(gdf, pin_workunit)
         except Exception as e:
             if workunit_derived:
                 # a local dir not named after a WESM workunit is normal —
@@ -621,8 +621,8 @@ def rasterize(
     # only the reader join uses the resolved EPT name.
     ept_index_gdf = None
     if input == "EPT_AWS" and process_specific_3dep_survey is not None:
-        ept_index_gdf = survey.load_ept_resources()
-        ept_resolution = survey.resolve_ept_resource(
+        ept_index_gdf = catalog.load_ept_resources()
+        ept_resolution = catalog.resolve_ept_resource(
             process_specific_3dep_survey, ept_index_gdf
         )
         resolved_ept_name = ept_resolution["ept_name"]
