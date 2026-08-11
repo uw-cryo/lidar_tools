@@ -54,6 +54,8 @@ def _write_processing_metadata(
     ept_vertical: str = "auto",
     resume: bool = False,
     geoid_override: str = "declared",
+    output_datum: str = "wgs84_g2139",
+    coord_epoch: float = None,
 ) -> None:
     """
     Write processing metadata to a YAML file in the output directory.
@@ -95,6 +97,11 @@ def _write_processing_metadata(
             "ept_vertical": ept_vertical,
             "resume": resume,
             "geoid_override": geoid_override,
+            # the auto-built target is derived from these two, so without
+            # them a run with dst_crs=None cannot be reproduced from its
+            # own metadata
+            "output_datum": output_datum,
+            "coord_epoch": coord_epoch,
         }
     }
     # exact code state for reproducing branch-based production runs
@@ -259,6 +266,15 @@ def rasterize(
         'nad83_2011' (the source realization of 3DEP; ellipsoidal heights,
         no epoch stamp, no ITRF Helmert). For any other target, pass an
         explicit `dst_crs` WKT file.
+    coord_epoch
+        Target coordinate epoch (decimal year) for a DYNAMIC output frame:
+        the transformation is pinned to this epoch and the epoch is stamped
+        on the outputs. Only meaningful with a dynamic `output_datum`
+        (ITRF/WGS84 realizations); rejected for the plate-fixed
+        'nad83_2011'. Default None stamps
+        geodesy.DEFAULT_COORDINATE_EPOCH (2010.0) — chosen because 3DEP
+        surveys are epoch-reduced to 2010.0 in NAD83(2011) — NOT the target
+        frame's own reference epoch.
     resolution
         Square output raster posting in units of `dst_crs`.
     dsm_gridding_choice
@@ -270,21 +286,26 @@ def rasterize(
         requested products for a tile are generated from a single point
         read.
     threedep_project
-        "all" processes all available 3DEP EPT point clouds which intersect with the input polygon.
-        "first" 3DEP project encountered will be processed.
-        "specific" should be a string that matches the "project" name in the 3DEP metadata.
+        Which 3DEP survey(s) to read. A WESM workunit name (e.g.
+        "AZ_PimaCo_1_2021") processes that survey; its EPT resource name is
+        resolved automatically. "all" processes every EPT collection
+        intersecting the AOI. "latest" (default) processes the most recently
+        collected survey that has an EPT build, chosen from the WESM
+        acquisition dates. Note the newest survey often covers only part of
+        an AOI — the run reports its coverage and warns below 95%; use
+        `rasterize-projects` + `merge` to process and combine several.
     tile_size
         The size of rasterized tiles processed from input EPT point clouds in units of `dst_crs`.
-    num_processes
+    num_process
         Number of processes to run PDAL pipelines in parallel.
     overwrite
         Overwrite output files if they already exist.
     cleanup
         Remove the intermediate tif files, keep only final mosaiced rasters.
     proj_pipeline
-        A PROJ pipeline string to be used for reprojection of the point cloud. If specified, this will be used in combination with the target_wkt option.
-    local_utm
-        If true, automatically compute the local UTM zone from the extent polygon for final output products. If false, use the CRS defined in the target_wkt file.
+        An explicit PROJ pipeline string for the point-cloud reprojection,
+        used together with `dst_crs`. Leave unset to let PROJ select the
+        operation (the pre-run gate verifies it is rigorous).
     filter_noise
         Remove noise points (classification==18 and classification==7) from the point cloud before DSM, DTM and surface intensity processing. Default is True.
     height_above_ground_threshold
@@ -395,6 +416,8 @@ def rasterize(
         quiet=quiet,
         ept_vertical=ept_vertical,
         resume=resume,
+        output_datum=output_datum,
+        coord_epoch=coord_epoch,
         geoid_override=geoid_override,
     )
     _update_processing_metadata(
@@ -443,7 +466,40 @@ def rasterize(
         process_specific_3dep_survey = None
     elif threedep_project == "latest":
         process_all_intersecting_surveys = False
-        process_specific_3dep_survey = None
+        # Resolve "latest" to a concrete workunit here, so the run takes the
+        # normal per-workunit path: WESM record pinned, declared geoid
+        # enforced, EPT name resolved. Selecting inside return_readers could
+        # not be date-ordered — the EPT index carries no acquisition dates,
+        # so it took whichever collection came first in file order (gh #68).
+        latest = survey.select_latest_workunit(gdf)
+        process_specific_3dep_survey = latest["workunit"]
+        if latest["undated"]:
+            print(
+                f"WARNING: no acquisition dates for any of the "
+                f"{latest['n_candidates']} EPT-backed collection(s) here; "
+                f"selected '{latest['workunit']}' (widest AOI coverage), "
+                "which may not be the most recent",
+                file=sys.stderr,
+            )
+        else:
+            print(
+                f"Latest survey selected: {latest['workunit']} "
+                f"(collected {latest['collect_start']} - "
+                f"{latest['collect_end']}, ql {latest['ql']}; "
+                f"{latest['n_candidates']} EPT-backed candidate(s))"
+            )
+        if latest["aoi_overlap_frac"] < 0.95:
+            # the most recent survey is frequently a sliver of the AOI, so a
+            # single-survey run silently leaves most of it empty (gh #68)
+            print(
+                f"WARNING: {latest['workunit']} covers only "
+                f"{latest['aoi_overlap_frac']:.1%} of the AOI, so this run "
+                f"will have no data over the rest. {latest['n_candidates']} "
+                "collection(s) cover this AOI — use `lidar-tools survey` to "
+                "inspect them and `rasterize-projects` + `merge` to process "
+                "and combine several.",
+                file=sys.stderr,
+            )
     else:
         process_all_intersecting_surveys = False
         process_specific_3dep_survey = threedep_project

@@ -320,6 +320,103 @@ def summarize_surveys(
     return out.reset_index(drop=True)
 
 
+def select_latest_workunit(
+    aoi_gdf: gpd.GeoDataFrame,
+    wesm_gdf: gpd.GeoDataFrame = None,
+    ept_gdf: gpd.GeoDataFrame = None,
+) -> dict:
+    """
+    Resolve the "latest" project selection to a concrete workunit: the most
+    recently collected AOI-intersecting survey that actually has an EPT build.
+
+    The EPT resource index carries no acquisition dates, so selecting from it
+    alone cannot be date-ordered (it previously took whichever collection came
+    first in file order — gh #68). WESM does carry `collect_start`/
+    `collect_end`, so the choice is made there and the winner is handed to the
+    normal per-workunit path (record pinning, declared-geoid enforcement, EPT
+    name resolution).
+
+    Parameters
+    ----------
+    aoi_gdf
+        AOI polygon(s), any CRS.
+    wesm_gdf, ept_gdf
+        Pre-loaded WESM rows / EPT boundary index; fetched when omitted.
+
+    Returns
+    -------
+    dict
+        ``{"workunit", "collect_start", "collect_end", "ql",
+        "aoi_overlap_frac", "n_candidates", "undated"}``. ``undated`` is
+        True when no candidate carried acquisition dates, in which case the
+        widest-coverage candidate was taken instead. Note the newest survey
+        often covers only part of the AOI — check ``aoi_overlap_frac``
+        before assuming a single-survey run is complete.
+
+    Raises
+    ------
+    LookupError
+        No AOI-intersecting collection, or none with an EPT build.
+    """
+    wesm = load_wesm(aoi_gdf) if wesm_gdf is None else wesm_gdf
+    ept = load_ept_resources() if ept_gdf is None else ept_gdf
+    # deliberately no `ept` here: passing it makes summarize_surveys
+    # intersect and union the whole EPT index against every collection
+    # footprint, and this function uses none of that spatial output —
+    # availability is the name join below, and the tie-breaks come from
+    # WESM. The EPT index is still loaded, for resolve_ept_resource.
+    surveys = summarize_surveys(wesm, aoi_gdf)
+    if surveys.empty:
+        raise LookupError(
+            "No 3DEP collection intersects this AOI; nothing to select. "
+            "Run `lidar-tools survey` to inspect coverage."
+        )
+    # "has an EPT build" must be the NAME resolution the pipeline will
+    # actually perform, not summarize_surveys' spatial ept_names: EPT
+    # boundaries overlap neighbouring collections, so a spatial hit says
+    # "some resource covers this ground", not "this survey was entwined".
+    resolvable = []
+    for wu in surveys["workunit"].astype(str):
+        try:
+            resolve_ept_resource(wu, ept)
+        except LookupError:
+            continue
+        resolvable.append(wu)
+    with_ept = surveys[surveys["workunit"].astype(str).isin(resolvable)]
+    if with_ept.empty:
+        names = sorted(surveys["workunit"].astype(str))[:10]
+        raise LookupError(
+            f"{len(surveys)} collection(s) intersect the AOI but none resolves "
+            f"to an EPT build ({names}); entwine builds lag LPC publication. "
+            "Use the staged-LAZ path, or name a workunit explicitly."
+        )
+    dated = with_ept[with_ept["collect_end"].notna()]
+    undated = dated.empty
+    if undated:
+        # every candidate lacks WESM dates, so recency is unknowable: fall
+        # back to the most AOI coverage rather than failing (ties by name,
+        # so the pick stays reproducible), and say so
+        pick = with_ept.sort_values(
+            ["aoi_overlap_frac", "workunit"], ascending=[False, True]
+        ).iloc[0]
+    else:
+        # newest acquisition wins; ties broken by AOI coverage then name so
+        # the choice is reproducible
+        pick = dated.sort_values(
+            ["collect_end", "aoi_overlap_frac", "workunit"],
+            ascending=[False, False, True],
+        ).iloc[0]
+    return {
+        "workunit": str(pick["workunit"]),
+        "collect_start": _yaml_safe(pick.get("collect_start")),
+        "collect_end": _yaml_safe(pick.get("collect_end")),
+        "ql": pick.get("ql"),
+        "aoi_overlap_frac": float(pick["aoi_overlap_frac"]),
+        "n_candidates": int(len(with_ept)),
+        "undated": bool(undated),
+    }
+
+
 def _collect_midpoint(row) -> pd.Timestamp:
     """Midpoint of a collection's acquisition window (NaT when unknown)."""
     try:
