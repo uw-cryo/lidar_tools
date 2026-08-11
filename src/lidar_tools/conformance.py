@@ -64,6 +64,19 @@ def _counts(series) -> list:
     return list(series.fillna("").astype(str).value_counts().items())
 
 
+def _resolves_as_esri(code: str) -> bool:
+    """True when `code` is a real ESRI authority code. The definitive test —
+    ask PROJ — not a numeric-range heuristic, so an arbitrary invalid number
+    is never misreported as a fixable ESRI code."""
+    from pyproj import CRS
+
+    try:
+        CRS.from_authority("ESRI", code)
+    except Exception:
+        return False
+    return True
+
+
 def check_horizontal_crs(series) -> list:
     """
     Can `geodesy.geographic_base_epsg` derive a base datum from every
@@ -82,8 +95,11 @@ def check_horizontal_crs(series) -> list:
             continue
         except Exception as exc:
             msg = str(exc)
-        if "Invalid projection" in msg and value.isdigit():
-            # 6-digit ESRI codes (1024xx/1023xx) live in this EPSG field
+        if value.isdigit() and _resolves_as_esri(value):
+            # ESRI authority codes live in this EPSG-shaped field; resolve
+            # against the ESRI authority rather than trusting a numeric
+            # range, so an arbitrary bad number cannot masquerade as a
+            # fixable ESRI code
             esri.append((value, count))
         elif "has base" in msg or "non-NAD83" in msg.lower():
             unsupported.append((value, count))
@@ -138,8 +154,8 @@ def check_horizontal_crs(series) -> list:
 
 def check_geoid(series) -> list:
     """
-    Is every declared geoid model recognized, and which NGS regions does it
-    ship grids for? An unrecognized model hard-fails under the default
+    Is every declared geoid model recognized by the enforcement table?
+    An unrecognized model hard-fails under the default
     `--geoid-override declared`; an absent/unknown declaration silently
     disables enforcement, which is the failure mode that work removed.
     """

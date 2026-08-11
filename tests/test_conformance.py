@@ -46,6 +46,15 @@ def test_esri_codes_are_reported_separately_from_unsupported_datums():
     assert found["horiz_crs.non_nad83_datum"].severity == "unsupported"
 
 
+def test_bogus_numeric_crs_is_unparseable_not_esri():
+    """A numeric value PROJ rejects under BOTH authorities must land in
+    unparseable: classification asks the ESRI authority, it does not trust
+    a numeric range."""
+    found = _by_check(conformance.check_horizontal_crs(pd.Series(["999999"])))
+    assert "horiz_crs.esri_authority_code" not in found
+    assert found["horiz_crs.unparseable"].count == 1
+
+
 def test_geoid_checks_split_unrecognized_from_undeclared():
     found = _by_check(
         conformance.check_geoid(pd.Series(["GEOID18", "NOT_A_GEOID", "Unknown", None]))
