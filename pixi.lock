@@ -14630,7 +14630,7 @@ packages:
 - pypi: ./
   name: lidar-tools
   requires_dist:
-  - cyclopts
+  - cyclopts>=4,<5
   - dask
   - distributed
   - gdal
