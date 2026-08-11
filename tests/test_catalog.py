@@ -478,3 +478,28 @@ def test_anchor_prefers_dated_collection():
     s = catalog.summarize_surveys(wesm, _aoi())
     out = catalog.relative_metrics(s)
     assert out.loc[out["anchor"], "workunit"].iloc[0] == "DATED_SMALL"
+
+
+def test_select_workunits_orders_by_rank_and_filters_ept():
+    """auto-selection: every EPT-backed intersecting survey, rank_collections
+    order (anchor first, then QL / temporal proximity)."""
+    aoi = gpd.GeoDataFrame(geometry=[_square(-0.5, -0.5, 0.5, 0.5)], crs="EPSG:4326")
+    out = catalog.select_workunits(
+        aoi, _wesm_dated(), _ept_for(["WU_A_2019", "WU_B_2023", "WU_C_2021"])
+    )
+    assert [r["workunit"] for r in out] == ["WU_B_2023", "WU_C_2021", "WU_A_2019"]
+    assert [r["priority"] for r in out] == [1, 2, 3]
+
+    # the newest survey has no EPT build: it must not appear at all
+    out = catalog.select_workunits(
+        aoi, _wesm_dated(), _ept_for(["WU_A_2019", "WU_C_2021"])
+    )
+    assert [r["workunit"] for r in out] == ["WU_C_2021", "WU_A_2019"]
+
+
+def test_select_workunits_fails_loud_when_nothing_resolves():
+    import pytest
+
+    aoi = gpd.GeoDataFrame(geometry=[_square(-0.5, -0.5, 0.5, 0.5)], crs="EPSG:4326")
+    with pytest.raises(LookupError, match="none resolves"):
+        catalog.select_workunits(aoi, _wesm_dated(), _ept_for(["UNRELATED"]))

@@ -117,6 +117,7 @@ def test_rasterize_pins_wesm_name_but_reads_resolved_ept(tmp_path, monkeypatch):
     def spy_preflight(*a, **k):
         preflight_kwargs.append(k)
         return real_preflight_stub(*a, **k)
+
     monkeypatch.setattr(
         catalog,
         "load_ept_resources",
@@ -134,7 +135,7 @@ def test_rasterize_pins_wesm_name_but_reads_resolved_ept(tmp_path, monkeypatch):
     monkeypatch.setattr(dsm_functions, "create_ept_3dep_pipeline", fake_create)
 
     outdir = tmp_path / "out"
-    pdal_pipeline.rasterize(
+    pdal_pipeline.rasterize_project(
         geometry=_lv_aoi_file(tmp_path),
         output=str(outdir),
         threedep_project="NV_LasVegas_QL2_2016",
@@ -143,10 +144,7 @@ def test_rasterize_pins_wesm_name_but_reads_resolved_ept(tmp_path, monkeypatch):
     )
 
     # reader join got the RESOLVED EPT name
-    assert (
-        captured["process_specific_3dep_survey"]
-        == "USGS_LPC_NV_LasVegas_QL2_2016_LAS_2018"
-    )
+    assert captured["survey_name"] == "USGS_LPC_NV_LasVegas_QL2_2016_LAS_2018"
     metas = glob.glob(str(outdir / "*processing_metadata.yaml"))
     assert len(metas) == 1
     # output naming keeps the WESM workunit name, never the EPT alias
@@ -158,8 +156,7 @@ def test_rasterize_pins_wesm_name_but_reads_resolved_ept(tmp_path, monkeypatch):
     # resolution provenance recorded: who resolved to what, at which tier
     assert meta["ept_resolution"]["workunit"] == "NV_LasVegas_QL2_2016"
     assert (
-        meta["ept_resolution"]["ept_name"]
-        == "USGS_LPC_NV_LasVegas_QL2_2016_LAS_2018"
+        meta["ept_resolution"]["ept_name"] == "USGS_LPC_NV_LasVegas_QL2_2016_LAS_2018"
     )
     assert meta["ept_resolution"]["tier"] == 3
     assert meta["ept_resolution"]["boundary_intersects_aoi"] is True
@@ -196,7 +193,7 @@ def test_rasterize_unresolvable_ept_raises_lookuperror(tmp_path, monkeypatch):
         lambda *a, **k: {"ok": True, "stub": True},
     )
     with pytest.raises(LookupError, match="NV_Southern_4_D23"):
-        pdal_pipeline.rasterize(
+        pdal_pipeline.rasterize_project(
             geometry=_lv_aoi_file(tmp_path),
             output=str(tmp_path / "out"),
             threedep_project="NV_Southern_4_D23",
@@ -225,7 +222,7 @@ def test_rasterize_wesm_failure_geoid_modes(tmp_path, monkeypatch):
 
     aoi = _lv_aoi_file(tmp_path)
     with pytest.raises(RuntimeError, match="geoid-override best-available"):
-        pdal_pipeline.rasterize(
+        pdal_pipeline.rasterize_project(
             geometry=aoi,
             output=str(tmp_path / "o1"),
             threedep_project="WU_X",
@@ -233,7 +230,7 @@ def test_rasterize_wesm_failure_geoid_modes(tmp_path, monkeypatch):
             quiet=True,
         )
     # conscious override: run proceeds on default datum handling
-    pdal_pipeline.rasterize(
+    pdal_pipeline.rasterize_project(
         geometry=aoi,
         output=str(tmp_path / "o2"),
         threedep_project="WU_X",
@@ -259,9 +256,7 @@ def test_metadata_path_rejects_mixed_run_prefixes(tmp_path):
 
     legacy = tmp_path / "legacy"
     legacy.mkdir()
-    assert (
-        pdal_pipeline._metadata_path(legacy).name == "processing_metadata.yaml"
-    )
+    assert pdal_pipeline._metadata_path(legacy).name == "processing_metadata.yaml"
 
 
 def test_metadata_updates_target_the_running_prefix(tmp_path):
@@ -282,3 +277,234 @@ def test_metadata_updates_target_the_running_prefix(tmp_path):
     assert "geodesy" in yaml.safe_load(mine.read_text())
     # the other run's record is untouched
     assert yaml.safe_load(stale.read_text()) == {"run_status": {"state": "completed"}}
+
+
+def test_engine_validates_before_overwrite_deletes(tmp_path):
+    """Argument validation must precede the overwrite rmtree: a rejected
+    call must not destroy the prior products it was pointed at."""
+    import pytest
+
+    from lidar_tools import pdal_pipeline
+
+    outdir = tmp_path / "existing"
+    outdir.mkdir()
+    keep = outdir / "prior-DSM_mos.tif"
+    keep.write_bytes(b"precious")
+    with pytest.raises(ValueError, match="threedep_project is required"):
+        pdal_pipeline.rasterize_project(
+            geometry="unused.geojson",
+            output=str(outdir),
+            overwrite=True,
+        )
+    assert keep.read_bytes() == b"precious"  # nothing was deleted
+
+
+def test_engine_rejects_selection_keywords():
+    """Old-API literals ('all'/'latest') must error with guidance, not be
+    treated as workunit names that fail later in WESM lookup."""
+    import pytest
+
+    from lidar_tools import pdal_pipeline
+
+    for kw in ("all", "latest", "auto"):
+        with pytest.raises(ValueError, match="selection keyword"):
+            pdal_pipeline.rasterize_project(
+                geometry="unused.geojson", output="/tmp/x", threedep_project=kw
+            )
+
+
+def test_engine_rejects_unnameable_local_input():
+    import pytest
+
+    from lidar_tools import pdal_pipeline
+
+    with pytest.raises(ValueError, match="nameable input directory"):
+        pdal_pipeline.rasterize_project(
+            geometry="unused.geojson", output="/tmp/x", input="/"
+        )
+
+
+def _resume_params(**over):
+    base = {
+        "geometry_fingerprint": "abc123",
+        "input": "EPT_AWS",
+        "src_crs": None,
+        "dst_crs": "/tmp/utm.wkt",
+        "dsm_gridding_choice": "first_idw",
+        "tile_size": 1.0,
+        "filter_noise": True,
+        "height_above_ground_threshold": None,
+        "proj_pipeline": None,
+        "ept_vertical": "auto",
+        "geoid_override": "declared",
+        "output_datum": "wgs84_g2139",
+        "coord_epoch": None,
+    }
+    base.update(over)
+    return base
+
+
+def test_resume_accepts_identical_parameters():
+    """The design center: a user re-running the identical command after a
+    failure must resume, not be blocked."""
+    from lidar_tools import pdal_pipeline
+
+    p = _resume_params()
+    assert pdal_pipeline.check_resume_compatible(dict(p), dict(p)) == []
+
+
+def test_resume_rejects_changed_tile_parameters():
+    import pytest
+
+    from lidar_tools import pdal_pipeline
+
+    with pytest.raises(ValueError, match="dsm_gridding_choice"):
+        pdal_pipeline.check_resume_compatible(
+            _resume_params(), _resume_params(dsm_gridding_choice="95-pct")
+        )
+
+
+def test_resume_rejects_edited_aoi_at_the_same_path():
+    """Tiles are named by a bare index over a grid derived from the AOI
+    bounds, so an AOI edited in place would silently re-use tiles covering
+    different ground -- the path cannot detect that, the fingerprint can."""
+    import pytest
+
+    from lidar_tools import pdal_pipeline
+
+    with pytest.raises(ValueError, match="geometry_fingerprint"):
+        pdal_pipeline.check_resume_compatible(
+            _resume_params(), _resume_params(geometry_fingerprint="deadbeef")
+        )
+
+
+def test_resume_reports_but_does_not_block_on_unverifiable():
+    """Re-running the identical command after an interruption is the design
+    centre, and EVERY directory written before a parameter existed lacks it
+    (verified: real Casa Grande records carry no output_datum, and none
+    predating this change carries geometry_fingerprint). Unverifiable must
+    warn, never block -- only a CHANGED parameter blocks."""
+    from lidar_tools import pdal_pipeline
+
+    legacy = _resume_params()
+    del legacy["output_datum"]
+    del legacy["geometry_fingerprint"]
+    unverified = pdal_pipeline.check_resume_compatible(legacy, _resume_params())
+    assert sorted(unverified) == ["geometry_fingerprint", "output_datum"]
+
+    # a missing/corrupt record verifies nothing, but still does not block
+    assert set(pdal_pipeline.check_resume_compatible(None, _resume_params())) == set(
+        pdal_pipeline.RESUME_TILE_PARAMS
+    )
+
+
+def test_resume_still_blocks_a_changed_parameter_in_a_legacy_record():
+    """The dangerous case survives the relaxation: a key present in BOTH
+    records and disagreeing still refuses."""
+    import pytest
+
+    from lidar_tools import pdal_pipeline
+
+    legacy = _resume_params(dsm_gridding_choice="first_idw")
+    del legacy["output_datum"]
+    with pytest.raises(ValueError, match="dsm_gridding_choice"):
+        pdal_pipeline.check_resume_compatible(
+            legacy, _resume_params(dsm_gridding_choice="95-pct")
+        )
+
+
+def test_resume_path_spelling_does_not_block(tmp_path):
+    """An identical resume spelled with a relative path or trailing slash
+    must not throw away hours of valid tiles."""
+    from lidar_tools import pdal_pipeline
+
+    d = tmp_path / "wu_a"
+    d.mkdir()
+    prior = _resume_params(input=str(d))
+    now = _resume_params(input=str(d) + "/")
+    pdal_pipeline.check_resume_compatible(prior, now)  # no raise
+
+
+def test_aoi_fingerprint_tracks_content_not_path(tmp_path):
+    import geopandas as gpd
+    import shapely
+
+    from lidar_tools import pdal_pipeline
+
+    a = gpd.GeoDataFrame(geometry=[shapely.box(0, 0, 1, 1)], crs="EPSG:4326")
+    b = gpd.GeoDataFrame(geometry=[shapely.box(0, 0, 2, 2)], crs="EPSG:4326")
+    assert pdal_pipeline._aoi_fingerprint(a) == pdal_pipeline._aoi_fingerprint(
+        gpd.GeoDataFrame(geometry=[shapely.box(0, 0, 1, 1)], crs="EPSG:4326")
+    )
+    assert pdal_pipeline._aoi_fingerprint(a) != pdal_pipeline._aoi_fingerprint(b)
+
+
+def test_engine_keyword_rejection_is_case_insensitive():
+    """The driver casefolds these; the engine must agree or 'AUTO' reaches
+    the misleading WESM lookup error."""
+    import pytest
+
+    from lidar_tools import pdal_pipeline
+
+    for kw in ("AUTO", "Latest", "ALL"):
+        with pytest.raises(ValueError, match="selection keyword"):
+            pdal_pipeline.rasterize_project(
+                geometry="unused.geojson", output="/tmp/x", threedep_project=kw
+            )
+
+
+def test_metadata_roundtrip_allows_identical_resume(tmp_path):
+    """The gap Copilot caught: my earlier check only exercised LEGACY
+    records (no fingerprint key -> unverifiable -> warn). A record written
+    by THIS code has the key, so a null there compares as a MISMATCH
+    against a real fingerprint and refuses the identical re-run. Write a
+    record the way the engine does, then resume against it."""
+    import yaml
+
+    from lidar_tools import pdal_pipeline
+
+    fp = "abc123def456"
+    pdal_pipeline._write_processing_metadata(
+        output_dir=tmp_path,
+        filename_prefix="aoi_1m_WU_A",
+        geometry="aoi.geojson",
+        input="EPT_AWS",
+        output=str(tmp_path),
+        src_crs=None,
+        dst_crs="/tmp/utm.wkt",
+        resolution=1.0,
+        dsm_gridding_choice="first_idw",
+        products="all",
+        threedep_project="WU_A",
+        tile_size=1.0,
+        num_process=1,
+        overwrite=False,
+        cleanup=True,
+        proj_pipeline=None,
+        filter_noise=True,
+        height_above_ground_threshold=None,
+        quiet=False,
+        geometry_fingerprint=fp,
+    )
+    rec = yaml.safe_load(
+        (tmp_path / "aoi_1m_WU_A-processing_metadata.yaml").read_text()
+    )
+    prior = rec["input_parameters"]
+    assert prior["geometry_fingerprint"] == fp  # actually recorded, not null
+
+    current = {k: prior.get(k) for k in pdal_pipeline.RESUME_TILE_PARAMS}
+    assert pdal_pipeline.check_resume_compatible(prior, current) == []
+
+
+def test_proj_pipeline_string_is_not_treated_as_a_path():
+    """A PROJ pipeline string must compare literally; resolving it would
+    make the comparison depend on the current working directory."""
+    from lidar_tools import pdal_pipeline
+
+    pipe = "+proj=pipeline +step +proj=unitconvert +xy_in=deg"
+    assert pdal_pipeline._normalize_param("proj_pipeline", pipe) == pipe
+    prior = _resume_params(proj_pipeline=pipe)
+    assert (
+        pdal_pipeline.check_resume_compatible(prior, _resume_params(proj_pipeline=pipe))
+        == []
+    )

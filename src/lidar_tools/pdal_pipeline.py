@@ -31,6 +31,112 @@ from datetime import datetime
 from importlib.metadata import version
 
 
+def _aoi_fingerprint(gdf) -> str:
+    """
+    Content fingerprint of an AOI: sha256 over the normalized geometry in
+    EPSG:4326. The tile grid is derived from the AOI bounds and tiles are
+    named by a bare enumeration index, so an EDITED AOI at the same path
+    would silently re-use tiles that cover different ground -- the path
+    alone cannot detect that.
+    """
+    import hashlib
+
+    wkb = gdf.to_crs("EPSG:4326").geometry.union_all().wkb
+    return hashlib.sha256(wkb).hexdigest()[:16]
+
+
+#: Parameters that shape tile CONTENT. A resume skips existing tiles, so
+#: these must match the run that produced them. `resolution` and
+#: `threedep_project` are excluded deliberately: they live in the filename
+#: prefix, so a change lands in a different record entirely. `products`
+#: is excluded because resuming to ADD a product legitimately reuses the
+#: shared point reads.
+RESUME_TILE_PARAMS = (
+    "geometry_fingerprint",
+    "input",
+    "src_crs",
+    "dst_crs",
+    "dsm_gridding_choice",
+    "tile_size",
+    "filter_noise",
+    "height_above_ground_threshold",
+    "proj_pipeline",
+    "ept_vertical",
+    "geoid_override",
+    "output_datum",
+    "coord_epoch",
+)
+
+
+def _normalize_param(key: str, value):
+    """Path-valued parameters compare by resolved path, so the same
+    directory spelled relatively or with a trailing slash is the same
+    value; everything else compares as-is. proj_pipeline is deliberately
+    NOT in that set -- it is a PROJ pipeline string ('+proj=pipeline
+    ...'), and resolving it would make the comparison cwd-dependent."""
+    if value is None:
+        return None
+    if key in ("input", "src_crs", "dst_crs"):
+        if key == "input" and value == "EPT_AWS":
+            return value
+        try:
+            return str(Path(value).resolve())
+        except OSError:
+            return str(value)
+    return value
+
+
+def check_resume_compatible(prior: dict | None, current: dict) -> list[str]:
+    """
+    Refuse a resume whose tile-shaping parameters CHANGED; report (but do
+    not block on) parameters that cannot be verified.
+
+    The design centre is re-running the identical command after an
+    interrupted run, so anything unverifiable must stay a warning: a
+    changed parameter is a user action worth blocking, but a record that
+    simply predates a parameter is not, and refusing there would block
+    resume into every directory written before that parameter existed.
+
+    `prior` is the previous run's ``input_parameters`` mapping, or None
+    when the record is missing/unreadable.
+
+    Returns
+    -------
+    list[str]
+        Parameters that could not be verified (absent from the prior
+        record, or the whole record unreadable). Empty when fully
+        verified. The caller warns and records this.
+
+    Raises
+    ------
+    ValueError
+        Only when a parameter present in both records disagrees.
+    """
+    if prior is None:
+        return list(RESUME_TILE_PARAMS)
+    mismatched, unverifiable = [], []
+    for key in RESUME_TILE_PARAMS:
+        if key not in prior:
+            # e.g. a record written before this parameter was recorded at
+            # all: unknowable, not disagreement
+            unverifiable.append(key)
+        elif _normalize_param(key, prior.get(key)) != _normalize_param(
+            key, current.get(key)
+        ):
+            mismatched.append((key, prior.get(key), current.get(key)))
+    if mismatched:
+        detail = "; ".join(
+            f"{k} (was {a!r}, now {b!r})" for k, a, b in sorted(mismatched)
+        )
+        raise ValueError(
+            f"Cannot resume into this output directory: {detail}. Resuming "
+            "would reuse tiles built with different settings while the "
+            "metadata records only the new ones. Use a fresh output "
+            "directory, or delete this one to rebuild from scratch."
+        )
+    return unverifiable
+
+
 def _write_processing_metadata(
     output_dir: Path,
     filename_prefix: str,
@@ -42,7 +148,7 @@ def _write_processing_metadata(
     resolution: float,
     dsm_gridding_choice: str,
     products: str,
-    threedep_project: str,
+    threedep_project: str | None,
     tile_size: float,
     num_process: int,
     overwrite: bool,
@@ -56,6 +162,8 @@ def _write_processing_metadata(
     geoid_override: str = "declared",
     output_datum: str = "wgs84_g2139",
     coord_epoch: float = None,
+    geometry_fingerprint: str = None,
+    resume_unverified: list = None,
 ) -> None:
     """
     Write processing metadata to a YAML file in the output directory.
@@ -78,6 +186,12 @@ def _write_processing_metadata(
         "processing_timestamp": datetime.now().astimezone().isoformat(),
         "input_parameters": {
             "geometry": str(geometry),
+            # content fingerprint: the path alone cannot detect an AOI
+            # edited in place, which would invalidate every existing tile
+            "geometry_fingerprint": geometry_fingerprint,
+            # parameters a resume could not check against the earlier
+            # run's record (absent there), so provenance stays honest
+            "resume_unverified": resume_unverified,
             "input": str(input),
             "output": str(output),
             "src_crs": str(src_crs) if src_crs else None,
@@ -102,7 +216,7 @@ def _write_processing_metadata(
             # own metadata
             "output_datum": output_datum,
             "coord_epoch": coord_epoch,
-        }
+        },
     }
     # exact code state for reproducing branch-based production runs
     try:
@@ -216,20 +330,24 @@ def _cleanup_intermediates(outdir: Path) -> None:
     (outdir / "judicious_extent_polygon.geojson").unlink(missing_ok=True)
 
 
-def rasterize(
+def rasterize_project(
     geometry: str,
     input: str = "EPT_AWS",
     output: str = "/tmp/lidar-tools-output",
     src_crs: str = None,
     dst_crs: str = None,
     output_datum: Literal[
-        "wgs84_g2139", "nad83_2011", "wgs84_g1674", "itrf2020",
-        "itrf2008", "itrf2014",
+        "wgs84_g2139",
+        "nad83_2011",
+        "wgs84_g1674",
+        "itrf2020",
+        "itrf2008",
+        "itrf2014",
     ] = "wgs84_g2139",
     resolution: float = 1.0,
     dsm_gridding_choice: str = "first_idw",
     products: str = "all",
-    threedep_project: Literal["all", "latest"] | str = "latest",
+    threedep_project: str = None,
     tile_size: float = 1.0,
     num_process: int = 1,
     overwrite: Annotated[bool, cyclopts.Parameter(negative="")] = False,
@@ -242,6 +360,8 @@ def rasterize(
     geoid_override: Literal["declared", "best-available"] = "declared",
     resume: Annotated[bool, cyclopts.Parameter(negative="")] = False,
     coord_epoch: float = None,
+    wesm_gdf: gpd.GeoDataFrame = None,
+    ept_index_gdf: gpd.GeoDataFrame = None,
 ) -> None:
     """
     Create a Digital Surface Model (DSM), Digital Terrain Model (DTM) and/or Intensity raster from point cloud data.
@@ -285,15 +405,17 @@ def rasterize(
         "all" (default) = every product; "dtm" = both DTM variants. All
         requested products for a tile are generated from a single point
         read.
+    wesm_gdf, ept_index_gdf
+        Pre-loaded WESM rows / EPT boundary index handed down by the
+        batch driver so an N-project batch does not refetch them N
+        times; fetched here when omitted (direct API use).
     threedep_project
-        Which 3DEP survey(s) to read. A WESM workunit name (e.g.
-        "AZ_PimaCo_1_2021") processes that survey; its EPT resource name is
-        resolved automatically. "all" processes every EPT collection
-        intersecting the AOI. "latest" (default) processes the most recently
-        collected survey that has an EPT build, chosen from the WESM
-        acquisition dates. Note the newest survey often covers only part of
-        an AOI — the run reports its coverage and warns below 95%; use
-        `rasterize-projects` + `merge` to process and combine several.
+        The one concrete WESM workunit to read (e.g. "AZ_PimaCo_1_2021");
+        its EPT resource name is resolved automatically. Required on the
+        EPT path — selection policy ("auto"/"latest"/explicit lists) lives
+        in the public `rasterize` command, which resolves it before calling
+        here. On the local path (input = LAZ directory) it optionally names
+        the survey the files belong to, for WESM record pinning.
     tile_size
         The size of rasterized tiles processed from input EPT point clouds in units of `dst_crs`.
     num_process
@@ -337,7 +459,9 @@ def rasterize(
     -------
     None
     """
-    if dsm_gridding_choice != "first_idw" and not re.match(r"^\d{1,2}-pct$", dsm_gridding_choice):
+    if dsm_gridding_choice != "first_idw" and not re.match(
+        r"^\d{1,2}-pct$", dsm_gridding_choice
+    ):
         raise ValueError(
             f"Invalid dsm_gridding_choice: {dsm_gridding_choice}. Must be 'first_idw' or match the format 'n-pct' (e.g., '98-pct')."
         )
@@ -345,9 +469,37 @@ def rasterize(
     # canonical product names (validates the selection early)
     requested = dsm_functions.parse_products(products)
 
+    # Argument-only validation precedes ANY filesystem or network step:
+    # with overwrite=True the branch further down deletes the existing
+    # output directory, so rejecting a call after it would destroy prior
+    # products in exchange for an error message.
+    # Selection policy (auto/latest/lists) lives in the public rasterize
+    # command; by the time this engine runs, the survey is one concrete
+    # workunit (EPT path) or None (local path, optionally pinned by name).
+    if input == "EPT_AWS" and threedep_project is None:
+        raise ValueError(
+            "threedep_project is required on the EPT path: pass one "
+            "concrete WESM workunit (selection happens in `rasterize`)"
+        )
+    if str(threedep_project).casefold() in ("all", "latest", "auto"):
+        # the old engine accepted these keywords; treating them as literal
+        # workunit names now would fail later with a misleading
+        # workunit-not-found error
+        raise ValueError(
+            f"threedep_project='{threedep_project}' is a selection keyword, "
+            "resolved by the public `rasterize` command; this engine takes "
+            "one concrete WESM workunit name"
+        )
+    if input != "EPT_AWS" and not Path(input).resolve().name:
+        raise ValueError(
+            f"cannot derive a project key from input '{input}' "
+            "(filesystem root?); the run needs a nameable input directory"
+        )
+
     # Parse input polygon CRS and check that area isn't too large
     gdf = gpd.read_file(geometry)
     _check_polygon_area(gdf)
+    geometry_fingerprint = _aoi_fingerprint(gdf)
     input_crs = gdf.crs.to_wkt()
     # lon/lat AOI bounds for scoping PROJ transformation selection
     aoi_lonlat = tuple(gdf.to_crs("EPSG:4326").total_bounds)
@@ -379,8 +531,9 @@ def rasterize(
                 shutil.rmtree(outdir)
         else:
             raise FileExistsError(
-                f"Output directory {outdir} already exists. Use --overwrite to "
-                "replace it or --resume to continue an interrupted run."
+                f"Output directory {outdir} already exists. Re-invoke with "
+                "--resume to continue an interrupted run, or delete the "
+                "directory to rebuild it from scratch."
             )
 
     # Set output filename prefix based on input polygon name + grid posting
@@ -389,9 +542,80 @@ def rasterize(
     # directories stay distinguishable
     outdir.mkdir(parents=True, exist_ok=True)
     filename_prefix = f"{Path(geometry).stem}_{resolution:g}m"
-    if threedep_project not in (None, "all", "latest"):
+    if threedep_project is not None:
         filename_prefix = f"{filename_prefix}_{threedep_project}"
+    elif input != "EPT_AWS":
+        # local runs key on the input directory name (resolved, so '.'
+        # yields the real name), so two local runs into one output
+        # directory cannot collide on bare AOI+posting
+        filename_prefix = f"{filename_prefix}_{Path(input).resolve().name}"
     output_prefix = outdir / filename_prefix
+
+    # A resume skips existing valid tiles, so the parameters that shape
+    # tile CONTENT must match the run that produced them -- otherwise the
+    # final mosaic silently mixes settings while the metadata rewrite
+    # below records only the new ones (falsified provenance). Checked
+    # against the existing record before that rewrite destroys it.
+    # resolution and threedep_project live in the filename prefix (a
+    # mismatch lands in a different record and trips _metadata_path);
+    # products may differ (resuming to ADD products reuses shared tiles).
+    resume_unverified: list[str] = []
+    if resume:
+        # _metadata_path also finds the legacy bare-name record of
+        # pre-2026-07-13 runs, which a direct prefixed lookup misses
+        prior_meta = _metadata_path(outdir, filename_prefix)
+        prior_params: dict | None = None
+        if prior_meta.exists():
+            try:
+                with open(prior_meta) as f:
+                    loaded = yaml.safe_load(f) or {}
+                prior_params = loaded.get("input_parameters")
+                if not isinstance(prior_params, dict):
+                    prior_params = None
+            except (yaml.YAMLError, OSError):
+                prior_params = None
+            if prior_params is None:
+                # a hard kill mid-rewrite can truncate the YAML -- keep the
+                # damaged file instead of letting the rewrite below erase
+                # the only record of what the surviving tiles were built with
+                damaged = prior_meta.with_suffix(prior_meta.suffix + ".damaged")
+                try:
+                    prior_meta.replace(damaged)
+                    print(
+                        f"WARNING: {prior_meta.name} was unreadable; kept as "
+                        f"{damaged.name}",
+                        file=sys.stderr,
+                    )
+                except OSError:
+                    pass
+        resume_unverified = check_resume_compatible(
+            prior_params,
+            {
+                "geometry_fingerprint": geometry_fingerprint,
+                # parameters a resume could not check against the earlier
+                # run's record (absent there), so provenance stays honest
+                "resume_unverified": resume_unverified,
+                "input": str(input),
+                "src_crs": str(src_crs) if src_crs else None,
+                "dst_crs": str(dst_crs) if dst_crs else None,
+                "dsm_gridding_choice": dsm_gridding_choice,
+                "tile_size": tile_size,
+                "filter_noise": filter_noise,
+                "height_above_ground_threshold": height_above_ground_threshold,
+                "proj_pipeline": str(proj_pipeline) if proj_pipeline else None,
+                "ept_vertical": ept_vertical,
+                "geoid_override": geoid_override,
+                "output_datum": output_datum,
+                "coord_epoch": coord_epoch,
+            },
+        )
+        if resume_unverified and prior_meta.exists():
+            print(
+                "WARNING: resuming, but the earlier run did not record "
+                f"{sorted(resume_unverified)}, so tiles being re-used could "
+                "not be verified against this run's settings",
+                file=sys.stderr,
+            )
 
     # Write processing metadata to YAML file
     _write_processing_metadata(
@@ -418,6 +642,8 @@ def rasterize(
         resume=resume,
         output_datum=output_datum,
         coord_epoch=coord_epoch,
+        geometry_fingerprint=geometry_fingerprint,
+        resume_unverified=resume_unverified or None,
         geoid_override=geoid_override,
     )
     _update_processing_metadata(
@@ -443,66 +669,26 @@ def rasterize(
         out_crs = CRS.from_string(contents)
     out_extent = gdf.to_crs(out_crs).total_bounds
     final_out_extent = dsm_functions.tap_bounds(out_extent, res=resolution)
-    #fix extent precision with respect to input resolution
-    #from https://www.reddit.com/r/pythontips/comments/zw5ana/how_to_count_decimal_places/
+    # fix extent precision with respect to input resolution
+    # from https://www.reddit.com/r/pythontips/comments/zw5ana/how_to_count_decimal_places/
     import decimal
+
     d = decimal.Decimal(str(resolution))
     precision = abs(d.as_tuple().exponent)
-    final_out_extent = [np.round(val,precision) for val in final_out_extent]
-    
+    final_out_extent = [np.round(val, precision) for val in final_out_extent]
+
     # TODO: simplify and use tempfile (https://github.com/uw-cryo/lidar_tools/pull/25#discussion_r2177660328)
     # TODO: here and elsewhere use logging instead of prints
     print(f"Output extent in target CRS is {final_out_extent}")
     gdf_out = gdf.to_crs(out_crs)
-    #This is problematic if output CRS is units of decimal degrees, instead of meters
+    # This is problematic if output CRS is units of decimal degrees, instead of meters
     gdf_out["geometry"] = gdf_out["geometry"].buffer(250)  # NOTE: assumes meters
     gdf_out = gdf_out.to_crs(input_crs)
     extent_polygon = outdir / "judicious_extent_polygon.geojson"
     gdf_out.to_file(extent_polygon, driver="GeoJSON")
 
-    # How to handle AOIs intersecting multiple 3DEP projects?
-    if threedep_project == "all":
-        process_all_intersecting_surveys = True
-        process_specific_3dep_survey = None
-    elif threedep_project == "latest":
-        process_all_intersecting_surveys = False
-        # Resolve "latest" to a concrete workunit here, so the run takes the
-        # normal per-workunit path: WESM record pinned, declared geoid
-        # enforced, EPT name resolved. Selecting inside return_readers could
-        # not be date-ordered — the EPT index carries no acquisition dates,
-        # so it took whichever collection came first in file order (gh #68).
-        latest = catalog.select_latest_workunit(gdf)
-        process_specific_3dep_survey = latest["workunit"]
-        if latest["undated"]:
-            print(
-                f"WARNING: no acquisition dates for any of the "
-                f"{latest['n_candidates']} EPT-backed collection(s) here; "
-                f"selected '{latest['workunit']}' (widest AOI coverage), "
-                "which may not be the most recent",
-                file=sys.stderr,
-            )
-        else:
-            print(
-                f"Latest survey selected: {latest['workunit']} "
-                f"(collected {latest['collect_start']} - "
-                f"{latest['collect_end']}, ql {latest['ql']}; "
-                f"{latest['n_candidates']} EPT-backed candidate(s))"
-            )
-        if latest["aoi_overlap_frac"] < 0.95:
-            # the most recent survey is frequently a sliver of the AOI, so a
-            # single-survey run silently leaves most of it empty (gh #68)
-            print(
-                f"WARNING: {latest['workunit']} covers only "
-                f"{latest['aoi_overlap_frac']:.1%} of the AOI, so this run "
-                f"will have no data over the rest. {latest['n_candidates']} "
-                "collection(s) cover this AOI — use `lidar-tools search` to "
-                "inspect them and `rasterize-projects` + `merge` to process "
-                "and combine several.",
-                file=sys.stderr,
-            )
-    else:
-        process_all_intersecting_surveys = False
-        process_specific_3dep_survey = threedep_project
+    # validated above, before the overwrite branch could delete anything
+    process_specific_3dep_survey = threedep_project
 
     if filter_noise:
         filter_high_noise = True
@@ -526,19 +712,22 @@ def rasterize(
     pin_workunit = process_specific_3dep_survey
     workunit_derived = False
     if pin_workunit is None and input != "EPT_AWS":
-        pin_workunit = Path(input).name
+        # prefer the literal name: a workunit-named symlink pointing at a
+        # staging directory must still pin that workunit
+        pin_workunit = Path(input).name or Path(input).resolve().name
         workunit_derived = True
     if pin_workunit is not None:
         try:
-            survey_record = catalog.workunit_record(gdf, pin_workunit)
+            survey_record = (
+                catalog.record_from_wesm(wesm_gdf, pin_workunit)
+                if wesm_gdf is not None
+                else catalog.workunit_record(gdf, pin_workunit)
+            )
         except Exception as e:
             if workunit_derived:
                 # a local dir not named after a WESM workunit is normal —
                 # note it and move on
-                print(
-                    f"No WESM record pinned for local input "
-                    f"'{pin_workunit}' ({e})"
-                )
+                print(f"No WESM record pinned for local input '{pin_workunit}' ({e})")
             elif input != "EPT_AWS":
                 # explicit workunit on the local path: the record is
                 # metadata-only, so a fetch failure only loses provenance
@@ -570,15 +759,18 @@ def rasterize(
                     file=sys.stderr,
                 )
         if survey_record is not None:
-            _update_processing_metadata(outdir, "survey_records", [survey_record], filename_prefix=filename_prefix)
+            _update_processing_metadata(
+                outdir,
+                "survey_records",
+                [survey_record],
+                filename_prefix=filename_prefix,
+            )
         if survey_record is not None and input == "EPT_AWS":
             # datum-handling side effects apply to the EPT path only; local
             # inputs keep their file-declared CRS handling unchanged
             if survey_record.get("horiz_crs"):
                 # hard-errors on non-NAD83-family (e.g. Pacific-plate PA11)
-                ept_base_epsg = geodesy.geographic_base_epsg(
-                    survey_record["horiz_crs"]
-                )
+                ept_base_epsg = geodesy.geographic_base_epsg(survey_record["horiz_crs"])
             # Resolve the declared production geoid to the exact PROJ grid
             # files for this AOI (GEOID12A -> GEOID12B grids outside PR/USVI
             # per NGS; declared-but-unmappable raises rather than substituting)
@@ -588,7 +780,9 @@ def rasterize(
             geoid_hint = declared_geoid["grids"] if declared_geoid else None
             if declared_geoid is not None:
                 _update_processing_metadata(
-                    outdir, "declared_geoid", declared_geoid,
+                    outdir,
+                    "declared_geoid",
+                    declared_geoid,
                     filename_prefix=filename_prefix,
                 )
                 sub = (
@@ -619,9 +813,11 @@ def rasterize(
     # any tiling — a bare == join silently yields 0 readers for most of
     # the pre-2018 archive. The WESM record above keeps the workunit name;
     # only the reader join uses the resolved EPT name.
-    ept_index_gdf = None
     if input == "EPT_AWS" and process_specific_3dep_survey is not None:
-        ept_index_gdf = catalog.load_ept_resources()
+        # the batch driver passes its already-loaded index; a direct API
+        # call fetches it here
+        if ept_index_gdf is None:
+            ept_index_gdf = catalog.load_ept_resources()
         ept_resolution = catalog.resolve_ept_resource(
             process_specific_3dep_survey, ept_index_gdf
         )
@@ -642,7 +838,9 @@ def rasterize(
                 file=sys.stderr,
             )
         ept_resolution["boundary_intersects_aoi"] = intersects_aoi
-        _update_processing_metadata(outdir, "ept_resolution", ept_resolution, filename_prefix=filename_prefix)
+        _update_processing_metadata(
+            outdir, "ept_resolution", ept_resolution, filename_prefix=filename_prefix
+        )
         process_specific_3dep_survey = resolved_ept_name
 
     # TODO: create EPT for local laz for common workflow? https://github.com/uw-cryo/lidar_tools/issues/14#issuecomment-3076045321
@@ -692,12 +890,10 @@ def rasterize(
             extent_polygon,
             dst_crs,
             output_prefix,
-            buffer_value=10*resolution, # buffer is based on output resolution
+            buffer_value=10 * resolution,  # buffer is based on output resolution
             tile_size_km=tile_size,  # TODO: ensure we can do non-km units
-            # TODO: handle new 3dep project keyword here
             dsm_gridding_choice=dsm_gridding_choice,
-            process_specific_3dep_survey=process_specific_3dep_survey,
-            process_all_intersecting_surveys=process_all_intersecting_surveys,
+            survey_name=process_specific_3dep_survey,
             ept_index_gdf=ept_index_gdf,
             filter_high_noise=filter_high_noise,
             filter_low_noise=filter_low_noise,
@@ -727,7 +923,7 @@ def rasterize(
             output_prefix=output_prefix,
             extent_polygon=extent_polygon,
             dsm_gridding_choice=dsm_gridding_choice,
-            buffer_value=10*resolution, # buffer is based on output resolution
+            buffer_value=10 * resolution,  # buffer is based on output resolution
             proj_pipeline=proj_pipeline,
             filter_high_noise=filter_high_noise,
             filter_low_noise=filter_low_noise,
@@ -743,7 +939,9 @@ def rasterize(
         "vertical_transform_preflight": transform_checks,
         "coordinate_epoch": None,
     }
-    _update_processing_metadata(outdir, "geodesy", geodesy_record, filename_prefix=filename_prefix)
+    _update_processing_metadata(
+        outdir, "geodesy", geodesy_record, filename_prefix=filename_prefix
+    )
 
     # BuildVRT opens every tile at once during mosaicking; the default soft
     # open-file limit fails for large AOIs (issue #43)
@@ -901,7 +1099,7 @@ def rasterize(
         else:
             out_extent = final_out_extent
             cog = True
-            
+
         print("Running sequentially")
         if "dsm" in requested:
             print(f"Creating DSM mosaic at {dsm_mos_fn}")
@@ -955,7 +1153,7 @@ def rasterize(
 
     if input == "EPT_AWS" and out_crs != CRS.from_epsg(3857):
         print("*********Reprojecting rasters****")
-        #This is hardcoded for dsm_mos_fn, but we could have dtm fn
+        # This is hardcoded for dsm_mos_fn, but we could have dtm fn
         reproject_truth_val = False
         if ept_vertical != "auto":
             # source vertical datum supplied by the user / survey metadata
@@ -1145,7 +1343,9 @@ def rasterize(
     ]
     geodesy_record["coordinate_epoch"] = epoch_to_stamp if stamped else None
     geodesy_record["epoch_stamped_products"] = [Path(fn).name for fn in stamped]
-    _update_processing_metadata(outdir, "geodesy", geodesy_record, filename_prefix=filename_prefix)
+    _update_processing_metadata(
+        outdir, "geodesy", geodesy_record, filename_prefix=filename_prefix
+    )
 
     print("****Building Gaussian overviews for all rasters****")
     print("Running overview creation sequentially")
@@ -1276,4 +1476,3 @@ def _check_polygon_area(gf: gpd.GeoDataFrame) -> None:
         warnings.warn(msg)
     else:
         print(f"Starting Processing of {area.values[0]:.2f} km^2 AOI")
-

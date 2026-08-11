@@ -325,6 +325,53 @@ def summarize_surveys(
     return out.reset_index(drop=True)
 
 
+def _ept_backed_surveys(
+    aoi_gdf: gpd.GeoDataFrame,
+    wesm_gdf: gpd.GeoDataFrame = None,
+    ept_gdf: gpd.GeoDataFrame = None,
+) -> gpd.GeoDataFrame:
+    """
+    Shared front half of the workunit selectors: AOI-intersecting surveys
+    filtered to those whose EPT build actually resolves.
+
+    "Has an EPT build" must be the NAME resolution the pipeline will
+    actually perform, not summarize_surveys' spatial ept_names: EPT
+    boundaries overlap neighbouring collections, so a spatial hit says
+    "some resource covers this ground", not "this survey was entwined".
+    summarize_surveys is deliberately called without `ept` — its spatial
+    EPT columns are expensive and unused here.
+
+    Raises
+    ------
+    LookupError
+        No AOI-intersecting collection, or none with an EPT build.
+    """
+    wesm = load_wesm(aoi_gdf) if wesm_gdf is None else wesm_gdf
+    ept = load_ept_resources() if ept_gdf is None else ept_gdf
+    surveys = summarize_surveys(wesm, aoi_gdf)
+    if surveys.empty:
+        raise LookupError(
+            "No 3DEP collection intersects this AOI; nothing to select. "
+            "Run `lidar-tools search` to inspect coverage."
+        )
+    resolvable = []
+    for wu in surveys["workunit"].astype(str):
+        try:
+            resolve_ept_resource(wu, ept)
+        except LookupError:
+            continue
+        resolvable.append(wu)
+    with_ept = surveys[surveys["workunit"].astype(str).isin(resolvable)]
+    if with_ept.empty:
+        names = sorted(surveys["workunit"].astype(str))[:10]
+        raise LookupError(
+            f"{len(surveys)} collection(s) intersect the AOI but none resolves "
+            f"to an EPT build ({names}); entwine builds lag LPC publication. "
+            "Use the staged-LAZ path, or name a workunit explicitly."
+        )
+    return with_ept
+
+
 def select_latest_workunit(
     aoi_gdf: gpd.GeoDataFrame,
     wesm_gdf: gpd.GeoDataFrame = None,
@@ -363,38 +410,7 @@ def select_latest_workunit(
     LookupError
         No AOI-intersecting collection, or none with an EPT build.
     """
-    wesm = load_wesm(aoi_gdf) if wesm_gdf is None else wesm_gdf
-    ept = load_ept_resources() if ept_gdf is None else ept_gdf
-    # deliberately no `ept` here: passing it makes summarize_surveys
-    # intersect and union the whole EPT index against every collection
-    # footprint, and this function uses none of that spatial output —
-    # availability is the name join below, and the tie-breaks come from
-    # WESM. The EPT index is still loaded, for resolve_ept_resource.
-    surveys = summarize_surveys(wesm, aoi_gdf)
-    if surveys.empty:
-        raise LookupError(
-            "No 3DEP collection intersects this AOI; nothing to select. "
-            "Run `lidar-tools search` to inspect coverage."
-        )
-    # "has an EPT build" must be the NAME resolution the pipeline will
-    # actually perform, not summarize_surveys' spatial ept_names: EPT
-    # boundaries overlap neighbouring collections, so a spatial hit says
-    # "some resource covers this ground", not "this survey was entwined".
-    resolvable = []
-    for wu in surveys["workunit"].astype(str):
-        try:
-            resolve_ept_resource(wu, ept)
-        except LookupError:
-            continue
-        resolvable.append(wu)
-    with_ept = surveys[surveys["workunit"].astype(str).isin(resolvable)]
-    if with_ept.empty:
-        names = sorted(surveys["workunit"].astype(str))[:10]
-        raise LookupError(
-            f"{len(surveys)} collection(s) intersect the AOI but none resolves "
-            f"to an EPT build ({names}); entwine builds lag LPC publication. "
-            "Use the staged-LAZ path, or name a workunit explicitly."
-        )
+    with_ept = _ept_backed_surveys(aoi_gdf, wesm_gdf, ept_gdf)
     dated = with_ept[with_ept["collect_end"].notna()]
     undated = dated.empty
     if undated:
@@ -420,6 +436,58 @@ def select_latest_workunit(
         "n_candidates": int(len(with_ept)),
         "undated": bool(undated),
     }
+
+
+def select_workunits(
+    aoi_gdf: gpd.GeoDataFrame,
+    wesm_gdf: gpd.GeoDataFrame = None,
+    ept_gdf: gpd.GeoDataFrame = None,
+) -> list[dict]:
+    """
+    Resolve the "auto" project selection: every AOI-intersecting survey
+    with an EPT build, in `rank_collections` priority order (anchor first,
+    then spec-meeting collections by quality level, temporal proximity to
+    the anchor, and AOI overlap).
+
+    The order is the default merge priority — per-project products are
+    independent, so reordering later is a re-merge of existing mosaics,
+    not a re-run. Availability is the tier-based name resolution the
+    pipeline will actually perform (see select_latest_workunit for why
+    spatial EPT hits cannot stand in for it).
+
+    Parameters
+    ----------
+    aoi_gdf
+        AOI polygon(s), any CRS.
+    wesm_gdf, ept_gdf
+        Pre-loaded WESM rows / EPT boundary index; fetched when omitted.
+
+    Returns
+    -------
+    list[dict]
+        One record per selected survey, in priority order:
+        ``{"workunit", "ql", "collect_start", "collect_end",
+        "aoi_overlap_frac", "priority"}``.
+
+    Raises
+    ------
+    LookupError
+        No AOI-intersecting collection, or none with an EPT build
+        (message matches select_latest_workunit's guidance).
+    """
+    with_ept = _ept_backed_surveys(aoi_gdf, wesm_gdf, ept_gdf)
+    ranked = rank_collections(relative_metrics(with_ept))
+    return [
+        {
+            "workunit": str(row["workunit"]),
+            "ql": row.get("ql"),
+            "collect_start": _yaml_safe(row.get("collect_start")),
+            "collect_end": _yaml_safe(row.get("collect_end")),
+            "aoi_overlap_frac": float(row["aoi_overlap_frac"]),
+            "priority": int(row["priority"]),
+        }
+        for _, row in ranked.iterrows()
+    ]
 
 
 def _collect_midpoint(row) -> pd.Timestamp:
@@ -1046,7 +1114,7 @@ def fetch_reports(
     Parameters
     ----------
     batch_dir
-        rasterize-projects base directory (per-project subdirectories +
+        rasterize batch directory (per-project subdirectories +
         batch_status.yaml).
     workunits
         Comma-separated project names, default: all projects recorded in
