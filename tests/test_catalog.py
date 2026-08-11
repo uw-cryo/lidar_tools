@@ -2,7 +2,7 @@ import geopandas as gpd
 import numpy as np
 import shapely
 
-from lidar_tools import survey
+from lidar_tools import catalog
 
 
 def _square(x0, y0, x1, y1):
@@ -33,7 +33,7 @@ def test_summarize_surveys_overlap_and_ept():
         geometry=[_square(-1, -1, 0.5, 2)],  # covers A fully, B's west half
         crs="EPSG:4326",
     )
-    out = survey.summarize_surveys(_wesm(), _aoi(), ept)
+    out = catalog.summarize_surveys(_wesm(), _aoi(), ept)
     assert list(out["workunit"]) == ["A", "B"]  # sorted QL then recency
     a = out[out.workunit == "A"].iloc[0]
     b = out[out.workunit == "B"].iloc[0]
@@ -47,7 +47,7 @@ def test_summarize_surveys_overlap_and_ept():
 
 def test_summarize_surveys_no_intersection():
     aoi = gpd.GeoDataFrame(geometry=[_square(10, 10, 11, 11)], crs="EPSG:4326")
-    out = survey.summarize_surveys(_wesm(), aoi)
+    out = catalog.summarize_surveys(_wesm(), aoi)
     assert out.empty
 
 
@@ -55,26 +55,26 @@ def test_record_from_wesm():
     import pytest
 
     wesm = _wesm()
-    rec = survey.record_from_wesm(wesm, "A")
+    rec = catalog.record_from_wesm(wesm, "A")
     assert rec["workunit"] == "A"
     assert rec["ql"] == "QL 1"
     assert rec["vert_crs"] == "5703"
     with pytest.raises(ValueError, match="not found"):
-        survey.record_from_wesm(wesm, "NOPE")
+        catalog.record_from_wesm(wesm, "NOPE")
 
 
 def test_coverage_gaps():
     # only collection A (west half) selected: east half is a gap
-    selected = survey.summarize_surveys(_wesm().iloc[[0]], _aoi())
-    gaps = survey.coverage_gaps(selected, _aoi())
+    selected = catalog.summarize_surveys(_wesm().iloc[[0]], _aoi())
+    gaps = catalog.coverage_gaps(selected, _aoi())
     assert len(gaps) == 1
     np.testing.assert_allclose(gaps["gap_frac"].iloc[0], 0.5)
     # both collections: no gap
-    all_sel = survey.summarize_surveys(_wesm(), _aoi())
-    assert survey.coverage_gaps(all_sel, _aoi()).empty
+    all_sel = catalog.summarize_surveys(_wesm(), _aoi())
+    assert catalog.coverage_gaps(all_sel, _aoi()).empty
     # nothing selected: the whole AOI is the gap
-    empty = survey.summarize_surveys(_wesm(), _aoi()).iloc[0:0]
-    gaps = survey.coverage_gaps(empty, _aoi())
+    empty = catalog.summarize_surveys(_wesm(), _aoi()).iloc[0:0]
+    gaps = catalog.coverage_gaps(empty, _aoi())
     np.testing.assert_allclose(gaps["gap_frac"].sum(), 1.0)
 
 
@@ -159,7 +159,7 @@ def test_fetch_reports_stages_report_files(tmp_path, monkeypatch):
 
     monkeypatch.setattr(requests, "get", fake_get)
 
-    survey.fetch_reports(str(tmp_path))
+    catalog.fetch_reports(str(tmp_path))
 
     outdir = pdir / "vendor_reports"
     assert (outdir / "reports/QC_Report.pdf").read_bytes() == b"%PDF"
@@ -189,7 +189,7 @@ def test_fetch_reports_stages_report_files(tmp_path, monkeypatch):
     ]
     # idempotent: sizes match, so a re-run lists but downloads nothing
     n_before = len(calls)
-    survey.fetch_reports(str(tmp_path))
+    catalog.fetch_reports(str(tmp_path))
     assert not [
         c for c in calls[n_before:]
         if c.endswith((".pdf", ".gpkg", ".xml"))
@@ -212,30 +212,30 @@ def test_resolve_ept_resource_tiers():
         }
     )
     # tier 1: exact
-    r = survey.resolve_ept_resource("NV_ClarkCo_2_B22", ept)
+    r = catalog.resolve_ept_resource("NV_ClarkCo_2_B22", ept)
     assert (r["ept_name"], r["tier"]) == ("NV_ClarkCo_2_B22", 1)
     # tier 2: WESM legacy ALL-CAPS vs mixed-case EPT build
-    r = survey.resolve_ept_resource("NV_LASVEGASVALLEY_2010", ept)
+    r = catalog.resolve_ept_resource("NV_LASVEGASVALLEY_2010", ept)
     assert (r["ept_name"], r["tier"]) == ("NV_LasVegasValley_2010", 2)
     # tier 3: FTP-era USGS_LPC_/_LAS_<yr> wrapper
-    r = survey.resolve_ept_resource("NV_LasVegas_QL2_2016", ept)
+    r = catalog.resolve_ept_resource("NV_LasVegas_QL2_2016", ept)
     assert (r["ept_name"], r["tier"]) == (
         "USGS_LPC_NV_LasVegas_QL2_2016_LAS_2018",
         3,
     )
     # tier 4: hyphen/underscore drift (WESM legacy names are underscored caps)
-    r = survey.resolve_ept_resource("AK_FAIRBANKS_NSBOROUGH_2010", ept)
+    r = catalog.resolve_ept_resource("AK_FAIRBANKS_NSBOROUGH_2010", ept)
     assert (r["ept_name"], r["tier"]) == ("AK_Fairbanks-NSBorough_2010", 4)
     # tier 4 must also cover the ARRA drift: WESM spells the funding prefix
     # ARRA_ (underscore), the EPT build spells it ARRA- (hyphen) — hyphen
     # folding on BOTH sides resolves the pair without stripping the prefix
-    r = survey.resolve_ept_resource("ARRA_AK_EKLUNTAGLACIER_2010", ept)
+    r = catalog.resolve_ept_resource("ARRA_AK_EKLUNTAGLACIER_2010", ept)
     assert (r["ept_name"], r["tier"]) == ("ARRA-AK_EkluntaGlacier_2010", 4)
     # and the un-stripped prefix must NOT capture an unrelated workunit
     import pytest
 
     with pytest.raises(LookupError):
-        survey.resolve_ept_resource("AK_EKLUNTAGLACIER_2010", ept)
+        catalog.resolve_ept_resource("AK_EKLUNTAGLACIER_2010", ept)
 
 
 def test_resolve_ept_resource_count_tiebreak_and_tier_precedence():
@@ -252,7 +252,7 @@ def test_resolve_ept_resource_count_tiebreak_and_tier_precedence():
             "count": [5, 500],
         }
     )
-    r = survey.resolve_ept_resource("X_Co_2016", ept)
+    r = catalog.resolve_ept_resource("X_Co_2016", ept)
     assert r["ept_name"] == "USGS_LPC_X_Co_2016_LAS_2018"  # larger build
     assert sorted(r["candidates"]) == sorted(ept["name"])
     # tier precedence: an exact-name build short-circuits at tier 1, so a
@@ -260,7 +260,7 @@ def test_resolve_ept_resource_count_tiebreak_and_tier_precedence():
     ept2 = pd.DataFrame(
         {"name": ["X_Co_2016", "USGS_LPC_X_Co_2016_LAS_2018"], "count": [5, 500]}
     )
-    r2 = survey.resolve_ept_resource("X_Co_2016", ept2)
+    r2 = catalog.resolve_ept_resource("X_Co_2016", ept2)
     assert (r2["ept_name"], r2["tier"]) == ("X_Co_2016", 1)
 
 
@@ -272,10 +272,10 @@ def test_resolve_ept_resource_unresolvable_raises():
         {"name": ["NV_Southern_5_D23", "CA_MountainPass_B1_2019"], "count": [1, 2]}
     )
     with pytest.raises(LookupError, match="NV_Southern_4_D23"):
-        survey.resolve_ept_resource("NV_Southern_4_D23", ept)
+        catalog.resolve_ept_resource("NV_Southern_4_D23", ept)
     # the message points at the fallback path and lists same-state names
     with pytest.raises(LookupError, match="staged-LAZ"):
-        survey.resolve_ept_resource("NV_Southern_4_D23", ept)
+        catalog.resolve_ept_resource("NV_Southern_4_D23", ept)
 
 def test_fetch_reports_survives_listing_failure(tmp_path, monkeypatch):
     """A transient S3 listing failure skips the workunit — it must not
@@ -304,7 +304,7 @@ def test_fetch_reports_survives_listing_failure(tmp_path, monkeypatch):
         raise requests.exceptions.ConnectionError("connection reset")
 
     monkeypatch.setattr(requests, "get", fake_get)
-    survey.fetch_reports(str(tmp_path))  # must not raise
+    catalog.fetch_reports(str(tmp_path))  # must not raise
 
     assert inv.read_text() == "           4 reports/QC_Report.pdf\n"
     assert not list(outdir.rglob("*.part*"))
@@ -328,11 +328,11 @@ def test_area_fractions_equal_area_not_degrees():
     expected = (np.sin(np.radians(70)) - np.sin(np.radians(65))) / (
         np.sin(np.radians(70)) - np.sin(np.radians(60))
     )  # ~0.453; the degree-squared ratio would be exactly 0.5
-    out = survey.summarize_surveys(north, aoi)
+    out = catalog.summarize_surveys(north, aoi)
     np.testing.assert_allclose(
         out["aoi_overlap_frac"].iloc[0], expected, atol=0.005
     )
-    gaps = survey.coverage_gaps(out, aoi)
+    gaps = catalog.coverage_gaps(out, aoi)
     np.testing.assert_allclose(gaps["gap_frac"].sum(), 1 - expected, atol=0.005)
 
 
@@ -350,7 +350,7 @@ def test_zero_area_aoi_rejected():
         crs="EPSG:4326",
     )
     with pytest.raises(ValueError, match="zero area"):
-        survey.summarize_surveys(wesm, point_aoi)
+        catalog.summarize_surveys(wesm, point_aoi)
 
 
 def _wesm_dated():
@@ -381,7 +381,7 @@ def test_select_latest_workunit_picks_newest_acquisition():
     """'latest' must mean most-recently-collected, not first-in-index."""
     aoi = gpd.GeoDataFrame(geometry=[_square(-0.5, -0.5, 0.5, 0.5)], crs="EPSG:4326")
     ept = _ept_for(["WU_A_2019", "WU_B_2023", "WU_C_2021"])
-    out = survey.select_latest_workunit(aoi, _wesm_dated(), ept)
+    out = catalog.select_latest_workunit(aoi, _wesm_dated(), ept)
     assert out["workunit"] == "WU_B_2023"
     assert out["undated"] is False
     assert out["n_candidates"] == 3
@@ -391,7 +391,7 @@ def test_select_latest_workunit_ignores_collections_without_ept():
     """The newest survey is useless if it has no EPT build to read."""
     aoi = gpd.GeoDataFrame(geometry=[_square(-0.5, -0.5, 0.5, 0.5)], crs="EPSG:4326")
     ept = _ept_for(["WU_A_2019", "WU_C_2021"])  # newest (B) has no build
-    out = survey.select_latest_workunit(aoi, _wesm_dated(), ept)
+    out = catalog.select_latest_workunit(aoi, _wesm_dated(), ept)
     assert out["workunit"] == "WU_C_2021"
     assert out["n_candidates"] == 2
 
@@ -403,7 +403,7 @@ def test_select_latest_workunit_undated_falls_back_and_says_so():
     aoi = gpd.GeoDataFrame(geometry=[_square(-0.5, -0.5, 0.5, 0.5)], crs="EPSG:4326")
     wesm = _wesm_dated()
     wesm["collect_end"] = pd.NaT
-    out = survey.select_latest_workunit(aoi, wesm, _ept_for(list(wesm["workunit"])))
+    out = catalog.select_latest_workunit(aoi, wesm, _ept_for(list(wesm["workunit"])))
     assert out["undated"] is True
     # recency is unknowable here, so the fallback is widest AOI coverage;
     # these three footprints are identical, so the name tie-break decides.
@@ -412,7 +412,7 @@ def test_select_latest_workunit_undated_falls_back_and_says_so():
 
     # ... and with no EPT build anywhere, fail loudly instead of no-data
     with pytest.raises(LookupError, match="none resolves"):
-        survey.select_latest_workunit(aoi, _wesm_dated(), _ept_for(["UNRELATED"]))
+        catalog.select_latest_workunit(aoi, _wesm_dated(), _ept_for(["UNRELATED"]))
 
 
 def test_select_latest_workunit_undated_fallback_prefers_coverage():
@@ -431,9 +431,50 @@ def test_select_latest_workunit_undated_fallback_prefers_coverage():
         geometry=[_square(0, 0, 0.1, 1), _square(0, 0, 1, 1)],
         crs="EPSG:4326",
     )
-    out = survey.select_latest_workunit(
+    out = catalog.select_latest_workunit(
         aoi, wesm, _ept_for(["WU_A_SLIVER", "WU_B_FULL"])
     )
     assert out["undated"] is True
     assert out["workunit"] == "WU_B_FULL"
     assert out["aoi_overlap_frac"] == pytest.approx(1.0, abs=1e-6)
+
+
+def test_undated_inventory_does_not_crash():
+    """gh #89: an inventory whose collections all lack WESM dates must rank
+    and epoch-label as 'undated', not TypeError in the anchor/epoch math."""
+    import pandas as pd
+
+    wesm = gpd.GeoDataFrame(
+        {
+            "workunit": ["OLD_A", "OLD_B"],
+            "ql": ["Other", "Other"],
+            "collect_start": [pd.NaT, pd.NaT],
+            "collect_end": [pd.NaT, pd.NaT],
+        },
+        geometry=[_square(0, 0, 1, 1)] * 2,
+        crs="EPSG:4326",
+    )
+    s = catalog.summarize_surveys(wesm, _aoi())
+    out = catalog.assign_epochs(catalog.rank_collections(catalog.relative_metrics(s)))
+    assert list(out["epoch"]) == ["undated", "undated"]
+    assert list(out["priority"]) == [1, 2]
+
+
+def test_anchor_prefers_dated_collection():
+    """gh #89: an undated collection cannot be the temporal reference frame,
+    even when it covers more of the AOI than the dated candidate."""
+    import pandas as pd
+
+    wesm = gpd.GeoDataFrame(
+        {
+            "workunit": ["UNDATED_BIG", "DATED_SMALL"],
+            "ql": ["QL 2", "QL 2"],
+            "collect_start": [pd.NaT, pd.Timestamp("2020-01-01")],
+            "collect_end": [pd.NaT, pd.Timestamp("2020-03-01")],
+        },
+        geometry=[_square(-1, -1, 2, 2), _square(0, 0, 0.6, 1)],
+        crs="EPSG:4326",
+    )
+    s = catalog.summarize_surveys(wesm, _aoi())
+    out = catalog.relative_metrics(s)
+    assert out.loc[out["anchor"], "workunit"].iloc[0] == "DATED_SMALL"

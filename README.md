@@ -63,7 +63,7 @@ lidar-tools rasterize --help  # options for one command
 
 | Command | What it does |
 | --- | --- |
-| `survey` | Report the lidar collections covering an AOI: quality level, acquisition dates, declared CRS/datum/geoid, EPT availability, AOI overlap, and the uncovered fraction. |
+| `search` | Search the lidar catalog: which collections cover an AOI, at what quality level and acquisition dates, with what declared CRS/datum/geoid, EPT availability, AOI overlap, and the uncovered fraction. |
 | `prepare` | Stage discovery metadata for an AOI into `site_manifest.yaml`: pinned WESM records, EPT name resolution, TESM-vs-links tile reconciliation, staged-LAZ cache layout. |
 | `rasterize` | Create DSM, DTM (with and without gap filling) and/or intensity rasters from 3DEP EPT or local LAS/LAZ. |
 | `rasterize-projects` | Run `rasterize` once per survey into per-project subdirectories sharing one target grid, so the outputs are co-registered. |
@@ -77,7 +77,7 @@ lidar-tools rasterize --help  # options for one command
 For an AOI covered by more than one 3DEP survey, the commands chain:
 
 ```bash
-lidar-tools survey aoi.geojson                       # what covers this AOI?
+lidar-tools search aoi.geojson                       # what covers this AOI?
 lidar-tools prepare aoi.geojson batch/               # pin the metadata once
 lidar-tools rasterize-projects aoi.geojson \
     AZ_PimaCo_1_2021,AZ_PimaCo_2_2021 \

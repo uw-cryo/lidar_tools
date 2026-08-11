@@ -5,7 +5,7 @@ Standardized metric extraction from staged vendor/QC reports.
 QA — acquisition period, tested vertical/horizontal accuracy, point
 density — in per-vendor PDF report formats and FGDC XML templates. This
 module reduces a project's staged vendor_reports/ directory (see
-survey.fetch_reports) to one machine-readable record per project so
+catalog.fetch_reports) to one machine-readable record per project so
 cross-project comparison and downstream QA don't require reading PDFs.
 
 Two extraction layers, most-structured first:

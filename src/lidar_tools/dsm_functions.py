@@ -125,7 +125,7 @@ def return_readers(
     return_specific_3dep_survey
         A specific 3DEP survey to return, by default first intersecting survey is returned.
         Must be the EPT resource name (callers resolve WESM workunit aliases first;
-        see survey.resolve_ept_resource).
+        see catalog.resolve_ept_resource).
     return_all_intersecting_surveys
         If True, return all intersecting surveys, by default False.
     ept_index_gdf
