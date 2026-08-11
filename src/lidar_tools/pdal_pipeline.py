@@ -84,58 +84,55 @@ def _normalize_param(key: str, value):
     return value
 
 
-def check_resume_compatible(prior: dict | None, current: dict) -> None:
+def check_resume_compatible(prior: dict | None, current: dict) -> list[str]:
     """
-    Refuse a resume whose tile-shaping parameters differ from -- or cannot
-    be verified against -- the run that produced the tiles it would skip.
+    Refuse a resume whose tile-shaping parameters CHANGED; report (but do
+    not block on) parameters that cannot be verified.
+
+    The design centre is re-running the identical command after an
+    interrupted run, so anything unverifiable must stay a warning: a
+    changed parameter is a user action worth blocking, but a record that
+    simply predates a parameter is not, and refusing there would block
+    resume into every directory written before that parameter existed.
 
     `prior` is the previous run's ``input_parameters`` mapping, or None
-    when the record is missing/unreadable. Unverifiable is treated as
-    incompatible, NOT as a pass: a resume that cannot prove the existing
-    tiles match must not reuse them, and the caller is about to overwrite
-    the record with the new parameters.
+    when the record is missing/unreadable.
+
+    Returns
+    -------
+    list[str]
+        Parameters that could not be verified (absent from the prior
+        record, or the whole record unreadable). Empty when fully
+        verified. The caller warns and records this.
 
     Raises
     ------
     ValueError
-        On any mismatch or unverifiable parameter, naming the offenders.
+        Only when a parameter present in both records disagrees.
     """
     if prior is None:
-        raise ValueError(
-            "Cannot resume: the existing run's processing metadata is "
-            "missing or unreadable, so the tiles about to be re-used "
-            "cannot be verified against this run's parameters. Use a "
-            "fresh output directory, or delete this one to rebuild."
-        )
+        return list(RESUME_TILE_PARAMS)
     mismatched, unverifiable = [], []
     for key in RESUME_TILE_PARAMS:
-        now = _normalize_param(key, current.get(key))
         if key not in prior:
-            # e.g. records written before this parameter was recorded at
-            # all: absence is not agreement
+            # e.g. a record written before this parameter was recorded at
+            # all: unknowable, not disagreement
             unverifiable.append(key)
-        elif _normalize_param(key, prior.get(key)) != now:
+        elif _normalize_param(key, prior.get(key)) != _normalize_param(
+            key, current.get(key)
+        ):
             mismatched.append((key, prior.get(key), current.get(key)))
-    if not mismatched and not unverifiable:
-        return
-    parts = []
     if mismatched:
-        parts.append(
-            "changed: "
-            + "; ".join(f"{k} (was {a!r}, now {b!r})" for k, a, b in sorted(mismatched))
+        detail = "; ".join(
+            f"{k} (was {a!r}, now {b!r})" for k, a, b in sorted(mismatched)
         )
-    if unverifiable:
-        parts.append(
-            "not recorded by the earlier run, so unverifiable: "
-            + ", ".join(sorted(unverifiable))
+        raise ValueError(
+            f"Cannot resume into this output directory: {detail}. Resuming "
+            "would reuse tiles built with different settings while the "
+            "metadata records only the new ones. Use a fresh output "
+            "directory, or delete this one to rebuild from scratch."
         )
-    raise ValueError(
-        "Cannot resume into this output directory: "
-        + "; ".join(parts)
-        + ". Resuming would mix settings in one mosaic while the metadata "
-        "records only the new ones. Use a fresh output directory, or "
-        "delete this one to rebuild from scratch."
-    )
+    return unverifiable
 
 
 def _write_processing_metadata(
@@ -164,6 +161,7 @@ def _write_processing_metadata(
     output_datum: str = "wgs84_g2139",
     coord_epoch: float = None,
     geometry_fingerprint: str = None,
+    resume_unverified: list = None,
 ) -> None:
     """
     Write processing metadata to a YAML file in the output directory.
@@ -189,6 +187,9 @@ def _write_processing_metadata(
             # content fingerprint: the path alone cannot detect an AOI
             # edited in place, which would invalidate every existing tile
             "geometry_fingerprint": geometry_fingerprint,
+            # parameters a resume could not check against the earlier
+            # run's record (absent there), so provenance stays honest
+            "resume_unverified": resume_unverified,
             "input": str(input),
             "output": str(output),
             "src_crs": str(src_crs) if src_crs else None,
@@ -556,6 +557,7 @@ def rasterize_project(
     # resolution and threedep_project live in the filename prefix (a
     # mismatch lands in a different record and trips _metadata_path);
     # products may differ (resuming to ADD products reuses shared tiles).
+    resume_unverified: list[str] = []
     if resume:
         # _metadata_path also finds the legacy bare-name record of
         # pre-2026-07-13 runs, which a direct prefixed lookup misses
@@ -569,14 +571,28 @@ def rasterize_project(
                 if not isinstance(prior_params, dict):
                     prior_params = None
             except (yaml.YAMLError, OSError):
-                # a hard kill mid-rewrite leaves partial YAML: treat it as
-                # unverifiable rather than as agreement, since the write
-                # below would otherwise destroy the only evidence
                 prior_params = None
-        check_resume_compatible(
+            if prior_params is None:
+                # a hard kill mid-rewrite can truncate the YAML -- keep the
+                # damaged file instead of letting the rewrite below erase
+                # the only record of what the surviving tiles were built with
+                damaged = prior_meta.with_suffix(prior_meta.suffix + ".damaged")
+                try:
+                    prior_meta.replace(damaged)
+                    print(
+                        f"WARNING: {prior_meta.name} was unreadable; kept as "
+                        f"{damaged.name}",
+                        file=sys.stderr,
+                    )
+                except OSError:
+                    pass
+        resume_unverified = check_resume_compatible(
             prior_params,
             {
                 "geometry_fingerprint": geometry_fingerprint,
+                # parameters a resume could not check against the earlier
+                # run's record (absent there), so provenance stays honest
+                "resume_unverified": resume_unverified,
                 "input": str(input),
                 "src_crs": str(src_crs) if src_crs else None,
                 "dst_crs": str(dst_crs) if dst_crs else None,
@@ -591,6 +607,13 @@ def rasterize_project(
                 "coord_epoch": coord_epoch,
             },
         )
+        if resume_unverified and prior_meta.exists():
+            print(
+                "WARNING: resuming, but the earlier run did not record "
+                f"{sorted(resume_unverified)}, so tiles being re-used could "
+                "not be verified against this run's settings",
+                file=sys.stderr,
+            )
 
     # Write processing metadata to YAML file
     _write_processing_metadata(

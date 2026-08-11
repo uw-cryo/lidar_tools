@@ -350,7 +350,7 @@ def test_resume_accepts_identical_parameters():
     from lidar_tools import pdal_pipeline
 
     p = _resume_params()
-    pdal_pipeline.check_resume_compatible(dict(p), dict(p))  # no raise
+    assert pdal_pipeline.check_resume_compatible(dict(p), dict(p)) == []
 
 
 def test_resume_rejects_changed_tile_parameters():
@@ -378,21 +378,39 @@ def test_resume_rejects_edited_aoi_at_the_same_path():
         )
 
 
-def test_resume_refuses_when_prior_record_is_unverifiable():
-    """Missing/corrupt record, or one predating a parameter: absence is not
-    agreement, because the caller is about to overwrite the record."""
+def test_resume_reports_but_does_not_block_on_unverifiable():
+    """Re-running the identical command after an interruption is the design
+    centre, and EVERY directory written before a parameter existed lacks it
+    (verified: real Casa Grande records carry no output_datum, and none
+    predating this change carries geometry_fingerprint). Unverifiable must
+    warn, never block -- only a CHANGED parameter blocks."""
+    from lidar_tools import pdal_pipeline
+
+    legacy = _resume_params()
+    del legacy["output_datum"]
+    del legacy["geometry_fingerprint"]
+    unverified = pdal_pipeline.check_resume_compatible(legacy, _resume_params())
+    assert sorted(unverified) == ["geometry_fingerprint", "output_datum"]
+
+    # a missing/corrupt record verifies nothing, but still does not block
+    assert set(pdal_pipeline.check_resume_compatible(None, _resume_params())) == set(
+        pdal_pipeline.RESUME_TILE_PARAMS
+    )
+
+
+def test_resume_still_blocks_a_changed_parameter_in_a_legacy_record():
+    """The dangerous case survives the relaxation: a key present in BOTH
+    records and disagreeing still refuses."""
     import pytest
 
     from lidar_tools import pdal_pipeline
 
-    with pytest.raises(ValueError, match="missing or unreadable"):
-        pdal_pipeline.check_resume_compatible(None, _resume_params())
-
-    legacy = _resume_params()
+    legacy = _resume_params(dsm_gridding_choice="first_idw")
     del legacy["output_datum"]
-    del legacy["coord_epoch"]
-    with pytest.raises(ValueError, match="unverifiable"):
-        pdal_pipeline.check_resume_compatible(legacy, _resume_params())
+    with pytest.raises(ValueError, match="dsm_gridding_choice"):
+        pdal_pipeline.check_resume_compatible(
+            legacy, _resume_params(dsm_gridding_choice="95-pct")
+        )
 
 
 def test_resume_path_spelling_does_not_block(tmp_path):
