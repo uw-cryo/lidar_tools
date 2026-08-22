@@ -96,10 +96,20 @@ def _decimal_year(dt: datetime) -> float:
 
 
 def _elevation_cmap():
-    """The group's rainbow-over-hillshade colormap (imview cpt_rainbow when
-    available, matplotlib turbo otherwise — same fallback as vantor scripts)."""
+    """The group's rainbow-over-hillshade colormap.
+
+    Canonical source is groundcontrol.figures.cpt_rainbow (vendored cpt
+    data, no imview needed; groundcontrol PR #17). Falls back to imview
+    then turbo where groundcontrol is not installed in this environment —
+    all three return the same ramp when available."""
     import matplotlib.pyplot as plt
 
+    try:
+        from groundcontrol.figures import cpt_rainbow
+
+        return cpt_rainbow()
+    except Exception:
+        pass
     try:
         from imview.lib import gmtColormap
 
