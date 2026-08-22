@@ -3,7 +3,7 @@ One-page preview figure of the product mosaics in a rasterize output
 directory, for quick visual QA after a run.
 
 Style follows the group's DEM-figure conventions (README example /
-groundcontrol plot.py / vantor figure scripts): color shaded relief
+groundcontrol plot.py): color shaded relief
 (elevation colormap at alpha 0.4 over a gray hillshade), per-panel
 colorbars labeled with the datum, anchored scale bars, no coordinate
 ticks, one row of panels, and a processing-metadata footer.

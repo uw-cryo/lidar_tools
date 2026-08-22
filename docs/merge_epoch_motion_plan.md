@@ -25,7 +25,7 @@ inter-project dz +0.02–0.04 m, NMAD 0.03–0.07 m — survey error, not frame 
 The problem dshean describes becomes real for sources that are **not**
 epoch-reduced into a plate-fixed frame:
 - local LAZ / vendor deliveries natively in a dynamic frame at survey epoch
-  (`pdal_pipeline.py:507-536` local path; Vantor P3D-style products);
+  (`pdal_pipeline.py:507-536` local path; commercial stereo-derived products);
 - beyond-EPT ingest (gh #72), international sources (ATRF vs GDA2020, NZ);
 - mixed plate-fixed *realizations* (NAD83(HARN)/NSRS2007 vs (2011): 5–20 cm in
   deforming regions, already threaded via `base_epsg` — `geodesy.py:466-471`,
@@ -142,8 +142,8 @@ only correction the tiers below apply.
 
 - **Horizontal**: same-modality phase correlation in project overlaps —
   hillshade↔hillshade and intensity↔intensity, never across modalities. SF
-  evidence (`/Volumes/VANTOR_2TB/sites/SanFrancisco/3DEP_20260705_f3/INTENSITY_GEOREF_VERIFICATION.md`,
-  scripts in `georef_check/` there): same-modality windows resolved a 1.34 m
+  evidence (INTENSITY_GEOREF_VERIFICATION.md, archived with the run
+  artifacts on the project data volume): same-modality windows resolved a 1.34 m
   Helmert to 2–7 cm with ≤2 cm inter-window scatter at 0.5 m posting, while
   hillshade↔intensity cross-modality reported ~0.5 m offsets incoherent in
   direction — unreliable below ~0.5 m. Cross-*project* same-modality pairs sit
