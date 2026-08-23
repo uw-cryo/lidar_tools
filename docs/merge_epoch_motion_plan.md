@@ -1,7 +1,6 @@
 # Multi-epoch merge: plate motion across projects — design plan
 
-Status: DRAFT for review — 2026-07-16 (deliberately untracked, like
-`docs/groundcontrol_migration.md`). Branch context: `f3-single-read-multiproduct`.
+Status: DRAFT for review — 2026-07-16. Branch context: `f3-single-read-multiproduct`.
 All file:line citations are against this branch; all PROJ behavior was verified
 in the pinned pixi dev env (PROJ **9.7.1**, `pixi run -e dev projinfo`).
 
