@@ -9,6 +9,10 @@ tests/debug.ipynb
 sandbox/*
 !sandbox/README.md
 
+# local untracked review/ staging dirs
+/review/
+/review_superseded/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]

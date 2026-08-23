@@ -3,7 +3,7 @@ One-page preview figure of the product mosaics in a rasterize output
 directory, for quick visual QA after a run.
 
 Style follows the group's DEM-figure conventions (README example /
-groundcontrol plot.py / vantor figure scripts): color shaded relief
+groundcontrol plot.py): color shaded relief
 (elevation colormap at alpha 0.4 over a gray hillshade), per-panel
 colorbars labeled with the datum, anchored scale bars, no coordinate
 ticks, one row of panels, and a processing-metadata footer.
@@ -96,10 +96,22 @@ def _decimal_year(dt: datetime) -> float:
 
 
 def _elevation_cmap():
-    """The group's rainbow-over-hillshade colormap (imview cpt_rainbow when
-    available, matplotlib turbo otherwise — same fallback as vantor scripts)."""
+    """The group's rainbow-over-hillshade colormap.
+
+    Canonical source is groundcontrol.figures.cpt_rainbow (vendored cpt
+    data, no imview needed; groundcontrol PR #17). imview provides the
+    identical ramp where groundcontrol is not installed; matplotlib
+    turbo is a visually similar last resort, not the same ramp."""
     import matplotlib.pyplot as plt
 
+    try:
+        from groundcontrol.figures import cpt_rainbow
+    except ImportError:
+        pass
+    else:
+        # groundcontrol present: a cpt_rainbow() failure is a real bug,
+        # let it raise rather than silently changing the figure's colors
+        return cpt_rainbow()
     try:
         from imview.lib import gmtColormap
 
