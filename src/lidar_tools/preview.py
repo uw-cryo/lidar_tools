@@ -99,17 +99,19 @@ def _elevation_cmap():
     """The group's rainbow-over-hillshade colormap.
 
     Canonical source is groundcontrol.figures.cpt_rainbow (vendored cpt
-    data, no imview needed; groundcontrol PR #17). Falls back to imview
-    then turbo where groundcontrol is not installed in this environment —
-    all three return the same ramp when available."""
+    data, no imview needed; groundcontrol PR #17). imview provides the
+    identical ramp where groundcontrol is not installed; matplotlib
+    turbo is a visually similar last resort, not the same ramp."""
     import matplotlib.pyplot as plt
 
     try:
         from groundcontrol.figures import cpt_rainbow
-
-        return cpt_rainbow()
-    except Exception:
+    except ImportError:
         pass
+    else:
+        # groundcontrol present: a cpt_rainbow() failure is a real bug,
+        # let it raise rather than silently changing the figure's colors
+        return cpt_rainbow()
     try:
         from imview.lib import gmtColormap
 
