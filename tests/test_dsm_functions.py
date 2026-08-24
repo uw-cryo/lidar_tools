@@ -762,17 +762,18 @@ def test_execute_tile_job_empty_branch(tmp_path):
         products=d.parse_products("all"),
     )
     result = d.execute_tile_job(job, attempts=1)
-    # the tile HAS points (just no ground), so it is not "empty": writers.gdal
-    # writes an all-nodata raster for the ground-only products (same as the
-    # legacy per-product path); every product "succeeds"
+    # the tile HAS points (just no ground), so it is not "empty" — and the
+    # ground-only products are reported ABSENT for this tile (group_empty,
+    # counted as a filter outcome, not a failure) instead of the legacy
+    # all-nodata rasters; the data-bearing products still succeed
     assert not result["empty"]
     results = result["outputs"]
-    assert all(fn is not None for fn in results.values())
     for name in ("dtm_no_fill", "dtm_fill"):
-        da = _read_raster(results[name])
-        assert np.isnan(da.values).all(), name
+        assert results[name] is None, name
+    assert sorted(result["group_empty"]) == ["dtm_fill", "dtm_no_fill"]
     da = _read_raster(results["dsm"])
     assert not np.isnan(da.values).all()
+    assert results["intensity"] is not None
 
 
 def test_lpc_tile_jobs(tmp_path):
@@ -1171,3 +1172,147 @@ def test_return_readers_one_reader_per_tile_for_duplicate_boundaries(monkeypatch
     )
     assert readers, "no readers built"
     assert len(readers) == len(set(r["polygon"] for r in readers))
+
+
+def _tile_job(tmp_path, tile_id="07"):
+    """Minimal two-group tile job (dsm+intensity, dtm) for execute_tile_job."""
+    files = {}
+    for name in ["dsm", "intensity", "dtm_no_fill", "dtm_fill"]:
+        files[name] = str(tmp_path / f"{name}_tile_aoi_{tile_id}.tif")
+    return {
+        "tile_id": tile_id,
+        "executions": [
+            {
+                "pipeline_json": str(tmp_path / "p_dsm.json"),
+                "outputs": {"dsm": files["dsm"], "intensity": files["intensity"]},
+            },
+            {
+                "pipeline_json": str(tmp_path / "p_dtm.json"),
+                "outputs": {
+                    "dtm_no_fill": files["dtm_no_fill"],
+                    "dtm_fill": files["dtm_fill"],
+                },
+            },
+        ],
+    }
+
+
+def test_execute_tile_job_group_empty_keeps_other_products(tmp_path, monkeypatch):
+    """A zero-count product group (unclassified SfM cloud: no ground points
+    for the DTM group) must not discard the other groups' valid tiles —
+    the CA21_Bunds gate found the whole-tile-empty verdict erasing every
+    valid DSM/intensity tile."""
+    dsm = lidar_tools.dsm_functions
+
+    def fake_exec(pipeline_json, attempts):
+        if "p_dtm" in pipeline_json:
+            return 0
+        # the dsm group "writes" its rasters as a side effect
+        job_outputs = [
+            tmp_path / "dsm_tile_aoi_07.tif",
+            tmp_path / "intensity_tile_aoi_07.tif",
+        ]
+        for fn in job_outputs:
+            fn.write_text("stub")
+        return 12345
+
+    monkeypatch.setattr(dsm, "_execute_pipeline_with_retries", fake_exec)
+    monkeypatch.setattr(dsm, "check_raster_validity", lambda fn, deep=False: True)
+    result = dsm.execute_tile_job(_tile_job(tmp_path))
+    assert result["empty"] is False
+    assert result["outputs"]["dsm"] is not None
+    assert result["outputs"]["intensity"] is not None
+    assert result["outputs"]["dtm_no_fill"] is None
+    assert result["outputs"]["dtm_fill"] is None
+    assert sorted(result["group_empty"]) == ["dtm_fill", "dtm_no_fill"]
+
+
+def test_execute_tile_job_all_groups_empty_is_empty_tile(tmp_path, monkeypatch):
+    dsm = lidar_tools.dsm_functions
+    monkeypatch.setattr(
+        dsm, "_execute_pipeline_with_retries", lambda pipeline_json, attempts: 0
+    )
+    monkeypatch.setattr(dsm, "check_raster_validity", lambda fn, deep=False: True)
+    result = dsm.execute_tile_job(_tile_job(tmp_path))
+    assert result["empty"] is True
+    assert all(v is None for v in result["outputs"].values())
+
+
+def test_execute_tile_job_resume_keeps_valid_tiles_when_reexecuted_group_empty(
+    tmp_path, monkeypatch
+):
+    """On resume, valid skipped tiles must survive even when every
+    RE-EXECUTED group returns zero points (found in self-review of the
+    per-group fix: pending==[dtm] made the all-empty verdict null the
+    resumed DSM/intensity outputs)."""
+    dsm = lidar_tools.dsm_functions
+    job = _tile_job(tmp_path)
+    # the dsm group's outputs already exist and validate -> resume-skipped
+    for fn in job["executions"][0]["outputs"].values():
+        Path(fn).write_text("stub")
+    monkeypatch.setattr(dsm, "check_raster_validity", lambda fn, deep=False: True)
+    monkeypatch.setattr(
+        dsm, "_execute_pipeline_with_retries", lambda pipeline_json, attempts: 0
+    )
+    result = dsm.execute_tile_job(job, skip_existing=True)
+    assert result["empty"] is False
+    assert result["outputs"]["dsm"] is not None
+    assert result["outputs"]["intensity"] is not None
+    assert result["outputs"]["dtm_no_fill"] is None
+
+
+def test_execute_tile_job_group_empty_engages_on_fetch_path(tmp_path, monkeypatch):
+    """A zero-count group is a filter outcome on the EPT/fetch path too
+    (open-water/canopy tile with no ground-classified points): the fetch
+    already proved the tile has data, so only that group's products go
+    absent (round-3 finding: the branch was gated to fetch-less jobs)."""
+    dsm = lidar_tools.dsm_functions
+    job = _tile_job(tmp_path)
+    job["fetch"] = {
+        "pipeline_json": str(tmp_path / "p_fetch.json"),
+        "cache_file": str(tmp_path / "cache.laz"),
+    }
+
+    def fake_exec(pipeline_json, attempts):
+        if "p_fetch" in pipeline_json:
+            return 999
+        if "p_dtm" in pipeline_json:
+            return 0
+        for fn in job["executions"][0]["outputs"].values():
+            Path(fn).write_text("stub")
+        return 999
+
+    monkeypatch.setattr(dsm, "_execute_pipeline_with_retries", fake_exec)
+    monkeypatch.setattr(dsm, "check_raster_validity", lambda fn, deep=False: True)
+    result = dsm.execute_tile_job(job)
+    assert result["empty"] is False
+    assert result["outputs"]["dsm"] is not None
+    assert result["outputs"]["dtm_no_fill"] is None
+    assert sorted(result["group_empty"]) == ["dtm_fill", "dtm_no_fill"]
+
+
+def test_execute_tile_job_fetch_contradicts_all_empty_groups(tmp_path, monkeypatch):
+    """With a fetch that returned points, an all-groups-zero tile is all
+    filter outcomes, never 'survey has nothing here': empty stays False
+    and every product lands in group_empty (Copilot review, PR #101)."""
+    dsm = lidar_tools.dsm_functions
+    job = _tile_job(tmp_path)
+    job["fetch"] = {
+        "pipeline_json": str(tmp_path / "p_fetch.json"),
+        "cache_file": str(tmp_path / "cache.laz"),
+    }
+    monkeypatch.setattr(
+        dsm,
+        "_execute_pipeline_with_retries",
+        lambda pipeline_json, attempts: 999 if "p_fetch" in pipeline_json else 0,
+    )
+    monkeypatch.setattr(dsm, "check_raster_validity", lambda fn, deep=False: True)
+    result = dsm.execute_tile_job(job)
+    assert result["empty"] is False
+    assert all(v is None for v in result["outputs"].values())
+    assert sorted(result["group_empty"]) == [
+        "dsm",
+        "dtm_fill",
+        "dtm_no_fill",
+        "intensity",
+    ]

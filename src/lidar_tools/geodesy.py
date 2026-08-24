@@ -94,7 +94,12 @@ def geographic_base_epsg(crs_input) -> int:
     code = base.to_epsg() if base is not None else None
     if code is not None and code not in NAD83_FAMILY_GEOGRAPHIC:
         # projected CRSs may report a 3D/other variant: try name matching
-        if base is not None and base.name.startswith("NAD83") and "PA11" not in base.name and "MA11" not in base.name:
+        if (
+            base is not None
+            and base.name.startswith("NAD83")
+            and "PA11" not in base.name
+            and "MA11" not in base.name
+        ):
             for cand in NAD83_FAMILY_GEOGRAPHIC:
                 if CRS.from_epsg(cand).name == base.name:
                     return cand
@@ -540,7 +545,9 @@ OUTPUT_DATUM_BUILDERS = {
 }
 
 
-def build_utm_target(utm_epsg: int, output_datum: str = "wgs84_g2139") -> "tuple[CRS, str]":
+def build_utm_target(
+    utm_epsg: int, output_datum: str = "wgs84_g2139"
+) -> "tuple[CRS, str]":
     """
     Build the auto-target 3D UTM CRS and its canonical WKT filename for a UTM
     zone and a selectable output datum realization.
@@ -590,8 +597,9 @@ def build_3857_navd88_compound() -> CRS:
     )
 
 
-def epoch_pinned_pipeline(src_crs, dst_crs, coord_epoch: float,
-                          aoi_bounds=None, require_substrings=()) -> str:
+def epoch_pinned_pipeline(
+    src_crs, dst_crs, coord_epoch: float, aoi_bounds=None, require_substrings=()
+) -> str:
     """
     Resolve ONE explicit PROJ pipeline with the target coordinate epoch baked
     in (``projinfo --t_epoch``), for enforcement via gdalwarp ``-ct``.
@@ -629,6 +637,7 @@ def epoch_pinned_pipeline(src_crs, dst_crs, coord_epoch: float,
     str
         The ``+proj=pipeline ...`` string of the top-ranked operation.
     """
+
     def _wkt(c):
         if isinstance(c, CRS):
             return c.to_wkt()
@@ -641,28 +650,43 @@ def epoch_pinned_pipeline(src_crs, dst_crs, coord_epoch: float,
     projinfo = str(exe) if exe.exists() else shutil.which("projinfo")
     if projinfo is None:
         raise RuntimeError("projinfo executable not found")
-    cmd = [projinfo, "-s", _wkt(src_crs), "-t", _wkt(dst_crs),
-           "--t_epoch", str(coord_epoch), "--hide-ballpark",
-           "--spatial-test", "intersects", "-o", "PROJ", "--single-line"]
+    cmd = [
+        projinfo,
+        "-s",
+        _wkt(src_crs),
+        "-t",
+        _wkt(dst_crs),
+        "--t_epoch",
+        str(coord_epoch),
+        "--hide-ballpark",
+        "--spatial-test",
+        "intersects",
+        "-o",
+        "PROJ",
+        "--single-line",
+    ]
     if aoi_bounds is not None:
         w, s, e, n = aoi_bounds
         cmd += ["--bbox", f"{w},{s},{e},{n}"]
     out = subprocess.run(cmd, capture_output=True, text=True)
     if out.returncode != 0:
         raise RuntimeError(f"projinfo failed: {out.stderr[-500:]}")
-    pipelines = [ln.strip() for ln in out.stdout.splitlines()
-                 if ln.strip().startswith("+proj=pipeline")]
+    pipelines = [
+        ln.strip()
+        for ln in out.stdout.splitlines()
+        if ln.strip().startswith("+proj=pipeline")
+    ]
     if not pipelines:
         raise RuntimeError(
-            f"projinfo returned no pipeline for {coord_epoch=}: "
-            f"{out.stdout[-500:]}")
+            f"projinfo returned no pipeline for {coord_epoch=}: {out.stdout[-500:]}"
+        )
     pipe = pipelines[0]
     epoch_tag = f"+proj=set +v_4={coord_epoch:g}"
-    missing = [s for s in ([epoch_tag] + list(require_substrings))
-               if s not in pipe]
+    missing = [s for s in ([epoch_tag] + list(require_substrings)) if s not in pipe]
     if missing:
         raise RuntimeError(
-            f"selected pipeline lacks required component(s) {missing}: {pipe}")
+            f"selected pipeline lacks required component(s) {missing}: {pipe}"
+        )
     return pipe
 
 
@@ -700,7 +724,9 @@ def build_ept_3857_navd88_compound(base_epsg: int = NAD83_2011_EPSG) -> CRS:
     )
 
 
-def build_ept_3857_nad83_2011(three_d: bool = True, base_epsg: int = NAD83_2011_EPSG) -> CRS:
+def build_ept_3857_nad83_2011(
+    three_d: bool = True, base_epsg: int = NAD83_2011_EPSG
+) -> CRS:
     """
     Build Pseudo-Mercator on the survey's true NAD83-family base datum,
     describing 3DEP EPT coordinates by what they actually are.
@@ -1008,7 +1034,11 @@ def preflight_vertical_transform(
         definition = best.definition or ""
         description = best.description
     grids = sorted(
-        {name for match in re.findall(r"grids=(\S+)", definition) for name in match.split(",")}
+        {
+            name
+            for match in re.findall(r"grids=(\S+)", definition)
+            for name in match.split(",")
+        }
     )
     # every grid the selected pipeline touches must be a LOCAL file NOW —
     # never defer grid access to the warp stage (CDN blips fail hours in)

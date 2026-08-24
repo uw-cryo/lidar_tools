@@ -48,8 +48,9 @@ def test_navd88_route_collapses_with_true_base_datum():
     operation (the survey-consistent GEOID18 route), never a ranking contest
     with GEOID03/NADCON5 chains."""
     comp = geodesy.build_ept_3857_navd88_compound()
-    tg = TransformerGroup(comp, "EPSG:6319", area_of_interest=AOI,
-                          allow_ballpark=False, always_xy=True)
+    tg = TransformerGroup(
+        comp, "EPSG:6319", area_of_interest=AOI, allow_ballpark=False, always_xy=True
+    )
     ops = _ops(tg)
     assert len(ops) == 1
     if tg.transformers:  # grid installed: assert it is the GEOID18 grid
@@ -59,8 +60,9 @@ def test_navd88_route_collapses_with_true_base_datum():
 def test_navd88_route_geoid18_ranks_first_for_itrf_target():
     comp = geodesy.build_ept_3857_navd88_compound()
     tgt = pyproj.CRS.from_epsg(9000).to_3d()  # ITRF2014 3D
-    tg = TransformerGroup(comp, tgt, area_of_interest=AOI,
-                          allow_ballpark=False, always_xy=True)
+    tg = TransformerGroup(
+        comp, tgt, area_of_interest=AOI, allow_ballpark=False, always_xy=True
+    )
     if tg.transformers:
         assert "g2018" in tg.transformers[0].definition
 
@@ -70,8 +72,9 @@ def test_legacy_wgs84_compound_ambiguity_baseline():
     (multi-candidate GEOID03/09/1999/18 zoo). If this collapses after a PROJ
     upgrade, the routing landscape changed — re-run the raster validation."""
     legacy = geodesy.build_3857_navd88_compound()
-    tg = TransformerGroup(legacy, "EPSG:6319", area_of_interest=AOI,
-                          allow_ballpark=False, always_xy=True)
+    tg = TransformerGroup(
+        legacy, "EPSG:6319", area_of_interest=AOI, allow_ballpark=False, always_xy=True
+    )
     assert len(_ops(tg)) > 1
 
 
@@ -81,8 +84,12 @@ def test_epoch_pinned_pipeline_lv_itrf2008():
     comp = geodesy.build_ept_3857_navd88_compound()
     dst = geodesy.build_utm_itrf2008_3d(32611)
     pipe = geodesy.epoch_pinned_pipeline(
-        comp, dst, 2005.0, aoi_bounds=(-115.85, 35.66, -114.85, 36.66),
-        require_substrings=["+proj=helmert", "vgridshift"])
+        comp,
+        dst,
+        2005.0,
+        aoi_bounds=(-115.85, 35.66, -114.85, 36.66),
+        require_substrings=["+proj=helmert", "vgridshift"],
+    )
     assert "+proj=set +v_4=2005" in pipe
     assert "g2018u0" in pipe
     assert "+proj=utm +zone=11" in pipe
@@ -93,14 +100,21 @@ def test_epoch_pinned_pipeline_rejects_missing_component():
     dst = geodesy.build_utm_itrf2008_3d(32611)
     with pytest.raises(RuntimeError, match="required component"):
         geodesy.epoch_pinned_pipeline(
-            comp, dst, 2005.0, aoi_bounds=(-115.85, 35.66, -114.85, 36.66),
-            require_substrings=["this_should_not_be_there"])
+            comp,
+            dst,
+            2005.0,
+            aoi_bounds=(-115.85, 35.66, -114.85, 36.66),
+            require_substrings=["this_should_not_be_there"],
+        )
 
 
 def test_gdal_warp_epoch_and_ct_mutually_exclusive():
     with pytest.raises(ValueError, match="mutually exclusive"):
         dsm_functions.gdal_warp(
-            "in.tif", "out.tif", "EPSG:6319", "EPSG:9989",
+            "in.tif",
+            "out.tif",
+            "EPSG:6319",
+            "EPSG:9989",
             coordinate_operation="+proj=pipeline",
             coord_epoch=2010.0,
         )

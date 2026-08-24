@@ -151,10 +151,8 @@ def parse_usgs_project_report_text(text: str) -> dict:
         if m:
             out[key] = m.group(1).strip()
     for label, keys in [
-        ("Non-Vegetated Vertical Accuracy",
-         ("nva_95_pointcloud_m", "nva_95_dem_m")),
-        ("Vegetated Vertical Accuracy",
-         ("vva_95th_pointcloud_m", "vva_95th_dem_m")),
+        ("Non-Vegetated Vertical Accuracy", ("nva_95_pointcloud_m", "nva_95_dem_m")),
+        ("Vegetated Vertical Accuracy", ("vva_95th_pointcloud_m", "vva_95th_dem_m")),
     ]:
         # ^-anchored: "Non-Vegetated ..." contains "Vegetated ..." as a
         # substring, so an unanchored VVA search re-matches the NVA row
@@ -192,57 +190,83 @@ def parse_usgs_project_report_text(text: str) -> dict:
 #: become metric keys. Values in meters / points-per-square-meter.
 _METRIC_PATTERNS: list[tuple[str, str]] = [
     # VeriDaaS/Sanborn Geiger-style vertical accuracy table rows
-    ("nva_rmsez_m/nva_95pct_m",
-     r"NVA of (?:Point Cloud|Bare Earth)\s+(?P<n_nva>\d+)\s+"
-     r"(?P<nva_rmsez_m>[\d.]+)\s+(?P<nva_95pct_m>[\d.]+)"),
-    ("vva_95th_m",
-     r"VVA of (?:Bare Earth|DEM)\s+(?P<n_vva>\d+)\s+[\d.]+\s+"
-     r"(?P<vva_95th_m>[\d.]+)"),
+    (
+        "nva_rmsez_m/nva_95pct_m",
+        r"NVA of (?:Point Cloud|Bare Earth)\s+(?P<n_nva>\d+)\s+"
+        r"(?P<nva_rmsez_m>[\d.]+)\s+(?P<nva_95pct_m>[\d.]+)",
+    ),
+    (
+        "vva_95th_m",
+        r"VVA of (?:Bare Earth|DEM)\s+(?P<n_vva>\d+)\s+[\d.]+\s+"
+        r"(?P<vva_95th_m>[\d.]+)",
+    ),
     # target/measured/count table style (PimaCo reports)
-    ("nva_95pct_m",
-     r"^\s*NVA\s+[\d.]+\s*m\s+(?P<nva_95pct_m>[\d.]+)\s+(?P<n_nva>\d+)\s*$"),
-    ("vva_95th_m",
-     r"^\s*VVA\s+[\d.]+\s*m\s+(?P<vva_95th_m>[\d.]+)\s+(?P<n_vva>\d+)\s*$"),
+    (
+        "nva_95pct_m",
+        r"^\s*NVA\s+[\d.]+\s*m\s+(?P<nva_95pct_m>[\d.]+)\s+(?P<n_nva>\d+)\s*$",
+    ),
+    (
+        "vva_95th_m",
+        r"^\s*VVA\s+[\d.]+\s*m\s+(?P<vva_95th_m>[\d.]+)\s+(?P<n_vva>\d+)\s*$",
+    ),
     # Merrick MARS QC style (value pairs are metric/US-foot)
-    ("nva_rmsez_m",
-     r"Non-vegetated Vertical Accuracy \(NVA\) RMSE\(z\)\s+"
-     r"(?P<nva_rmsez_m>[\d.]+)/"),
-    ("nva_95pct_m",
-     r"NVA\) at the 95% Confidence Level \+/-\s+(?P<nva_95pct_m>[\d.]+)/"),
-    ("vva_95th_m",
-     r"VVA\) at the 95(?:th)? [Pp]ercentile\s+(?P<vva_95th_m>[\d.]+)/"),
+    (
+        "nva_rmsez_m",
+        r"Non-vegetated Vertical Accuracy \(NVA\) RMSE\(z\)\s+"
+        r"(?P<nva_rmsez_m>[\d.]+)/",
+    ),
+    (
+        "nva_95pct_m",
+        r"NVA\) at the 95% Confidence Level \+/-\s+(?P<nva_95pct_m>[\d.]+)/",
+    ),
+    ("vva_95th_m", r"VVA\) at the 95(?:th)? [Pp]ercentile\s+(?P<vva_95th_m>[\d.]+)/"),
     # densities
-    ("anpd_ppsm",
-     r"Aggregate Nominal Pulse Density \(pls/(?:m..?|m2)\)\s+"
-     r"(?P<anpd_ppsm>[\d.]+)"),
-    ("anps_m",
-     r"Aggregate Nominal Pulse Spacing \(m\)\s+(?P<anps_m>[\d.]+)"),
-    ("first_return_density_ppsm",  # MARS QC C-4 aggregate row
-     r"^\s*Aggregate\s+[\d,]+\s+[\d,]+\s+"
-     r"(?P<first_return_density_ppsm>[\d.]+)/[\d.]+"),
-    ("measured_density_ppsm",  # "Density    9.66 pts / m2" (single value)
-     r"^\s*Density\s+(?P<measured_density_ppsm>[\d.]+)\s*pts?\s*/\s*m2?\s*$"),
-    ("measured_density_ppsm",  # required / planned / achieved 3-column row
-     r"Density\s+[\d.]+\s*pts?\s*/\s*m2\s+[\d.]+\s*pts?\s*/\s*m2\s+"
-     r"(?P<measured_density_ppsm>[\d.]+)\s*pts?\s*/\s*m2"),
+    (
+        "anpd_ppsm",
+        r"Aggregate Nominal Pulse Density \(pls/(?:m..?|m2)\)\s+"
+        r"(?P<anpd_ppsm>[\d.]+)",
+    ),
+    ("anps_m", r"Aggregate Nominal Pulse Spacing \(m\)\s+(?P<anps_m>[\d.]+)"),
+    (
+        "first_return_density_ppsm",  # MARS QC C-4 aggregate row
+        r"^\s*Aggregate\s+[\d,]+\s+[\d,]+\s+"
+        r"(?P<first_return_density_ppsm>[\d.]+)/[\d.]+",
+    ),
+    (
+        "measured_density_ppsm",  # "Density    9.66 pts / m2" (single value)
+        r"^\s*Density\s+(?P<measured_density_ppsm>[\d.]+)\s*pts?\s*/\s*m2?\s*$",
+    ),
+    (
+        "measured_density_ppsm",  # required / planned / achieved 3-column row
+        r"Density\s+[\d.]+\s*pts?\s*/\s*m2\s+[\d.]+\s*pts?\s*/\s*m2\s+"
+        r"(?P<measured_density_ppsm>[\d.]+)\s*pts?\s*/\s*m2",
+    ),
     # swath-to-swath consistency (precision, not absolute accuracy)
-    ("swath_relative_dz_mean_m",
-     r"relative vertical accuracy[\s\S]{0,120}?"
-     r"\(\s*(?P<swath_relative_dz_mean_m>[\d.]+)\s*meters?\)"),
+    (
+        "swath_relative_dz_mean_m",
+        r"relative vertical accuracy[\s\S]{0,120}?"
+        r"\(\s*(?P<swath_relative_dz_mean_m>[\d.]+)\s*meters?\)",
+    ),
     # horizontal accuracy
-    ("horizontal_acc95_m",
-     r"compiled to meet (?P<horizontal_acc95_m>[\d.]+)\s*m(?:eter)? "
-     r"horizontal accuracy"),
+    (
+        "horizontal_acc95_m",
+        r"compiled to meet (?P<horizontal_acc95_m>[\d.]+)\s*m(?:eter)? "
+        r"horizontal accuracy",
+    ),
     # NV5 "FOCUS On Accuracy" contractor vertical assessment: sectioned
     # "Nonvegetated Vertical Accuracy (Ground LAS)" / "(DEM)" pages with an
     # "RMSE <observed> cm <required> cm" row inside each section (values in
     # cm — normalized to meters in parse_report_text)
-    ("nva_rmsez_pointcloud_vendor_cm",
-     r"Nonvegetated Vertical Accuracy \(Ground LAS\)[\s\S]{0,2000}?"
-     r"RMSE\s+(?P<nva_rmsez_pointcloud_vendor_cm>[\d.]+)\s*cm\s+[\d.]+\s*cm"),
-    ("nva_rmsez_dem_vendor_cm",
-     r"Nonvegetated Vertical Accuracy \(DEM\)[\s\S]{0,2000}?"
-     r"RMSE\s+(?P<nva_rmsez_dem_vendor_cm>[\d.]+)\s*cm\s+[\d.]+\s*cm"),
+    (
+        "nva_rmsez_pointcloud_vendor_cm",
+        r"Nonvegetated Vertical Accuracy \(Ground LAS\)[\s\S]{0,2000}?"
+        r"RMSE\s+(?P<nva_rmsez_pointcloud_vendor_cm>[\d.]+)\s*cm\s+[\d.]+\s*cm",
+    ),
+    (
+        "nva_rmsez_dem_vendor_cm",
+        r"Nonvegetated Vertical Accuracy \(DEM\)[\s\S]{0,2000}?"
+        r"RMSE\s+(?P<nva_rmsez_dem_vendor_cm>[\d.]+)\s*cm\s+[\d.]+\s*cm",
+    ),
 ]
 
 #: metric keys captured in centimeters -> their meter-normalized names
@@ -265,8 +289,11 @@ def parse_report_text(text: str, source: str) -> tuple[dict, list[dict]]:
     for _, pat in _METRIC_PATTERNS:
         for m in re.finditer(pat, text, re.M):
             line = " ".join(
-                text[text.rfind("\n", 0, m.start()) + 1:
-                     max(text.find("\n", m.end()), m.end())].split()
+                text[
+                    text.rfind("\n", 0, m.start()) + 1 : max(
+                        text.find("\n", m.end()), m.end()
+                    )
+                ].split()
             )
             for key, val in m.groupdict().items():
                 if val is None:
@@ -285,13 +312,16 @@ def parse_report_text(text: str, source: str) -> tuple[dict, list[dict]]:
         label = raw.strip()
         if label in ("RMSEr", "ACCr"):
             key = "horizontal_rmser_m" if label == "RMSEr" else "horizontal_acc95_m"
-            for nxt in lines[i + 1: i + 4]:
+            for nxt in lines[i + 1 : i + 4]:
                 vm = re.search(r"([\d.]+)\s*m\s*$", nxt.strip())
                 if vm and key not in metrics:
                     metrics[key] = float(vm.group(1))
                     evidence.append(
-                        {"metric": key, "file": source,
-                         "line": f"{label} ... {nxt.strip()}"}
+                        {
+                            "metric": key,
+                            "file": source,
+                            "line": f"{label} ... {nxt.strip()}",
+                        }
                     )
                     break
     return metrics, evidence
@@ -329,8 +359,11 @@ def extract_project_metrics(pdir: Path, workunit: str) -> dict:
     fgdc = {}
     xmls = sorted(vdir.rglob("vendor_provided_xml/*.xml"))
     # the point-cloud document is the authoritative one for acquisition
-    xmls.sort(key=lambda p: ("ClassifiedPointCloud" not in p.name
-                             and "Classified" not in p.name))
+    xmls.sort(
+        key=lambda p: (
+            "ClassifiedPointCloud" not in p.name and "Classified" not in p.name
+        )
+    )
     if xmls:
         fgdc = parse_fgdc_xml(xmls[0].read_text(errors="replace"))
         fgdc["source"] = str(xmls[0].relative_to(vdir))
@@ -392,9 +425,7 @@ def extract_project_metrics(pdir: Path, workunit: str) -> dict:
     if metrics.get("first_return_density_ppsm") or metrics.get("anpd_ppsm"):
         dens = metrics.get("first_return_density_ppsm") or metrics["anpd_ppsm"]
         # mean point spacing bounds the finest grid posting worth producing
-        record["derived"] = {
-            "first_return_mean_spacing_m": round(dens ** -0.5, 3)
-        }
+        record["derived"] = {"first_return_mean_spacing_m": round(dens**-0.5, 3)}
     record["evidence"] = evidence
     return record
 
@@ -407,42 +438,58 @@ def _usgs(r, k1, k2):
 # metrics appear as USGS-tested / vendor-reported pairs — they disagree
 # in the wild, and the disagreement is information.
 _TABLE_ROWS = [
-    ("acquisition (USGS proj rpt)",
-     lambda r: _fmt_span_usgs(r.get("usgs_project_report") or {})),
+    (
+        "acquisition (USGS proj rpt)",
+        lambda r: _fmt_span_usgs(r.get("usgs_project_report") or {}),
+    ),
     ("acquisition (WESM)", lambda r: _fmt_span_wesm(r.get("wesm") or {})),
     ("acquisition (vendor XML)", lambda r: _fmt_span(r.get("fgdc") or {})),
-    ("XML dates consistent w/ WESM",
-     lambda r: r.get("acquisition_dates_consistent")),
+    ("XML dates consistent w/ WESM", lambda r: r.get("acquisition_dates_consistent")),
     ("QL (WESM)", lambda r: (r.get("wesm") or {}).get("ql")),
     ("USGS validation", lambda r: (r.get("usgs_validation") or {}).get("verdict")),
     ("geoid", lambda r: (r.get("usgs_validation") or {}).get("geoid")),
-    ("contractor",
-     lambda r: (r.get("usgs_project_report") or {}).get("primary_contractor")),
-    ("NVA RMSEz [m] USGS PC/DEM",
-     lambda r: _usgs(r, "nva_rmsez_pointcloud_m", "nva_rmsez_dem_m")),
-    ("NVA RMSEz [m] vendor PC/DEM",
-     lambda r: _fmt_pair(r["metrics"], "nva_rmsez_pointcloud_vendor_m",
-                         "nva_rmsez_dem_vendor_m")
-     or r["metrics"].get("nva_rmsez_m")),
-    ("NVA 95% [m] USGS PC/DEM",
-     lambda r: _usgs(r, "nva_95_pointcloud_m", "nva_95_dem_m")),
+    (
+        "contractor",
+        lambda r: (r.get("usgs_project_report") or {}).get("primary_contractor"),
+    ),
+    (
+        "NVA RMSEz [m] USGS PC/DEM",
+        lambda r: _usgs(r, "nva_rmsez_pointcloud_m", "nva_rmsez_dem_m"),
+    ),
+    (
+        "NVA RMSEz [m] vendor PC/DEM",
+        lambda r: _fmt_pair(
+            r["metrics"], "nva_rmsez_pointcloud_vendor_m", "nva_rmsez_dem_vendor_m"
+        )
+        or r["metrics"].get("nva_rmsez_m"),
+    ),
+    (
+        "NVA 95% [m] USGS PC/DEM",
+        lambda r: _usgs(r, "nva_95_pointcloud_m", "nva_95_dem_m"),
+    ),
     ("NVA 95% [m] vendor", lambda r: r["metrics"].get("nva_95pct_m")),
-    ("VVA 95th [m] USGS PC/DEM",
-     lambda r: _usgs(r, "vva_95th_pointcloud_m", "vva_95th_dem_m")),
+    (
+        "VVA 95th [m] USGS PC/DEM",
+        lambda r: _usgs(r, "vva_95th_pointcloud_m", "vva_95th_dem_m"),
+    ),
     ("VVA 95th [m] vendor", lambda r: r["metrics"].get("vva_95th_m")),
     ("checkpoints NVA/VVA (vendor)", lambda r: _fmt_ckpts(r["metrics"])),
-    ("swath relative dz [m] (vendor)",
-     lambda r: r["metrics"].get("swath_relative_dz_mean_m")),
-    ("horiz RMSEr [m] (vendor)",
-     lambda r: r["metrics"].get("horizontal_rmser_m")),
-    ("horiz 95% [m] (vendor)",
-     lambda r: r["metrics"].get("horizontal_acc95_m")),
+    (
+        "swath relative dz [m] (vendor)",
+        lambda r: r["metrics"].get("swath_relative_dz_mean_m"),
+    ),
+    ("horiz RMSEr [m] (vendor)", lambda r: r["metrics"].get("horizontal_rmser_m")),
+    ("horiz 95% [m] (vendor)", lambda r: r["metrics"].get("horizontal_acc95_m")),
     ("ANPD [pls/m2] (vendor)", lambda r: r["metrics"].get("anpd_ppsm")),
-    ("first-return density [p/m2] (vendor)",
-     lambda r: r["metrics"].get("first_return_density_ppsm")
-     or r["metrics"].get("measured_density_ppsm")),
-    ("mean point spacing [m]",
-     lambda r: (r.get("derived") or {}).get("first_return_mean_spacing_m")),
+    (
+        "first-return density [p/m2] (vendor)",
+        lambda r: r["metrics"].get("first_return_density_ppsm")
+        or r["metrics"].get("measured_density_ppsm"),
+    ),
+    (
+        "mean point spacing [m]",
+        lambda r: (r.get("derived") or {}).get("first_return_mean_spacing_m"),
+    ),
 ]
 
 
@@ -539,9 +586,7 @@ def report_metrics(
             print(f"  (no project directory for {wu}; YAML record skipped)")
             continue
         hits = sorted(pdir.glob("*-processing_metadata.yaml"))
-        prefix = (
-            hits[0].name.rsplit("-", 1)[0] if hits else wu
-        )
+        prefix = hits[0].name.rsplit("-", 1)[0] if hits else wu
         out_fn = pdir / f"{prefix}-report_metrics.yaml"
         with open(out_fn, "w") as f:
             yaml.dump(rec, f, default_flow_style=False, sort_keys=False)

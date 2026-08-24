@@ -62,8 +62,7 @@ def test_build_utm_nad83_2011_3d():
     # southern zones keep the correct false northing (not the northern 0)
     south = geodesy.build_utm_nad83_2011_3d(32719)
     params = {
-        p["name"]: p["value"]
-        for p in south.to_json_dict()["conversion"]["parameters"]
+        p["name"]: p["value"] for p in south.to_json_dict()["conversion"]["parameters"]
     }
     assert params["False northing"] == 10000000
     assert "19S" in south.name
@@ -221,9 +220,7 @@ def test_preflight_vertical_transform_missing_grid(monkeypatch):
 
     monkeypatch.setattr(geodesy, "TransformerGroup", FakeTransformerGroup)
     with pytest.raises(RuntimeError, match="us_noaa_gfake.tif"):
-        geodesy.preflight_vertical_transform(
-            "EPSG:4326", "EPSG:4326", download=False
-        )
+        geodesy.preflight_vertical_transform("EPSG:4326", "EPSG:4326", download=False)
 
 
 def _make_raster(fn, crs_wkt, size=64):
@@ -324,8 +321,13 @@ def test_intensity_warp_helmert_without_value_shift(tmp_path):
 
     def warp(src_srs, out_fn, ct=None):
         dsm_functions.gdal_warp(
-            str(src_fn), str(out_fn), src_srs, dst_crs_fn,
-            res=1.0, dtype="UInt16", resampling_alogrithm="nearest",
+            str(src_fn),
+            str(out_fn),
+            src_srs,
+            dst_crs_fn,
+            res=1.0,
+            dtype="UInt16",
+            resampling_alogrithm="nearest",
             coordinate_operation=ct,
         )
         with gdal.OpenEx(str(out_fn)) as ds:
@@ -341,9 +343,7 @@ def test_intensity_warp_helmert_without_value_shift(tmp_path):
         geodesy.build_utm_g2139_3d(32611).to_2d(),
         download=False,
     )
-    fixed, gt_f = warp(
-        intensity_src, tmp_path / "fixed.tif", ct=check["proj_pipeline"]
-    )
+    fixed, gt_f = warp(intensity_src, tmp_path / "fixed.tif", ct=check["proj_pipeline"])
     naive, gt_n = warp("EPSG:3857", tmp_path / "naive.tif")
 
     # (a) values pass through exactly: no vertical leg can touch them
@@ -389,8 +389,12 @@ def _warped_height_shift(tmp_path, src_crs, name):
     check = geodesy.preflight_vertical_transform(src_crs, dst, download=False)
     out_fn = tmp_path / f"out_{name}.tif"
     dsm_functions.gdal_warp(
-        str(src_fn), str(out_fn), src_wkt_fn, dst_fn,
-        res=1.0, resampling_alogrithm="nearest",
+        str(src_fn),
+        str(out_fn),
+        src_wkt_fn,
+        dst_fn,
+        res=1.0,
+        resampling_alogrithm="nearest",
         coordinate_operation=check["proj_pipeline"],
     )
     with gdal.OpenEx(str(out_fn)) as ds:
@@ -511,7 +515,9 @@ def test_swap_vgridshift_grids():
     out = geodesy._swap_vgridshift_grids(d, ["a.tif", "b.tif"])
     assert "+grids=a.tif,b.tif" in out
     with pytest.raises(ValueError, match="vgridshift"):
-        geodesy._swap_vgridshift_grids("+proj=pipeline +step +proj=utm +zone=11", ["a.tif"])
+        geodesy._swap_vgridshift_grids(
+            "+proj=pipeline +step +proj=utm +zone=11", ["a.tif"]
+        )
     # pyproj Transformer.definition drops '+' prefixes — must still swap
     bare = (
         "proj=pipeline step inv proj=webmerc ellps=GRS80 "
@@ -594,7 +600,9 @@ def test_preflight_no_silent_geoid_fallback(monkeypatch):
 
 def test_preflight_geoid_override_accepts_substitution(monkeypatch, capsys):
     src, dst = _lv_preflight_crss()
-    monkeypatch.setattr(geodesy, "_grid_locally_available", lambda g: g != "us_noaa_gXXXX.tif")
+    monkeypatch.setattr(
+        geodesy, "_grid_locally_available", lambda g: g != "us_noaa_gXXXX.tif"
+    )
 
     def boom(g):
         raise OSError("no such grid on the CDN")

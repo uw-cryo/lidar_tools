@@ -73,7 +73,9 @@ def main() -> None:
         "height: Float32, source SRS from --src-wkt (compound for geoid surveys)",
     )
     parser.add_argument(
-        "--dst-wkt", required=True, help="Target CRS (WKT file from the run dir, or any PROJ string)"
+        "--dst-wkt",
+        required=True,
+        help="Target CRS (WKT file from the run dir, or any PROJ string)",
     )
     parser.add_argument(
         "--src-wkt",
@@ -86,17 +88,30 @@ def main() -> None:
         default=None,
         help="Existing raster whose grid (extent + resolution) the output must match exactly",
     )
-    parser.add_argument("--res", type=float, default=None, help="Output resolution (ignored with --like)")
-    parser.add_argument("--out", default=None, help="Output path (default: temp name minus '-temp')")
     parser.add_argument(
-        "--no-overviews", action="store_true", help="Skip Gaussian overviews + COG conversion"
+        "--res",
+        type=float,
+        default=None,
+        help="Output resolution (ignored with --like)",
+    )
+    parser.add_argument(
+        "--out", default=None, help="Output path (default: temp name minus '-temp')"
+    )
+    parser.add_argument(
+        "--no-overviews",
+        action="store_true",
+        help="Skip Gaussian overviews + COG conversion",
     )
     args = parser.parse_args()
 
     temp_fn = Path(args.temp_fn)
     if not temp_fn.exists():
         sys.exit(f"Not found: {temp_fn}")
-    out_fn = Path(args.out) if args.out else Path(str(temp_fn).split("-temp.tif")[0] + ".tif")
+    out_fn = (
+        Path(args.out)
+        if args.out
+        else Path(str(temp_fn).split("-temp.tif")[0] + ".tif")
+    )
     if out_fn.exists():
         sys.exit(f"Refusing to overwrite existing {out_fn}")
 
@@ -104,7 +119,9 @@ def main() -> None:
         src_srs = "EPSG:3857"
         dtype = "UInt16"
         if args.src_wkt:
-            sys.exit("--src-wkt is not valid with --product intensity (values are not heights)")
+            sys.exit(
+                "--src-wkt is not valid with --product intensity (values are not heights)"
+            )
     else:
         src_srs = args.src_wkt if args.src_wkt else "EPSG:3857"
         dtype = "Float32"

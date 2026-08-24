@@ -120,7 +120,9 @@ def test_merge_strips_project_token_from_names(tmp_path):
     (aoi_1m_proj_a-...); the multi-project composite and its metadata
     must drop it."""
     _make_mosaic(tmp_path / "proj_a" / "aoi_1m_proj_a-DSM_mos.tif", 100.0, slice(0, 20))
-    _make_mosaic(tmp_path / "proj_b" / "aoi_1m_proj_b-DSM_mos.tif", 200.0, slice(12, 32))
+    _make_mosaic(
+        tmp_path / "proj_b" / "aoi_1m_proj_b-DSM_mos.tif", 200.0, slice(12, 32)
+    )
     with open(tmp_path / "batch_status.yaml", "w") as f:
         yaml.dump(
             {"projects": {"proj_a": "completed", "proj_b": "completed"}},

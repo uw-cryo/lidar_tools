@@ -7,19 +7,5 @@
     "src/lidar_tools/staging.py": 4
   },
   "ruff_check": {},
-  "ruff_format_would_reformat": [
-    "src/lidar_tools/catalog.py",
-    "src/lidar_tools/filter_percentile.py",
-    "src/lidar_tools/geodesy.py",
-    "src/lidar_tools/merge.py",
-    "src/lidar_tools/preview.py",
-    "src/lidar_tools/report_metrics.py",
-    "src/lidar_tools/staging.py",
-    "tests/test_catalog.py",
-    "tests/test_geodesy.py",
-    "tests/test_geodesy_epoch.py",
-    "tests/test_merge.py",
-    "tests/test_preview.py",
-    "tests/test_staging.py"
-  ]
+  "ruff_format_would_reformat": []
 }

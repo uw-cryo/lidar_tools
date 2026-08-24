@@ -50,11 +50,17 @@ Run our example workflow to create DSM, DTM without interpolation, DTM with inte
 pixi run example
 ```
 
+This is the one-command pipeline (equivalent to
+`lidar-tools run --geometry aoi.geojson --output out/`): catalog search,
+one rasterize pass per covering survey on a shared grid, a priority merge
+of the per-project products, and a composite preview figure.
+
 Outputs land in one subdirectory per selected survey
 (`<output>/<workunit>/`, e.g. `/tmp/lidar-tools-example/WA_KingCo_1_2021/`),
 plus a `batch_status.yaml` at the top level -- the same layout for one
 survey or many, so `merge`, `preview` and the report commands consume
-every run identically.
+every run identically. The `run` command adds `search/` (catalog
+provenance) and `merge/` (per-product composites + preview figure).
 
 
 ## CLI Commands
@@ -70,6 +76,7 @@ lidar-tools rasterize --help  # options for one command
 
 | Command | What it does |
 | --- | --- |
+| `run` | End-to-end pipeline in one command: `search` -> `rasterize` -> `merge` -> composite `preview`. Takes every `rasterize` option, plus `--no-merge` and `--no-normalize-intensity`; a failed project doesn't abort the batch (merge/preview run over the completed projects, exit status is nonzero). |
 | `search` | Search the lidar catalog: which collections cover an AOI, at what quality level and acquisition dates, with what declared CRS/datum/geoid, EPT availability, AOI overlap, and the uncovered fraction. |
 | `prepare` | Stage discovery metadata for an AOI into `site_manifest.yaml`: pinned WESM records, EPT name resolution, TESM-vs-links tile reconciliation, staged-LAZ cache layout. |
 | `rasterize` | Create DSM, DTM (with and without gap filling) and/or intensity rasters from 3DEP EPT or local LAS/LAZ: one subdirectory per selected survey (`--projects auto\|latest\|NAME\|A,B,C`), all on one shared target grid so `merge` can composite them without resampling. |
@@ -83,6 +90,7 @@ lidar-tools rasterize --help  # options for one command
 For an AOI covered by more than one 3DEP survey, the commands chain:
 
 ```bash
+lidar-tools run aoi.geojson batch/                   # search+rasterize+merge+preview in one
 lidar-tools search aoi.geojson                       # what covers this AOI?
 lidar-tools prepare aoi.geojson batch/               # pin the metadata once
 lidar-tools rasterize aoi.geojson batch/ \

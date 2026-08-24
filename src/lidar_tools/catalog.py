@@ -60,7 +60,9 @@ WESM_FIELDS = [
 ]
 
 
-def load_wesm(aoi_gdf: gpd.GeoDataFrame, wesm_source: str = WESM_URL) -> gpd.GeoDataFrame:
+def load_wesm(
+    aoi_gdf: gpd.GeoDataFrame, wesm_source: str = WESM_URL
+) -> gpd.GeoDataFrame:
     """
     Read WESM workunit polygons intersecting the AOI bounding box.
 
@@ -314,14 +316,10 @@ def summarize_surveys(
     w["ept_coverage_frac"] = ept_cov
 
     cols = [c for c in WESM_FIELDS if c in w.columns]
-    out = w[
-        cols + ["aoi_overlap_frac", "ept_names", "ept_coverage_frac", "geometry"]
-    ]
+    out = w[cols + ["aoi_overlap_frac", "ept_names", "ept_coverage_frac", "geometry"]]
     sort_cols = [c for c in ["ql", "collect_end"] if c in out.columns]
     if sort_cols:
-        out = out.sort_values(
-            sort_cols, ascending=[True, False][: len(sort_cols)]
-        )
+        out = out.sort_values(sort_cols, ascending=[True, False][: len(sort_cols)])
     return out.reset_index(drop=True)
 
 
@@ -500,7 +498,9 @@ def _collect_midpoint(row) -> pd.Timestamp:
         return pd.NaT
 
 
-def assign_epochs(surveys_gdf: gpd.GeoDataFrame, gap_years: float = 1.5) -> gpd.GeoDataFrame:
+def assign_epochs(
+    surveys_gdf: gpd.GeoDataFrame, gap_years: float = 1.5
+) -> gpd.GeoDataFrame:
     """
     Group collections into acquisition epochs: clusters of collection
     midpoints separated by more than gap_years. AOIs commonly hold a few
@@ -516,9 +516,7 @@ def assign_epochs(surveys_gdf: gpd.GeoDataFrame, gap_years: float = 1.5) -> gpd.
     """
     s = surveys_gdf.copy()
     mids = {idx: _collect_midpoint(r) for idx, r in s.iterrows()}
-    dated = sorted(
-        (m, idx) for idx, m in mids.items() if pd.notna(m)
-    )
+    dated = sorted((m, idx) for idx, m in mids.items() if pd.notna(m))
     labels = {}
     cluster: list = []
 
@@ -574,7 +572,9 @@ def pick_anchor(surveys_gdf: gpd.GeoDataFrame) -> int:
     return c.sort_values(sort_cols, ascending=False).index[0]
 
 
-def relative_metrics(surveys_gdf: gpd.GeoDataFrame, anchor_idx: int = None) -> gpd.GeoDataFrame:
+def relative_metrics(
+    surveys_gdf: gpd.GeoDataFrame, anchor_idx: int = None
+) -> gpd.GeoDataFrame:
     """
     Annotate each collection with differences relative to the anchor:
     years between acquisitions, and whether the declared horizontal CRS
@@ -629,7 +629,9 @@ def rank_collections(surveys_gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
         lambda q: ql_order.get(str(q), 9)
     )
     if "lpc_category" in s.columns:
-        s["_meets"] = (~s["lpc_category"].astype(str).str.startswith("Meets")).astype(int)
+        s["_meets"] = (~s["lpc_category"].astype(str).str.startswith("Meets")).astype(
+            int
+        )
     else:
         s["_meets"] = 0
     # dt_years is None for undated collections (object dtype), and
@@ -739,27 +741,29 @@ def plot_coverage(
     # distance from it
     by_priority = surveys.sort_values("priority")
     anchor_epoch = by_priority[by_priority["anchor"]]["epoch"].iloc[0]
-    epoch_dt = by_priority.groupby("epoch")["dt_years"].apply(
-        lambda v: v.abs().min()
-    )
+    epoch_dt = by_priority.groupby("epoch")["dt_years"].apply(lambda v: v.abs().min())
     epoch_order = sorted(
         epoch_dt.index,
-        key=lambda e: (e != anchor_epoch, epoch_dt[e] if pd.notna(epoch_dt[e]) else 999),
+        key=lambda e: (
+            e != anchor_epoch,
+            epoch_dt[e] if pd.notna(epoch_dt[e]) else 999,
+        ),
     )
     legend_lines = []
     for epoch in epoch_order:
         members = by_priority[by_priority["epoch"] == epoch]
         legend_lines.append(f"epoch {epoch}:")
         legend_lines.extend(
-            legend_entries[int(p)] for p in members["priority"] if int(p) in legend_entries
+            legend_entries[int(p)]
+            for p in members["priority"]
+            if int(p) in legend_entries
         )
     if gaps_gdf is not None and not gaps_gdf.empty:
         gaps_gdf.to_crs("EPSG:4326").plot(
             ax=ax, facecolor="none", edgecolor="red", hatch="///", linewidth=1.0
         )
         legend_lines.append(
-            f"red hatch: no lidar coverage "
-            f"({gaps_gdf['gap_frac'].sum():.1%} of AOI)"
+            f"red hatch: no lidar coverage ({gaps_gdf['gap_frac'].sum():.1%} of AOI)"
         )
 
     aoi.boundary.plot(ax=ax, color="black", linewidth=2, linestyle="--")
@@ -880,15 +884,12 @@ def coverage_gaps(
     else:
         gap = aoi.difference(surveys_gdf.to_crs("EPSG:4326").union_all())
     if gap.is_empty:
-        return gpd.GeoDataFrame(
-            {"gap_frac": []}, geometry=[], crs="EPSG:4326"
-        )
+        return gpd.GeoDataFrame({"gap_frac": []}, geometry=[], crs="EPSG:4326")
     parts = list(gap.geoms) if hasattr(gap, "geoms") else [gap]
     aoi_area = _equal_area_m2(aoi)
     if aoi_area == 0:
         raise ValueError(
-            "AOI has zero area (point/line geometry?) — gap fractions are "
-            "undefined"
+            "AOI has zero area (point/line geometry?) — gap fractions are undefined"
         )
     return gpd.GeoDataFrame(
         {"gap_frac": [_equal_area_m2(p) / aoi_area for p in parts]},
@@ -1050,9 +1051,12 @@ def _parse_index_url(index_url: str) -> tuple[str, str]:
     from urllib.parse import urlsplit
 
     parts = urlsplit(index_url)
-    prefix = dict(
-        kv.split("=", 1) for kv in parts.query.split("&") if "=" in kv
-    ).get("prefix", "").rstrip("/") + "/"
+    prefix = (
+        dict(kv.split("=", 1) for kv in parts.query.split("&") if "=" in kv)
+        .get("prefix", "")
+        .rstrip("/")
+        + "/"
+    )
     return f"{parts.scheme}://{parts.netloc}", prefix
 
 
@@ -1085,7 +1089,7 @@ def _s3_list_prefix(index_url: str, recursive: bool = True) -> list[dict]:
             key = obj.findtext(f"{ns}Key")
             size = obj.findtext(f"{ns}Size")
             assert key is not None and size is not None, "malformed S3 listing"
-            objects.append({"key": key[len(prefix):], "size": int(size)})
+            objects.append({"key": key[len(prefix) :], "size": int(size)})
         if (root.findtext(f"{ns}IsTruncated") or "").lower() != "true":
             return objects
         token = root.findtext(f"{ns}NextContinuationToken")
@@ -1170,8 +1174,7 @@ def fetch_reports(
             (
                 rec["metadata_link"]
                 for rec in records
-                if rec.get("metadata_link")
-                and rec.get("workunit", wu) == wu
+                if rec.get("metadata_link") and rec.get("workunit", wu) == wu
             ),
             None,
         )
@@ -1195,8 +1198,12 @@ def fetch_reports(
         layers = [
             (link, "", exts, ()),
             (proj_link, "project_level/", exts, ()),
-            (va_link, "project_level/vertical_accuracy/", None,
-             (".jpg", ".jpeg", ".png")),
+            (
+                va_link,
+                "project_level/vertical_accuracy/",
+                None,
+                (".jpg", ".jpeg", ".png"),
+            ),
         ]
         outdir = pdir / "vendor_reports"
         outdir.mkdir(parents=True, exist_ok=True)
@@ -1209,13 +1216,9 @@ def fetch_reports(
         listed = []
         try:
             for layer_link, sub, layer_exts, layer_skip in layers:
-                objects = _s3_list_prefix(
-                    layer_link, recursive=sub != "project_level/"
-                )
+                objects = _s3_list_prefix(layer_link, recursive=sub != "project_level/")
                 _, layer_prefix = _parse_index_url(layer_link)
-                listed.append(
-                    (sub, layer_exts, layer_skip, layer_prefix, objects)
-                )
+                listed.append((sub, layer_exts, layer_skip, layer_prefix, objects))
                 n_remote += len(objects)
         except Exception as e:
             print(
@@ -1247,9 +1250,7 @@ def fetch_reports(
                 # session's fetch still downloading) must not share a
                 # .part inode — one run's rename removes the path and
                 # the other's rename then crashes the whole staging
-                tmp = dest.with_suffix(
-                    f"{dest.suffix}.part{os.getpid()}"
-                )
+                tmp = dest.with_suffix(f"{dest.suffix}.part{os.getpid()}")
                 # long multi-GB staging runs hit transient S3 resets;
                 # retry each file, and give up on a persistently
                 # failing object (recorded in `failed`, never fatal)

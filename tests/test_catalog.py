@@ -106,8 +106,7 @@ def test_fetch_reports_stages_report_files(tmp_path, monkeypatch):
 
     def listing(*contents, truncated=False, token=""):
         rows = "".join(
-            f"<Contents><Key>{k}</Key><Size>{s}</Size></Contents>"
-            for k, s in contents
+            f"<Contents><Key>{k}</Key><Size>{s}</Size></Contents>" for k, s in contents
         )
         nxt = f"<NextContinuationToken>{token}</NextContinuationToken>" if token else ""
         return (
@@ -190,10 +189,7 @@ def test_fetch_reports_stages_report_files(tmp_path, monkeypatch):
     # idempotent: sizes match, so a re-run lists but downloads nothing
     n_before = len(calls)
     catalog.fetch_reports(str(tmp_path))
-    assert not [
-        c for c in calls[n_before:]
-        if c.endswith((".pdf", ".gpkg", ".xml"))
-    ]
+    assert not [c for c in calls[n_before:] if c.endswith((".pdf", ".gpkg", ".xml"))]
 
 
 def test_resolve_ept_resource_tiers():
@@ -277,6 +273,7 @@ def test_resolve_ept_resource_unresolvable_raises():
     with pytest.raises(LookupError, match="staged-LAZ"):
         catalog.resolve_ept_resource("NV_Southern_4_D23", ept)
 
+
 def test_fetch_reports_survives_listing_failure(tmp_path, monkeypatch):
     """A transient S3 listing failure skips the workunit — it must not
     truncate the previous run's remote_inventory.txt or abort the batch."""
@@ -317,9 +314,7 @@ def test_area_fractions_equal_area_not_degrees():
     """Coverage fractions must ratio true areas: the northern half of a
     10-degree-tall Alaska AOI is ~45% of its area, not the 50% a raw
     degree-squared ratio reports."""
-    aoi = gpd.GeoDataFrame(
-        geometry=[_square(-150, 60, -140, 70)], crs="EPSG:4326"
-    )
+    aoi = gpd.GeoDataFrame(geometry=[_square(-150, 60, -140, 70)], crs="EPSG:4326")
     north = gpd.GeoDataFrame(
         {"workunit": ["AK_North"]},
         geometry=[_square(-150, 65, -140, 70)],
@@ -329,9 +324,7 @@ def test_area_fractions_equal_area_not_degrees():
         np.sin(np.radians(70)) - np.sin(np.radians(60))
     )  # ~0.453; the degree-squared ratio would be exactly 0.5
     out = catalog.summarize_surveys(north, aoi)
-    np.testing.assert_allclose(
-        out["aoi_overlap_frac"].iloc[0], expected, atol=0.005
-    )
+    np.testing.assert_allclose(out["aoi_overlap_frac"].iloc[0], expected, atol=0.005)
     gaps = catalog.coverage_gaps(out, aoi)
     np.testing.assert_allclose(gaps["gap_frac"].sum(), 1 - expected, atol=0.005)
 

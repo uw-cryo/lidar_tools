@@ -13,9 +13,11 @@ consume every run the same way.
 """
 
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+import cyclopts
 import geopandas as gpd
 import yaml
 
@@ -184,51 +186,17 @@ def _resolve_projects(
     return explicit, wesm_gdf, ept_gdf
 
 
-def rasterize(
-    geometry: str,
-    output: str,
-    projects: str = "auto",
-    input: str = "EPT_AWS",
-    resolution: float = 1.0,
-    products: str = "all",
-    num_process: int = 1,
-    resume: bool = True,
-    cleanup: bool = True,
-    quiet: bool = False,
-    src_crs: str | None = None,
-    dst_crs: str | None = None,
-    output_datum: Literal[
-        "wgs84_g2139",
-        "nad83_2011",
-        "wgs84_g1674",
-        "itrf2020",
-        "itrf2008",
-        "itrf2014",
-    ] = "wgs84_g2139",
-    dsm_gridding_choice: str = "first_idw",
-    tile_size: float = 1.0,
-    proj_pipeline: str | None = None,
-    filter_noise: bool = True,
-    height_above_ground_threshold: float | None = None,
-    ept_vertical: Literal["auto", "geoid", "ellipsoid"] = "auto",
-    geoid_override: Literal["declared", "best-available"] = "declared",
-    coord_epoch: float | None = None,
-) -> None:
+@cyclopts.Parameter(name="*")
+@dataclass(frozen=True)
+class RasterizeOpts:
     """
-    Create DSM, DTM (with and without gap filling) and/or intensity
-    rasters for an AOI: one subdirectory per selected survey, all on one
-    shared target grid, so the per-project products are co-registered and
-    `merge` can composite them without resampling.
+    The processing options of ``rasterize``, shared verbatim by ``run``
+    (which hands the same populated object to the rasterize stage, so the
+    two entry points cannot diverge). On the command line the fields
+    appear as ordinary top-level options.
 
     Parameters
     ----------
-    geometry
-        Path to the AOI polygon (same AOI for every project).
-    output
-        Base output directory; each project writes to
-        ``<output>/<project>/`` and the batch status accumulates in
-        ``<output>/batch_status.yaml`` — also for single-project runs, so
-        every downstream command consumes every run the same way.
     projects
         Which survey(s) to process, resolved against WESM/EPT:
         "auto" (default) = every AOI-intersecting survey with an EPT
@@ -295,12 +263,91 @@ def rasterize(
     coord_epoch
         Coordinate epoch (decimal year) stamped on the output CRS when
         the target datum is dynamic.
+    """
+
+    projects: str = "auto"
+    input: str = "EPT_AWS"
+    resolution: float = 1.0
+    products: str = "all"
+    num_process: int = 1
+    resume: bool = True
+    cleanup: bool = True
+    quiet: bool = False
+    src_crs: str | None = None
+    dst_crs: str | None = None
+    output_datum: Literal[
+        "wgs84_g2139",
+        "nad83_2011",
+        "wgs84_g1674",
+        "itrf2020",
+        "itrf2008",
+        "itrf2014",
+    ] = "wgs84_g2139"
+    dsm_gridding_choice: str = "first_idw"
+    tile_size: float = 1.0
+    proj_pipeline: str | None = None
+    filter_noise: bool = True
+    height_above_ground_threshold: float | None = None
+    ept_vertical: Literal["auto", "geoid", "ellipsoid"] = "auto"
+    geoid_override: Literal["declared", "best-available"] = "declared"
+    coord_epoch: float | None = None
+
+
+def rasterize(
+    geometry: str,
+    output: str,
+    *,
+    opts: RasterizeOpts | None = None,
+) -> None:
+    """
+    Create DSM, DTM (with and without gap filling) and/or intensity
+    rasters for an AOI: one subdirectory per selected survey, all on one
+    shared target grid, so the per-project products are co-registered and
+    `merge` can composite them without resampling.
+
+    Parameters
+    ----------
+    geometry
+        Path to the AOI polygon (same AOI for every project).
+    output
+        Base output directory; each project writes to
+        ``<output>/<project>/`` and the batch status accumulates in
+        ``<output>/batch_status.yaml`` — also for single-project runs, so
+        every downstream command consumes every run the same way.
+    opts
+        Processing options (see RasterizeOpts); on the command line the
+        fields are ordinary top-level options.
 
     Returns
     -------
     None
     """
-    if coord_epoch is not None and dst_crs is None and output_datum == "nad83_2011":
+    status, _ = _rasterize_batch(geometry, output, opts or RasterizeOpts())
+    _raise_on_failed(status)
+
+
+def _rasterize_batch(
+    geometry: str, output: str, opts: RasterizeOpts
+) -> tuple[dict[str, str], dict[str, str]]:
+    """
+    The batch loop shared by ``rasterize`` and ``run``: validate, resolve
+    the shared target grid, run the engine once per selected project,
+    record batch_status.yaml, and print the batch summary. Returns
+    ``(status, batch_projects)``: this invocation's per-project status,
+    and the cumulative batch mapping as written to batch_status.yaml
+    (carried-forward earlier runs included). Raising on failures is the
+    caller's responsibility (`rasterize` always raises, `run` merges the
+    batch's completed projects first).
+    """
+    # dst_crs is the one option the body reassigns (resolved to a concrete
+    # CRS file below); everything else is read via opts.<field> directly
+    dst_crs = opts.dst_crs
+
+    if (
+        opts.coord_epoch is not None
+        and dst_crs is None
+        and opts.output_datum == "nad83_2011"
+    ):
         # mirrors the engine's fail-fast, which cannot fire from here
         # because dst_crs is resolved to a concrete file below
         raise ValueError(
@@ -320,9 +367,9 @@ def rasterize(
             "first.)"
         )
     gdf = gpd.read_file(geometry)
-    keys, wesm_gdf, ept_gdf = _resolve_projects(projects, input, gdf)
+    keys, wesm_gdf, ept_gdf = _resolve_projects(opts.projects, opts.input, gdf)
 
-    if len(keys) > 1 and (src_crs or proj_pipeline):
+    if len(keys) > 1 and (opts.src_crs or opts.proj_pipeline):
         # one explicit source CRS or PROJ pipeline cannot be right across
         # projects with different source CRSs — silently applying it to
         # all of them would be a correctness bug, not a convenience
@@ -344,21 +391,21 @@ def rasterize(
                 "(estimate_utm_crs found no exact EPSG match — polar or "
                 "zone-spanning AOI?). Pass --dst-crs explicitly."
             )
-        out_crs_obj, wkt_name = geodesy.build_utm_target(epsg_code, output_datum)
+        out_crs_obj, wkt_name = geodesy.build_utm_target(epsg_code, opts.output_datum)
         target = outbase / wkt_name
         if not target.exists():
             geodesy.write_crs_file(out_crs_obj, target)
         dst_crs = str(target)
-    print(f"Shared target grid: {dst_crs} at {resolution} m")
+    print(f"Shared target grid: {dst_crs} at {opts.resolution} m")
 
     status = {}
     for key in keys:
         # local runs without a project label key on the input dir name,
         # mirroring the engine's own filename/pinning convention
-        dirname = key if key is not None else Path(input).resolve().name
+        dirname = key if key is not None else Path(opts.input).resolve().name
         if not dirname:
             raise ValueError(
-                f"cannot derive a project key from input '{input}' "
+                f"cannot derive a project key from input '{opts.input}' "
                 "(filesystem root?); pass --projects <name> to label the run"
             )
         outdir = outbase / dirname
@@ -366,26 +413,26 @@ def rasterize(
         try:
             rasterize_project(
                 geometry=geometry,
-                input=input,
+                input=opts.input,
                 output=str(outdir),
-                src_crs=src_crs,
+                src_crs=opts.src_crs,
                 dst_crs=dst_crs,
-                output_datum=output_datum,
-                resolution=resolution,
-                dsm_gridding_choice=dsm_gridding_choice,
-                products=products,
+                output_datum=opts.output_datum,
+                resolution=opts.resolution,
+                dsm_gridding_choice=opts.dsm_gridding_choice,
+                products=opts.products,
                 threedep_project=key,
-                tile_size=tile_size,
-                num_process=num_process,
-                cleanup=cleanup,
-                proj_pipeline=proj_pipeline,
-                filter_noise=filter_noise,
-                height_above_ground_threshold=height_above_ground_threshold,
-                quiet=quiet,
-                ept_vertical=ept_vertical,
-                geoid_override=geoid_override,
-                resume=resume and outdir.exists(),
-                coord_epoch=coord_epoch,
+                tile_size=opts.tile_size,
+                num_process=opts.num_process,
+                cleanup=opts.cleanup,
+                proj_pipeline=opts.proj_pipeline,
+                filter_noise=opts.filter_noise,
+                height_above_ground_threshold=opts.height_above_ground_threshold,
+                quiet=opts.quiet,
+                ept_vertical=opts.ept_vertical,
+                geoid_override=opts.geoid_override,
+                resume=opts.resume and outdir.exists(),
+                coord_epoch=opts.coord_epoch,
                 wesm_gdf=wesm_gdf,
                 ept_index_gdf=ept_gdf,
             )
@@ -438,9 +485,9 @@ def rasterize(
         # defaults (merge/preview/fetch-reports/report-metrics) act on this
         # list, so inheriting another AOI's or grid's projects would point
         # them at products that do not belong together.
-        same_batch = str(prior.get("geometry")) == str(geometry) and str(
-            prior.get("dst_crs")
-        ) == str(dst_crs)
+        same_batch = str(prior.get("geometry")) == str(geometry) and _same_crs_file(
+            prior.get("dst_crs"), dst_crs
+        )
         if prior and not same_batch:
             print(
                 f"WARNING: {status_fn} records a different AOI/target grid "
@@ -472,7 +519,7 @@ def rasterize(
     print("\nBatch summary:")
     for dirname, state in status.items():
         print(f"  {dirname}: {state}")
-    nodata = [w for w, s in status.items() if s.startswith("completed (no data)")]
+    nodata = _nodata_projects(status)
     if nodata:
         print(
             f"WARNING: {len(nodata)}/{len(status)} project runs produced NO "
@@ -480,19 +527,86 @@ def rasterize(
             "use the local point-cloud path (rasterize --input)",
             file=sys.stderr,
         )
-    failed = [w for w, s in status.items() if s.startswith("failed")]
-    if failed:
-        # "re-run the same command" is the right advice for a transient
-        # failure and exactly the wrong advice for a resume-compatibility
-        # refusal, which is deterministic
-        blocked = [w for w in failed if "Cannot resume" in status[w]]
-        advice = (
-            "re-invoke with the same arguments to resume"
-            if not blocked
-            else f"{blocked} cannot resume into their existing output "
-            "directories (see above); use a fresh output directory or "
-            "delete those project subdirectories to rebuild"
+    return status, projects_rec
+
+
+def _same_crs_file(a, b) -> bool:
+    """Whether two dst_crs values name the same target CRS. Path equality
+    first; then CRS CONTENT (a relocated batch dir moves its WKT file with
+    it, and the stale recorded path must not orphan the batch record — the
+    PCD-sweep clobber, 2026-08-23); as a last resort the basename, which
+    encodes zone+datum (e.g. UTM_12N_WGS84_G2139_3D.wkt), for records
+    whose old absolute path no longer exists."""
+    from lidar_tools.pdal_pipeline import _read_crs_param
+
+    if str(a) == str(b):
+        return True
+    if a is None or b is None:
+        return False
+    crs_a, crs_b = _read_crs_param(a), _read_crs_param(b)
+    if crs_a is not None and crs_b is not None:
+        return crs_a == crs_b
+    if Path(str(a)).name == Path(str(b)).name:
+        # last-resort match on the zone+datum-encoding basename: right for
+        # a relocated batch, guessable-wrong for a reused generic name —
+        # never silent (round-3 finding)
+        print(
+            f"WARNING: dst_crs matched by basename only ({Path(str(a)).name}); "
+            "the recorded CRS file is unreadable, so content could not be "
+            "verified",
+            file=sys.stderr,
         )
-        raise RuntimeError(
-            f"{len(failed)}/{len(status)} project runs failed: {failed} ({advice})"
-        )
+        return True
+    return False
+
+
+def _completed_projects(status: dict[str, str]) -> list[str]:
+    """Projects recorded as completed — including "completed (no data)",
+    which is a real (product-less) outcome, not a failure. The status
+    vocabulary is written by _rasterize_batch; classify through these
+    helpers, never by ad-hoc prefix checks."""
+    return [w for w, s in status.items() if str(s).startswith("completed")]
+
+
+def _failed_projects(status: dict[str, str]) -> list[str]:
+    return [w for w, s in status.items() if str(s).startswith("failed")]
+
+
+def _nodata_projects(status: dict[str, str]) -> list[str]:
+    return [w for w, s in status.items() if str(s).startswith("completed (no data)")]
+
+
+def _failure_advice(status: dict[str, str]) -> str:
+    """Resume advice for the failed projects in a batch status.
+
+    "re-run the same command" is the right advice for a transient failure
+    and exactly the wrong advice for a resume-compatibility refusal,
+    which is deterministic."""
+    failed = _failed_projects(status)
+    blocked = [w for w in failed if "Cannot resume" in status[w]]
+    return (
+        "re-invoke with the same arguments to resume"
+        if not blocked
+        else f"{blocked} cannot resume into their existing output "
+        "directories (see above); use a fresh output directory or "
+        "delete those project subdirectories to rebuild"
+    )
+
+
+def _failure_message(status: dict[str, str]) -> str | None:
+    """The batch-failure message `rasterize` raises with, or None when
+    nothing failed — shared with `run`, which prints/persists the summary
+    before raising the identical message."""
+    failed = _failed_projects(status)
+    if not failed:
+        return None
+    return (
+        f"{len(failed)}/{len(status)} project runs failed: {failed} "
+        f"({_failure_advice(status)})"
+    )
+
+
+def _raise_on_failed(status: dict[str, str]) -> None:
+    msg = _failure_message(status)
+    if msg:
+        raise RuntimeError(msg)
