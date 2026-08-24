@@ -2366,11 +2366,18 @@ def execute_tile_job(job: dict, skip_existing: bool = False, attempts: int = 3) 
     finally:
         if cache_file:
             Path(cache_file).unlink(missing_ok=True)
-    if pending and empty_groups == len(pending) and not any(outputs.values()):
+    if (
+        fetch is None
+        and pending
+        and empty_groups == len(pending)
+        and not any(outputs.values())
+    ):
         # every product group came back point-free AND nothing was carried
-        # by resume: the survey genuinely has nothing in this tile
-        # (mirrors the fetch-path verdict). With resumed outputs present,
-        # fall through — the tile has data, only these groups are empty.
+        # by resume AND no fetch step exists to say otherwise: the group
+        # counts are the only signal, so the survey genuinely has nothing
+        # in this tile. With a fetch that returned points, an all-zero
+        # tile is all filter outcomes — fall through so the per-product
+        # group_empty accounting reports it (Copilot review, PR #101).
         print(f"Empty tile {job.get('tile_id')}: 0 points, skipped")
         return {"empty": True, "outputs": {name: None for name in outputs}}
     # group_empty lets the caller count these as no-points outcomes for

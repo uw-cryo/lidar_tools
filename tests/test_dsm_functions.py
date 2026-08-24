@@ -1289,3 +1289,30 @@ def test_execute_tile_job_group_empty_engages_on_fetch_path(tmp_path, monkeypatc
     assert result["outputs"]["dsm"] is not None
     assert result["outputs"]["dtm_no_fill"] is None
     assert sorted(result["group_empty"]) == ["dtm_fill", "dtm_no_fill"]
+
+
+def test_execute_tile_job_fetch_contradicts_all_empty_groups(tmp_path, monkeypatch):
+    """With a fetch that returned points, an all-groups-zero tile is all
+    filter outcomes, never 'survey has nothing here': empty stays False
+    and every product lands in group_empty (Copilot review, PR #101)."""
+    dsm = lidar_tools.dsm_functions
+    job = _tile_job(tmp_path)
+    job["fetch"] = {
+        "pipeline_json": str(tmp_path / "p_fetch.json"),
+        "cache_file": str(tmp_path / "cache.laz"),
+    }
+    monkeypatch.setattr(
+        dsm,
+        "_execute_pipeline_with_retries",
+        lambda pipeline_json, attempts: 999 if "p_fetch" in pipeline_json else 0,
+    )
+    monkeypatch.setattr(dsm, "check_raster_validity", lambda fn, deep=False: True)
+    result = dsm.execute_tile_job(job)
+    assert result["empty"] is False
+    assert all(v is None for v in result["outputs"].values())
+    assert sorted(result["group_empty"]) == [
+        "dsm",
+        "dtm_fill",
+        "dtm_no_fill",
+        "intensity",
+    ]
