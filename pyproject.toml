@@ -76,7 +76,7 @@ preview = ["pixi-build"]
 dev = { features = ["dev"], solve-group = "default" }
 
 [tool.pixi.tasks]
-example = "lidar-tools rasterize --geometry notebooks/uw-campus.geojson --output /tmp/lidar-tools-example"
+example = "lidar-tools run --geometry notebooks/uw-campus.geojson --output /tmp/lidar-tools-example"
 
 [tool.pixi.feature.dev.tasks]
 test = "pytest"

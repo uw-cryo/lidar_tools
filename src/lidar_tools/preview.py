@@ -184,9 +184,7 @@ def _metadata_file(dirname: Path, kind: str, prefix: str | None = None) -> Path 
     return legacy if legacy.exists() else None
 
 
-def _project_metadata_files(
-    project_dir: Path, prefix: str | None = None
-) -> list[Path]:
+def _project_metadata_files(project_dir: Path, prefix: str | None = None) -> list[Path]:
     """Processing-metadata files feeding this directory's products —
     the directory's own file, or every source project's for a merge dir.
     `prefix` disambiguates a directory holding several runs' metadata."""
@@ -214,8 +212,7 @@ def _project_metadata_files(
                     # ones staged in place
                     stem = re.sub(r"_[\d.]+m$", "", srcdir.name)
                     if stem != srcdir.name:
-                        fn = _metadata_file(srcdir.parent / stem,
-                                            "processing_metadata")
+                        fn = _metadata_file(srcdir.parent / stem, "processing_metadata")
                 if fn is not None and fn not in seen:
                     seen.add(fn)
                     found.append(fn)
@@ -243,9 +240,7 @@ def _footer_lines(
 
     records = [r for m in metas for r in m.get("survey_records", [])]
     if records:
-        projs = ", ".join(
-            f"{r['workunit']} ({r.get('ql', '?')})" for r in records
-        )
+        projs = ", ".join(f"{r['workunit']} ({r.get('ql', '?')})" for r in records)
         # WESM NaT collect dates are stored as null in the pinned record
         # (legacy surveys) — skip them rather than crash the whole preview
         starts = [
@@ -367,19 +362,32 @@ def product_preview(
         if p["kind"] == "elevation":
             hs = _hillshade(arr, dx=p["res_dec"], dy=p["res_dec"])
             ax.imshow(
-                hs, cmap="gray", vmin=0, vmax=1, extent=p["extent"],
+                hs,
+                cmap="gray",
+                vmin=0,
+                vmax=1,
+                extent=p["extent"],
                 interpolation="bilinear",
             )
             im = ax.imshow(
-                arr, cmap=rainbow, alpha=0.5, extent=p["extent"],
-                vmin=elev_clim[0], vmax=elev_clim[1], interpolation="bilinear",
+                arr,
+                cmap=rainbow,
+                alpha=0.5,
+                extent=p["extent"],
+                vmin=elev_clim[0],
+                vmax=elev_clim[1],
+                interpolation="bilinear",
             )
             cb_label = f"Elevation (m, {datum})"
         else:
             data = arr[np.isfinite(arr)]
             vmin, vmax = np.percentile(data, [2, 98]) if data.size else (0, 1)
             im = ax.imshow(
-                arr, cmap="gray", vmin=vmin, vmax=vmax, extent=p["extent"],
+                arr,
+                cmap="gray",
+                vmin=vmin,
+                vmax=vmax,
+                extent=p["extent"],
                 interpolation="bilinear",
             )
             cb_label = "Intensity (DN)"
@@ -398,11 +406,19 @@ def product_preview(
         title = f"{project_dir.parent.name} / merge"
     fig.suptitle(title, fontsize=11, y=0.99)
     fig.text(
-        0.01, 0.01, "\n".join(footer), fontsize=6, family="monospace",
-        va="bottom", ha="left",
+        0.01,
+        0.01,
+        "\n".join(footer),
+        fontsize=6,
+        family="monospace",
+        va="bottom",
+        ha="left",
     )
     fig.subplots_adjust(
-        left=0.01, right=0.99, top=0.9, bottom=0.05 + 0.032 * len(footer),
+        left=0.01,
+        right=0.99,
+        top=0.9,
+        bottom=0.05 + 0.032 * len(footer),
         wspace=0.12,
     )
     fig.savefig(out_fn, dpi=dpi, bbox_inches="tight")
@@ -410,7 +426,7 @@ def product_preview(
     return Path(out_fn)
 
 
-def preview(path: str, max_dim: int = 1600, dpi: int = 300) -> None:
+def preview(path: str, max_dim: int = 1600, dpi: int = 300) -> list[Path]:
     """
     Write preview page(s) for a rasterize output directory, or for every
     project subdirectory (and merge directory) of a rasterize
@@ -425,6 +441,13 @@ def preview(path: str, max_dim: int = 1600, dpi: int = 300) -> None:
         Decimated read size for the long edge, by default 1600 px.
     dpi
         Output PNG resolution, by default 300.
+
+    Returns
+    -------
+    list[Path]
+        The PNGs written by THIS call — callers (e.g. `run`) report these
+        rather than globbing the directory, which could pick up a stale
+        figure from an earlier run.
     """
     p = Path(path)
     written = []
@@ -440,3 +463,4 @@ def preview(path: str, max_dim: int = 1600, dpi: int = 300) -> None:
         print(f"Wrote preview to {fn}")
     if not written:
         print(f"No product mosaics found under {p}")
+    return written

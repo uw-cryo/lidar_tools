@@ -20,10 +20,13 @@ feature and is reached through the tasks below.
     pixi run format             # ruff format (applies changes)
     pixi run typecheck          # mypy src/lidar_tools/
     pixi run check-regressions  # fail only on NEW findings vs baseline
-    pixi run example            # small end-to-end rasterize (UW campus AOI)
+    pixi run example            # small end-to-end run (UW campus AOI)
 
-CLI (cyclopts): `lidar-tools` with `search`, `prepare`, `rasterize`,
-`merge`, `preview`, `fetch-reports`, `report-metrics`.
+CLI (cyclopts): `lidar-tools` with `run` (end-to-end: search ->
+rasterize -> merge -> preview), `search`, `prepare`, `rasterize`,
+`merge`, `preview`, `fetch-reports`, `report-metrics`. `rasterize`'s
+options live in the frozen `RasterizeOpts` dataclass (driver.py),
+shared verbatim with `run` and flattened to top-level CLI flags.
 
 ## Conventions and pitfalls
 
