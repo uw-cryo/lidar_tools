@@ -73,17 +73,31 @@ def _normalize_param(key: str, value):
     directory spelled relatively or with a trailing slash is the same
     value; everything else compares as-is. proj_pipeline is deliberately
     NOT in that set -- it is a PROJ pipeline string ('+proj=pipeline
-    ...'), and resolving it would make the comparison cwd-dependent."""
+    ...'), and resolving it would make the comparison cwd-dependent.
+    CRS-file parameters (src_crs/dst_crs) never reach here: they compare
+    by CRS CONTENT in check_resume_compatible."""
     if value is None:
         return None
-    if key in ("input", "src_crs", "dst_crs"):
-        if key == "input" and value == "EPT_AWS":
+    if key == "input":
+        if value == "EPT_AWS":
             return value
         try:
             return str(Path(value).resolve())
         except OSError:
             return str(value)
     return value
+
+
+def _read_crs_param(value) -> CRS | None:
+    """The CRS content of a CRS-file parameter, or None when the value is
+    unset or the file is missing/unreadable (e.g. a batch directory that
+    was relocated after the run recorded an absolute path)."""
+    if value is None:
+        return None
+    try:
+        return CRS.from_string(Path(value).read_text())
+    except Exception:
+        return None
 
 
 def check_resume_compatible(prior: dict | None, current: dict) -> list[str]:
@@ -120,6 +134,27 @@ def check_resume_compatible(prior: dict | None, current: dict) -> list[str]:
             # e.g. a record written before this parameter was recorded at
             # all: unknowable, not disagreement
             unverifiable.append(key)
+        elif key in ("src_crs", "dst_crs"):
+            # compare by CRS CONTENT, not recorded path: relocating a
+            # batch directory moves its shared WKT file with it, and the
+            # stale absolute path must not block resume (PCD sweep find,
+            # 2026-08-23). An unreadable side is unknowable -> warn lane.
+            if str(prior.get(key)) == str(current.get(key)):
+                continue  # identical value (both None included): no change
+            if (prior.get(key) is None) != (current.get(key) is None):
+                # unset-vs-set IS a change the user made (e.g. adding
+                # --src-crs on re-invoke): block, never warn — resuming
+                # would mix tiles gridded under two source-CRS assumptions
+                mismatched.append((key, prior.get(key), current.get(key)))
+                continue
+            prior_crs = _read_crs_param(prior.get(key))
+            current_crs = _read_crs_param(current.get(key))
+            if prior_crs is None or current_crs is None:
+                # both SET but at least one file unreadable (relocated
+                # batch, unmounted volume): unknowable -> warn lane
+                unverifiable.append(key)
+            elif prior_crs != current_crs:
+                mismatched.append((key, prior.get(key), current.get(key)))
         elif _normalize_param(key, prior.get(key)) != _normalize_param(
             key, current.get(key)
         ):
@@ -993,12 +1028,19 @@ def rasterize_project(
     # separately from real failures
     results: dict[str, list] = {name: [] for name in requested}
     n_empty = 0
+    # per-product no-points outcomes (e.g. no ground-classified points for
+    # the DTM products in an unclassified SfM cloud): legitimate absences,
+    # not tile failures — accounted separately below
+    group_empty_counts: dict[str, int] = dict.fromkeys(requested, 0)
     for tile_result in tile_results:
         if tile_result is None:
             continue
         if tile_result.get("empty"):
             n_empty += 1
             continue
+        for name in tile_result.get("group_empty", []):
+            if name in group_empty_counts:
+                group_empty_counts[name] += 1
         for name, outfn in tile_result["outputs"].items():
             if outfn is not None:
                 results[name].append(outfn)
@@ -1021,7 +1063,11 @@ def rasterize_project(
     }
     data_total = num_pipelines - n_empty
     tile_counts = {
-        product_labels[name]: (len(results[name]), data_total) for name in requested
+        product_labels[name]: (
+            len(results[name]),
+            data_total - group_empty_counts[name],
+        )
+        for name in requested
     }
     summary = ", ".join(
         f"{name}: {ok}/{total}" for name, (ok, total) in tile_counts.items()
@@ -1031,6 +1077,14 @@ def rasterize_project(
             f"{n_empty}/{num_pipelines} tiles had no points (survey does not "
             "cover them); excluded from the mosaics as expected."
         )
+    for name, n in group_empty_counts.items():
+        if n:
+            print(
+                f"{n}/{data_total} data tiles had no points for "
+                f"{product_labels[name]} (filter outcome, e.g. no "
+                "ground-classified points); absent from that mosaic, "
+                "not a failure."
+            )
     n_failed = sum(total - ok for ok, total in tile_counts.values())
     if n_failed:
         print(
@@ -1067,10 +1121,21 @@ def rasterize_project(
         print("****Processing complete (no data)****")
         return
 
-    # Per-product guard: a product whose every data tile failed has nothing
-    # to mosaic — drop it loudly so the surviving products still get their
-    # mosaics instead of crashing on an empty file list here.
-    all_failed = [name for name in requested if not results[name]]
+    # Per-product guard: a product with no tiles has nothing to mosaic.
+    # Distinguish the legitimate case (every data tile was group-empty for
+    # this product — e.g. no ground-classified points anywhere in an
+    # unclassified SfM cloud: informational skip) from real failures
+    # (drop loudly so surviving products still get their mosaics).
+    all_missing = [name for name in requested if not results[name]]
+    all_failed = []
+    for name in all_missing:
+        if data_total > 0 and group_empty_counts[name] >= data_total:
+            print(
+                f"{product_labels[name]}: no points in any data tile "
+                "(filter outcome); product not written."
+            )
+        else:
+            all_failed.append(name)
     if all_failed:
         print(
             "ERROR: no valid tiles for "
@@ -1079,7 +1144,7 @@ def rasterize_project(
             "pipelines).",
             file=sys.stderr,
         )
-        requested = [name for name in requested if results[name]]
+    requested = [name for name in requested if results[name]]
 
     # Mosaicing
     # ===========

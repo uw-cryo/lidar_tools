@@ -2270,15 +2270,20 @@ def execute_tile_job(job: dict, skip_existing: bool = False, attempts: int = 3) 
     -------
     dict
         ``{"empty": bool, "outputs": {product: path | None}}``. ``empty`` is
-        True when the fetch returned zero points (the survey does not cover
-        this tile): a legitimate no-data outcome, not a failure, so no
-        rasters are written and no ERROR is logged. Otherwise ``outputs``
-        maps each product to its tile raster path, or None where that
-        product failed. Never raises (policy: failures/empties are accounted
+        True when the fetch returned zero points, or every product group's
+        own pipeline did (the survey does not cover this tile): a
+        legitimate no-data outcome, not a failure, so no rasters are kept
+        and no ERROR is logged. A zero-count in ONE group marks only that
+        group's products absent — an unclassified (SfM) cloud legitimately
+        yields DSM/intensity but no ground-filtered DTM, and the whole
+        tile must not be discarded for it (CA21_Bunds gate find,
+        2026-08-23). Otherwise ``outputs`` maps each product to its tile
+        raster path, or None where that product failed. Never raises (policy: failures/empties are accounted
         for and reported by the caller; dask retries re-run the job
         idempotently).
     """
     outputs: dict[str, str | None] = {}
+    group_empty: list[str] = []
     pending = []
     for execution in job["executions"]:
         exec_outputs = execution["outputs"]
@@ -2318,6 +2323,7 @@ def execute_tile_job(job: dict, skip_existing: bool = False, attempts: int = 3) 
                 # tile as empty, not failed.
                 print(f"Empty tile {job.get('tile_id')}: 0 points, skipped")
                 return {"empty": True, "outputs": {name: None for name in outputs}}
+        empty_groups = 0
         for execution in pending:
             try:
                 n_points = _execute_pipeline_with_retries(
@@ -2329,16 +2335,25 @@ def execute_tile_job(job: dict, skip_existing: bool = False, attempts: int = 3) 
                     file=sys.stderr,
                 )
                 continue
-            if fetch is None and n_points == 0:
-                # no separate fetch step (single filter-chain group), so this
-                # execution's own point count is the only empty-tile signal.
+            if n_points == 0:
+                # a zero-count group speaks ONLY for its own products: a
+                # filter outcome (no ground-classified points for the DTM
+                # group — unclassified SfM cloud, or an open-water/canopy
+                # tile on the EPT path) while other groups have data. On
+                # the fetch path the cache already proved the tile has
+                # points, so a zero here is always a filter outcome.
                 # Its writers still produced full-size CRS-less nodata
-                # rasters — remove them and report the tile as empty, not
-                # failed (mirrors the fetch-path check above).
-                print(f"Empty tile {job.get('tile_id')}: 0 points, skipped")
-                for fn in execution["outputs"].values():
+                # rasters — remove them and mark these products absent.
+                empty_groups += 1
+                group_empty.extend(execution["outputs"])
+                print(
+                    f"Empty group in tile {job.get('tile_id')}: 0 points for "
+                    f"{sorted(execution['outputs'])}, skipped"
+                )
+                for name, fn in execution["outputs"].items():
                     Path(fn).unlink(missing_ok=True)
-                return {"empty": True, "outputs": {name: None for name in outputs}}
+                    outputs[name] = None
+                continue
             for name, fn in execution["outputs"].items():
                 if check_raster_validity(fn):
                     outputs[name] = fn
@@ -2351,7 +2366,16 @@ def execute_tile_job(job: dict, skip_existing: bool = False, attempts: int = 3) 
     finally:
         if cache_file:
             Path(cache_file).unlink(missing_ok=True)
-    return {"empty": False, "outputs": outputs}
+    if pending and empty_groups == len(pending) and not any(outputs.values()):
+        # every product group came back point-free AND nothing was carried
+        # by resume: the survey genuinely has nothing in this tile
+        # (mirrors the fetch-path verdict). With resumed outputs present,
+        # fall through — the tile has data, only these groups are empty.
+        print(f"Empty tile {job.get('tile_id')}: 0 points, skipped")
+        return {"empty": True, "outputs": {name: None for name in outputs}}
+    # group_empty lets the caller count these as no-points outcomes for
+    # those products, not as tile failures
+    return {"empty": False, "outputs": outputs, "group_empty": group_empty}
 
 
 def rename_rasters(raster_fn, out_fn) -> None:

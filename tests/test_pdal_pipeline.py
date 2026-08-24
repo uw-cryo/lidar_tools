@@ -508,3 +508,65 @@ def test_proj_pipeline_string_is_not_treated_as_a_path():
         pdal_pipeline.check_resume_compatible(prior, _resume_params(proj_pipeline=pipe))
         == []
     )
+
+
+def _wkt_file(tmp_path, name, epsg):
+    import pyproj
+
+    fn = tmp_path / name
+    fn.parent.mkdir(parents=True, exist_ok=True)
+    fn.write_text(pyproj.CRS.from_epsg(epsg).to_wkt())
+    return str(fn)
+
+
+def test_resume_compares_dst_crs_by_content_not_path(tmp_path):
+    """A relocated batch dir moves its WKT with it: same CRS content at a
+    new path must resume (PCD-sweep find: the path-string comparison
+    blocked every project after the batch moved to another volume)."""
+    from lidar_tools import pdal_pipeline
+
+    old = _wkt_file(tmp_path / "old_loc", "UTM_12N.wkt", 32612)
+    new = _wkt_file(tmp_path / "new_loc", "UTM_12N.wkt", 32612)
+    (tmp_path / "old_loc").mkdir(exist_ok=True)
+    prior = _resume_params(dst_crs=old)
+    current = _resume_params(dst_crs=new)
+    assert pdal_pipeline.check_resume_compatible(prior, current) == []
+
+
+def test_resume_stale_crs_path_warns_instead_of_blocking(tmp_path):
+    """When the recorded dst_crs file no longer exists (moved batch, old
+    volume unmounted) the value is unknowable: warn lane, never a block."""
+    from lidar_tools import pdal_pipeline
+
+    new = _wkt_file(tmp_path, "UTM_12N.wkt", 32612)
+    prior = _resume_params(dst_crs=str(tmp_path / "gone" / "UTM_12N.wkt"))
+    current = _resume_params(dst_crs=new)
+    assert pdal_pipeline.check_resume_compatible(prior, current) == ["dst_crs"]
+
+
+def test_resume_rejects_genuinely_different_dst_crs(tmp_path):
+    import pytest
+
+    from lidar_tools import pdal_pipeline
+
+    a = _wkt_file(tmp_path, "UTM_12N.wkt", 32612)
+    b = _wkt_file(tmp_path, "UTM_13N.wkt", 32613)
+    with pytest.raises(ValueError, match="dst_crs"):
+        pdal_pipeline.check_resume_compatible(
+            _resume_params(dst_crs=a), _resume_params(dst_crs=b)
+        )
+
+
+def test_resume_blocks_unset_to_set_crs_change(tmp_path):
+    """Adding --src-crs on re-invoke is a user CHANGE, not an unverifiable
+    record: it must block (round-3 finding — the content-compare branch
+    briefly routed None-vs-set to the warn lane)."""
+    import pytest
+
+    from lidar_tools import pdal_pipeline
+
+    new = _wkt_file(tmp_path, "override.wkt", 32612)
+    with pytest.raises(ValueError, match="src_crs"):
+        pdal_pipeline.check_resume_compatible(
+            _resume_params(src_crs=None), _resume_params(src_crs=new)
+        )
