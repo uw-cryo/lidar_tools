@@ -1105,13 +1105,29 @@ def rasterize_project(
             f"No data produced for this AOI (readers: {num_pipelines}, "
             f"empty tiles: {n_empty}); the survey likely does not cover it. "
             "Skipping mosaic/reprojection; no products written."
+            if not any(group_empty_counts.values())
+            # tiles HAVE points — every requested product just filtered
+            # to zero everywhere (e.g. --products dtm on an unclassified
+            # cloud): say so instead of claiming the survey is absent.
+            # Both notes keep the "no data" marker the batch driver
+            # matches to flag product-less completions.
+            else (
+                f"No products written: all {len(requested)} requested "
+                "product(s) had 0 points after filtering in every data "
+                "tile (e.g. no ground-classified points). Skipping "
+                "mosaic/reprojection."
+            )
         )
         _update_processing_metadata(
             outdir,
             "run_status",
             {
                 "state": "completed",
-                "note": "no data (survey does not cover AOI)",
+                "note": (
+                    "no data (survey does not cover AOI)"
+                    if not any(group_empty_counts.values())
+                    else "no data (all points filtered for the requested products)"
+                ),
                 "timestamp": datetime.now().astimezone().isoformat(),
             },
             filename_prefix=filename_prefix,
