@@ -201,20 +201,14 @@ def test_decode_tile_footprints_default_epsg_zone_range():
     import pytest
 
     # Aleutian wrap-around zones: 59N/60N are EPSG:6328/6329, NOT 6329+zone
-    z60 = staging.decode_tile_footprints(
-        ["https://x/USGS_LPC_AK_Foo_60VSA123456.laz"]
-    )
+    z60 = staging.decode_tile_footprints(["https://x/USGS_LPC_AK_Foo_60VSA123456.laz"])
     assert z60.crs.to_epsg() == 6329
-    z59 = staging.decode_tile_footprints(
-        ["https://x/USGS_LPC_AK_Foo_59VMA123456.laz"]
-    )
+    z59 = staging.decode_tile_footprints(["https://x/USGS_LPC_AK_Foo_59VMA123456.laz"])
     assert z59.crs.to_epsg() == 6328
     # zones without a NAD83(2011) UTM code (6329+zone would land on an
     # unrelated State Plane CRS) refuse to guess — e.g. Guam, zone 55P
     with pytest.raises(ValueError, match="no default NAD83\\(2011\\)"):
-        staging.decode_tile_footprints(
-            ["https://x/USGS_LPC_GU_Foo_55PDB123456.laz"]
-        )
+        staging.decode_tile_footprints(["https://x/USGS_LPC_GU_Foo_55PDB123456.laz"])
 
 
 def test_reconcile_tile_sources_tesm_unavailable():

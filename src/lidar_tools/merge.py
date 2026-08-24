@@ -196,7 +196,8 @@ def _apply_vrt_normalization(vrt_fn: Path, params: list[dict]) -> None:
             # confusing failure further downstream
             raise ValueError(f"{vrt_fn.name}: VRT source without a filename")
         key = (
-            (vrt_fn.parent / el.text) if el.get("relativeToVRT") == "1"
+            (vrt_fn.parent / el.text)
+            if el.get("relativeToVRT") == "1"
             else Path(el.text)
         ).resolve()
         if key not in by_path:
@@ -217,7 +218,6 @@ def _apply_vrt_normalization(vrt_fn: Path, params: list[dict]) -> None:
             f"{src_hi:.10g}:{INTENSITY_TARGET[1]:g}"
         )
     tree.write(vrt_fn)
-
 
 
 def _relativize_vrt_sources(vrt_fn: Path) -> None:
@@ -362,8 +362,7 @@ def merge_projects(
         )
         if norm_params:
             detail = ", ".join(
-                f"{Path(p['source']).parent.name}: {p['method']}"
-                for p in norm_params
+                f"{Path(p['source']).parent.name}: {p['method']}" for p in norm_params
             )
             print(
                 f"  intensity normalized to common range "

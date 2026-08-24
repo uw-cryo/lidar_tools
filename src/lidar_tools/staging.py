@@ -217,7 +217,9 @@ def count_links_tiles_in_bbox(links: list[str], aoi_gdf: gpd.GeoDataFrame) -> in
     return total
 
 
-def load_tesm_tiles(aoi_gdf: gpd.GeoDataFrame, tesm_source: str = TESM_URL) -> gpd.GeoDataFrame:
+def load_tesm_tiles(
+    aoi_gdf: gpd.GeoDataFrame, tesm_source: str = TESM_URL
+) -> gpd.GeoDataFrame:
     """
     Read LPC_TESM tile-extent polygons intersecting the AOI bounds (remote
     bbox read over /vsicurl, same pattern as `catalog.load_wesm`). TESM rows
@@ -233,7 +235,9 @@ def load_tesm_tiles(aoi_gdf: gpd.GeoDataFrame, tesm_source: str = TESM_URL) -> g
     return gpd.read_file(src, bbox=bbox)
 
 
-def attach_workunits(tesm_gdf: gpd.GeoDataFrame, wesm_gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+def attach_workunits(
+    tesm_gdf: gpd.GeoDataFrame, wesm_gdf: gpd.GeoDataFrame
+) -> gpd.GeoDataFrame:
     """Map WESM workunit names onto TESM rows via ``workunit_id`` (never names)."""
     out = tesm_gdf.copy()
     lookup = dict(zip(wesm_gdf["workunit_id"], wesm_gdf["workunit"]))
@@ -248,9 +252,11 @@ def fetch_links_file(lpc_link: str, opener=None) -> list[str]:
     """
     url = str(lpc_link).rstrip("/") + "/0_file_download_links.txt"
     if opener is None:
+
         def opener(u):
             with urllib.request.urlopen(u, timeout=60) as r:
                 return r.read().decode()
+
     text = opener(url)
     return [line.strip() for line in text.splitlines() if line.strip()]
 
@@ -420,9 +426,7 @@ def prepare(
         # the manifest drives full rasterize runs, and a false hit costs
         # hours of tiling for a 'completed (no data)' outcome
         aoi_union = aoi.to_crs(wesm.crs).union_all()
-        wu_list = sorted(
-            wesm.loc[wesm.intersects(aoi_union), "workunit"].astype(str)
-        )
+        wu_list = sorted(wesm.loc[wesm.intersects(aoi_union), "workunit"].astype(str))
     else:
         wu_list = [w.strip() for w in str(workunits).split(",") if w.strip()]
     if not wu_list:
@@ -453,8 +457,13 @@ def prepare(
             links_counts[wu] = None  # attempted and failed != zero tiles
             print(f"WARNING: links file unavailable for {wu} ({e})")
     manifest = build_site_manifest(
-        geometry, wu_list, wesm, output,
-        ept_gdf=ept, tesm_counts=tesm_counts, links_counts=links_counts,
+        geometry,
+        wu_list,
+        wesm,
+        output,
+        ept_gdf=ept,
+        tesm_counts=tesm_counts,
+        links_counts=links_counts,
     )
     out_fn = Path(output) / "site_manifest.yaml"
     write_site_manifest(manifest, out_fn)
