@@ -570,3 +570,29 @@ def test_resume_blocks_unset_to_set_crs_change(tmp_path):
         pdal_pipeline.check_resume_compatible(
             _resume_params(src_crs=None), _resume_params(src_crs=new)
         )
+
+
+def test_check_polygon_area_accepts_multi_feature_aoi(capsys):
+    """A two-feature AOI (e.g. envelope + parcel) used to raise 'The truth
+    value of an array with more than one element is ambiguous' from the
+    per-row comparison; the check now sums the features."""
+    gf = gpd.GeoDataFrame(
+        geometry=[
+            Polygon.from_bounds(0, 0, 0.001, 0.001),
+            Polygon.from_bounds(0, 0, 0.0005, 0.0005),
+        ],
+        crs="EPSG:4326",
+    )
+    lidar_tools.pdal_pipeline._check_polygon_area(gf)
+    out = capsys.readouterr().out
+    assert "Starting Processing of" in out
+    # summed, not the first row: 0.0123 + 0.0031 km2
+    assert "0.02 km^2" in out
+
+
+def test_geographic_area_is_the_geodesy_helper():
+    # one area function for the whole package (catalog cannot import
+    # pdal_pipeline, so the helper lives in geodesy and is re-exported here)
+    assert (
+        lidar_tools.pdal_pipeline.geographic_area is lidar_tools.geodesy.geographic_area
+    )

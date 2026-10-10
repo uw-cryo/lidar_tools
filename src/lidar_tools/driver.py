@@ -13,6 +13,7 @@ consume every run the same way.
 """
 
 import sys
+import traceback
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -326,6 +327,38 @@ def rasterize(
     _raise_on_failed(status)
 
 
+def _read_aoi(geometry: str) -> gpd.GeoDataFrame:
+    """
+    Read the AOI file and normalize it to ONE feature. `search` and the
+    engine's AOI fingerprint already union a multi-feature file, so the
+    whole chain agrees on what the AOI is; a per-feature frame leaking
+    further would fail late (and opaquely) in per-row truth tests.
+    """
+    gdf = gpd.read_file(geometry)
+    if len(gdf) > 1:
+        print(
+            f"WARNING: AOI file {geometry} has {len(gdf)} features; "
+            "processing their union as one AOI",
+            file=sys.stderr,
+        )
+        gdf = gpd.GeoDataFrame(geometry=[gdf.geometry.union_all()], crs=gdf.crs)
+    return gdf
+
+
+def _write_run_error(outdir: Path) -> Path:
+    """Write the current exception's traceback to <project>/run_error.txt
+    (created if the engine failed before making the directory); returns
+    the path. Never raises -- an unwritable error file must not mask the
+    original failure."""
+    error_fn = outdir / "run_error.txt"
+    try:
+        outdir.mkdir(parents=True, exist_ok=True)
+        error_fn.write_text(traceback.format_exc())
+    except OSError as write_err:
+        print(f"WARNING: could not write {error_fn}: {write_err}", file=sys.stderr)
+    return error_fn
+
+
 def _rasterize_batch(
     geometry: str, output: str, opts: RasterizeOpts
 ) -> tuple[dict[str, str], dict[str, str]]:
@@ -366,7 +399,7 @@ def _rasterize_batch(
             "output directory really is named with a comma, create it "
             "first.)"
         )
-    gdf = gpd.read_file(geometry)
+    gdf = _read_aoi(geometry)
     keys, wesm_gdf, ept_gdf = _resolve_projects(opts.projects, opts.input, gdf)
 
     if len(keys) > 1 and (opts.src_crs or opts.proj_pipeline):
@@ -452,8 +485,13 @@ def _rasterize_batch(
             else:
                 status[dirname] = "completed"
         except Exception as e:
-            # one failed project must not take down the rest of the batch
-            print(f"ERROR: {dirname} failed: {e}")
+            # one failed project must not take down the rest of the batch.
+            # The one-line summary goes to the batch record; the traceback
+            # goes to the project dir, because str(e) alone has left the
+            # cause unlocatable ("truth value of an array ... is
+            # ambiguous", with no hint of which line).
+            error_fn = _write_run_error(outdir)
+            print(f"ERROR: {dirname} failed: {e} (traceback: {error_fn})")
             status[dirname] = f"failed: {e}"
 
     # Carry forward projects from earlier invocations into the same batch

@@ -31,6 +31,8 @@ import geopandas as gpd
 import numpy as np
 import pandas as pd
 
+from lidar_tools import geodesy
+
 WESM_URL = (
     "https://prd-tnm.s3.amazonaws.com/StagedProducts/Elevation/metadata/WESM.gpkg"
 )
@@ -234,21 +236,6 @@ def resolve_ept_resource(workunit: str, ept_gdf) -> dict:
     )
 
 
-def _equal_area_m2(geom) -> float:
-    """Area of an EPSG:4326 geometry in m2, measured in the EPSG:6933
-    equal-area projection. Coverage/gap fractions must never ratio raw
-    degree2 areas: cos(latitude) weighting skews them for large or
-    high-latitude AOIs (an Alaska AOI's northern half is materially
-    smaller than its southern half in true area)."""
-    # zero degree2 area (empty, point, line) is zero true area: skip the
-    # projection rather than round-trip a degenerate geometry
-    if geom.is_empty or geom.area == 0.0:
-        return 0.0
-    return float(
-        gpd.GeoSeries([geom], crs="EPSG:4326").to_crs("EPSG:6933").area.iloc[0]
-    )
-
-
 def summarize_surveys(
     wesm_gdf: gpd.GeoDataFrame,
     aoi_gdf: gpd.GeoDataFrame,
@@ -285,14 +272,14 @@ def summarize_surveys(
     if w.empty:
         return w
 
-    aoi_area = _equal_area_m2(aoi)
+    aoi_area = geodesy.geodesic_area_m2(aoi)
     if aoi_area == 0:
         raise ValueError(
             "AOI has zero area (point/line geometry?) — coverage fractions "
             "are undefined"
         )
     w["aoi_overlap_frac"] = w.geometry.apply(
-        lambda g: _equal_area_m2(g.intersection(aoi)) / aoi_area
+        lambda g: geodesy.geodesic_area_m2(g.intersection(aoi)) / aoi_area
     )
 
     ept_names: list = []
@@ -303,12 +290,12 @@ def summarize_surveys(
             footprint = g.intersection(aoi)
             hits = e[e.intersects(footprint)]
             ept_names.append(sorted(hits["name"].tolist()))
-            footprint_area = _equal_area_m2(footprint)
+            footprint_area = geodesy.geodesic_area_m2(footprint)
             if footprint_area == 0:
                 ept_cov.append(0.0)
             else:
                 covered = hits.union_all().intersection(footprint)
-                ept_cov.append(_equal_area_m2(covered) / footprint_area)
+                ept_cov.append(geodesy.geodesic_area_m2(covered) / footprint_area)
     else:
         ept_names = [None] * len(w)
         ept_cov = [None] * len(w)
@@ -686,7 +673,7 @@ def plot_coverage(
 
     # numbers = proposed inclusion priority (1 = anchor); draw larger
     # footprints first so smaller ones stay visible on top
-    draw_order = surveys.geometry.area.sort_values(ascending=False).index
+    draw_order = geodesy.geographic_area(surveys).sort_values(ascending=False).index
     n_lines = len(surveys) + surveys["epoch"].nunique() + 3
     # centered map on top, single-line legend grouped by epoch below
     text_in = 0.17 * n_lines + 0.3
@@ -741,7 +728,12 @@ def plot_coverage(
     # distance from it
     by_priority = surveys.sort_values("priority")
     anchor_epoch = by_priority[by_priority["anchor"]]["epoch"].iloc[0]
-    epoch_dt = by_priority.groupby("epoch")["dt_years"].apply(lambda v: v.abs().min())
+    # dt_years is None for undated collections (object dtype): coerce as
+    # rank_collections does, or the map crashes on the very catalog
+    # entries #89 made the ranking tolerate
+    epoch_dt = by_priority.groupby("epoch")["dt_years"].apply(
+        lambda v: pd.to_numeric(v, errors="coerce").abs().min()
+    )
     epoch_order = sorted(
         epoch_dt.index,
         key=lambda e: (
@@ -886,13 +878,13 @@ def coverage_gaps(
     if gap.is_empty:
         return gpd.GeoDataFrame({"gap_frac": []}, geometry=[], crs="EPSG:4326")
     parts = list(gap.geoms) if hasattr(gap, "geoms") else [gap]
-    aoi_area = _equal_area_m2(aoi)
+    aoi_area = geodesy.geodesic_area_m2(aoi)
     if aoi_area == 0:
         raise ValueError(
             "AOI has zero area (point/line geometry?) — gap fractions are undefined"
         )
     return gpd.GeoDataFrame(
-        {"gap_frac": [_equal_area_m2(p) / aoi_area for p in parts]},
+        {"gap_frac": [geodesy.geodesic_area_m2(p) / aoi_area for p in parts]},
         geometry=parts,
         crs="EPSG:4326",
     )

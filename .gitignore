@@ -9,6 +9,9 @@ tests/debug.ipynb
 sandbox/*
 !sandbox/README.md
 
+# drafts of issues/PR text are reviewed and posted, never shipped
+docs/upstream_drafts/
+
 # local untracked review/ staging dirs
 /review/
 /review_superseded/

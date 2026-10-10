@@ -19,6 +19,9 @@ import subprocess
 import sys
 from pathlib import Path
 
+import geopandas as gpd
+import numpy as np
+import pandas as pd
 import pyproj.datadir
 import pyproj.network
 from osgeo import gdal
@@ -27,6 +30,7 @@ from pyproj.aoi import AreaOfInterest
 from pyproj.crs import CompoundCRS, ProjectedCRS
 from pyproj.crs.coordinate_operation import UTMConversion
 from pyproj.transformer import TransformerGroup
+from shapely.geometry.polygon import orient as _orient
 
 gdal.UseExceptions()
 
@@ -64,6 +68,96 @@ GEOID_GRID_HINTS = {
     "GEOID03": "geoid03",
     "GEOID99": "geoid99",
 }
+
+
+def geodesic_area_m2(geom, crs="EPSG:4326") -> float:
+    """
+    Area of one shapely geometry in m2, computed geodesically on the
+    ellipsoid of ``crs`` (pyproj.Geod.geometry_area_perimeter).
+
+    This is the ONE area measure for every AOI/footprint fraction in the
+    package: it is correct at any latitude and size with no projection
+    choice, so coverage, gap, and overlap fractions never ratio degree2
+    areas (cos-latitude skew) or depend on a hard-coded equal-area
+    projection.
+
+    Parameters
+    ----------
+    geom
+        shapely geometry in ``crs`` coordinates. Polygons (holes
+        subtracted), MultiPolygons, and GeometryCollections (polygonal
+        parts summed) are measured; points, lines, and empty geometries
+        have zero area.
+    crs
+        Geographic CRS whose ellipsoid defines the geodesic; anything
+        pyproj.CRS accepts.
+
+    Returns
+    -------
+    float
+        Area in m2 (>= 0).
+
+    Notes
+    -----
+    Valid for geometries up to half the globe
+    (https://github.com/pyproj4/pyproj/issues/1401).
+    """
+    crs_obj = CRS.from_user_input(crs)
+    if not crs_obj.is_geographic:
+        raise TypeError(
+            f"geodesic_area_m2 requires a geographic CRS, got {crs_obj.name}"
+        )
+    geod = crs_obj.get_geod()
+    if geod is None:  # a geographic CRS always carries an ellipsoid
+        raise TypeError(f"no ellipsoid available for CRS {crs_obj.name}")
+
+    def _area(g) -> float:
+        if g.is_empty:
+            return 0.0
+        if g.geom_type == "Polygon":
+            # orient to a counter-clockwise exterior so the signed area is
+            # positive; geometry_area_perimeter returns (area, perimeter)
+            # with interior rings already subtracted
+            return float(geod.geometry_area_perimeter(_orient(g, 1))[0])
+        if hasattr(g, "geoms"):
+            # MultiPolygon or GeometryCollection: polygonal parts only
+            return float(sum(_area(part) for part in g.geoms))
+        return 0.0  # Point / LineString / LinearRing
+
+    return _area(geom)
+
+
+def geographic_area(gf: gpd.GeoDataFrame) -> pd.Series:
+    """
+    Geodesic area of each geometry in a GeoDataFrame in m2 (see
+    geodesic_area_m2).
+
+    Parameters
+    ----------
+    gf
+        GeoDataFrame or GeoSeries with a geographic CRS (latitude and
+        longitude).
+
+    Returns
+    -------
+    pd.Series
+        Area of each geometry in m2; NaN for non-polygonal geometries.
+
+    Raises
+    ------
+    TypeError
+        If the frame has no CRS or a projected one.
+    """
+    if gf.crs is None or not gf.crs.is_geographic:
+        msg = "This function requires a GeoDataFrame with gf.crs.is_geographic==True"
+        raise TypeError(msg)
+
+    def area_calc(geom):
+        if geom.geom_type not in ["MultiPolygon", "Polygon"]:
+            return np.nan
+        return geodesic_area_m2(geom, gf.crs)
+
+    return gf.geometry.apply(area_calc)
 
 
 def geographic_base_epsg(crs_input) -> int:

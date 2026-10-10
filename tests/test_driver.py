@@ -479,3 +479,51 @@ def test_batch_status_carries_forward_after_relocation(tmp_path, aoi_file, monke
     )
     projects = yaml.safe_load((out / "batch_status.yaml").read_text())["projects"]
     assert set(projects) == {"WU_A", "WU_B"}
+
+
+def test_multi_feature_aoi_is_unioned_with_warning(tmp_path, monkeypatch, capsys):
+    """An AOI file with two features (envelope + parcel) ran `search` fine
+    but failed late in rasterize with an opaque numpy error. The driver
+    now unions it to one feature and says so."""
+    fn = tmp_path / "two.geojson"
+    gpd.GeoDataFrame(
+        geometry=[
+            shapely.box(-122.32, 47.64, -122.30, 47.66),
+            shapely.box(-122.315, 47.645, -122.305, 47.655),
+        ],
+        crs="EPSG:4326",
+    ).to_file(fn, driver="GeoJSON")
+    seen = []
+    monkeypatch.setattr(driver, "rasterize_project", lambda **kw: seen.append(kw))
+    _rasterize(str(fn), str(tmp_path / "batch"), projects="WU_A")
+    assert len(seen) == 1
+    assert "has 2 features" in capsys.readouterr().err
+    gdf = driver._read_aoi(str(fn))
+    assert len(gdf) == 1
+    assert gdf.geometry.iloc[0].equals(shapely.box(-122.32, 47.64, -122.30, 47.66))
+    # a one-feature file is passed through untouched
+    one_fn = tmp_path / "one.geojson"
+    gpd.GeoDataFrame(geometry=[shapely.box(0, 0, 1, 1)], crs="EPSG:4326").to_file(
+        one_fn, driver="GeoJSON"
+    )
+    assert len(driver._read_aoi(str(one_fn))) == 1
+
+
+def test_project_failure_writes_traceback_file(tmp_path, aoi_file, monkeypatch):
+    def fake_rasterize(**kw):
+        if kw["threedep_project"] == "WU_A":
+            raise RuntimeError("boom")
+
+    monkeypatch.setattr(driver, "rasterize_project", fake_rasterize)
+    outbase = tmp_path / "batch"
+    with pytest.raises(RuntimeError, match="1/2 project runs failed"):
+        _rasterize(aoi_file, str(outbase), projects="WU_A, WU_B")
+    # the batch record keeps the one-line summary; the traceback lives
+    # with the project, even though the stub never created its directory
+    error_fn = outbase / "WU_A" / "run_error.txt"
+    text = error_fn.read_text()
+    assert "Traceback (most recent call last)" in text
+    assert "RuntimeError: boom" in text
+    assert not (outbase / "WU_B" / "run_error.txt").exists()
+    status = yaml.safe_load((outbase / "batch_status.yaml").read_text())
+    assert status["projects"]["WU_A"] == "failed: boom"
