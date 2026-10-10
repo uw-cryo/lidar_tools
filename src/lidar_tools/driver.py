@@ -341,6 +341,16 @@ def _write_run_error(outdir: Path) -> Path:
     return error_fn
 
 
+def _clear_run_error(outdir: Path) -> None:
+    """Remove a stale <project>/run_error.txt after a successful run; never
+    raises (a diagnostic that cannot be removed is reported, not fatal)."""
+    error_fn = outdir / "run_error.txt"
+    try:
+        error_fn.unlink(missing_ok=True)
+    except OSError as rm_err:
+        print(f"WARNING: could not remove stale {error_fn}: {rm_err}", file=sys.stderr)
+
+
 def _rasterize_batch(
     geometry: str, output: str, opts: RasterizeOpts
 ) -> tuple[dict[str, str], dict[str, str]]:
@@ -453,8 +463,10 @@ def _rasterize_batch(
             )
             # a retry into the same directory (resume defaults on) that
             # succeeds must not leave the earlier attempt's traceback
-            # contradicting the completed record
-            (outdir / "run_error.txt").unlink(missing_ok=True)
+            # contradicting the completed record. Best-effort, like
+            # writing it: a cleanup failure must not turn a completed
+            # run into a recorded failure.
+            _clear_run_error(outdir)
             # a clean return is NOT proof of products: a 0-reader run
             # records "no data" in its run_status note and must never be
             # reported as a plain success in the batch. Match the specific

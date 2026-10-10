@@ -549,3 +549,19 @@ def test_retry_success_removes_stale_run_error(tmp_path, aoi_file, monkeypatch):
     assert not error_fn.exists()
     status = yaml.safe_load((outbase / "batch_status.yaml").read_text())
     assert status["projects"]["WU_A"] == "completed"
+
+
+def test_unremovable_run_error_does_not_fail_a_completed_run(
+    tmp_path, aoi_file, monkeypatch, capsys
+):
+    """Stale-traceback cleanup is best-effort: a successful project whose
+    run_error.txt cannot be removed is still recorded as completed."""
+    monkeypatch.setattr(driver, "rasterize_project", lambda **kw: None)
+    outbase = tmp_path / "batch"
+    stale = outbase / "WU_A" / "run_error.txt"
+    stale.mkdir(parents=True)  # a directory where the file should be
+    (stale / "keep").write_text("x")  # non-empty: unlink raises OSError
+    _rasterize(aoi_file, str(outbase), projects="WU_A")
+    status = yaml.safe_load((outbase / "batch_status.yaml").read_text())
+    assert status["projects"]["WU_A"] == "completed"
+    assert "could not remove stale" in capsys.readouterr().err

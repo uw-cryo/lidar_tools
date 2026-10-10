@@ -705,3 +705,41 @@ def test_geographic_area_requires_geographic_crs():
         geodesy.geodesic_area_m2(shapely.box(0, 0, 1, 1), crs="EPSG:32610")
     with pytest.raises(TypeError, match="is_geographic"):
         geodesy.geographic_area(gf.to_crs("EPSG:32631"))
+
+
+def test_geodesic_area_is_positive_across_the_antimeridian():
+    """A polygon stored with wrapped longitudes (170 -> -170) is traversed
+    the opposite way on the ellipsoid, and the signed result came back
+    negated (holes included); the helper must return the enclosed area
+    regardless of how the longitudes are stored."""
+
+    def poly(x0):  # 20 x 5 degree exterior with a 10 x 3 degree hole
+        return shapely.Polygon(
+            shapely.box(x0, 50, x0 + 20, 55).exterior.coords,
+            [shapely.box(x0 + 5, 51, x0 + 15, 54).exterior.coords],
+        )
+
+    def wrap(g):
+        return shapely.transform(
+            g, lambda c: np.column_stack([((c[:, 0] + 180) % 360) - 180, c[:, 1]])
+        )
+
+    reference = geodesy.geodesic_area_m2(poly(100))  # nowhere near 180
+    unwrapped = geodesy.geodesic_area_m2(poly(170))  # 170..190
+    wrapped = geodesy.geodesic_area_m2(wrap(poly(170)))  # 170..-170
+    assert reference > 0
+    assert unwrapped == pytest.approx(reference)
+    assert wrapped == pytest.approx(reference)
+    # the Aleutian shape: a MultiPolygon split at the antimeridian, vs the
+    # same two halves shifted 70 degrees west (an exact symmetry; a single
+    # 20-degree box is NOT equivalent, its long geodesic edges enclose
+    # ~0.7% more at this latitude)
+    split = shapely.MultiPolygon(
+        [shapely.box(170, 50, 180, 55), shapely.box(-180, 50, -170, 55)]
+    )
+    shifted = shapely.MultiPolygon(
+        [shapely.box(100, 50, 110, 55), shapely.box(110, 50, 120, 55)]
+    )
+    assert geodesy.geodesic_area_m2(split) == pytest.approx(
+        geodesy.geodesic_area_m2(shifted)
+    )

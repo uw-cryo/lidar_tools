@@ -115,10 +115,16 @@ def geodesic_area_m2(geom, crs="EPSG:4326") -> float:
         if g.is_empty:
             return 0.0
         if g.geom_type == "Polygon":
-            # orient to a counter-clockwise exterior so the signed area is
-            # positive; geometry_area_perimeter returns (area, perimeter)
-            # with interior rings already subtracted
-            return float(geod.geometry_area_perimeter(_orient(g, 1))[0])
+            # geometry_area_perimeter returns a SIGNED (area, perimeter)
+            # with interior rings already subtracted. Planar orientation
+            # does not fix the sign for a polygon that crosses the
+            # antimeridian with wrapped longitudes (170 -> -170): the
+            # geodesic edges take the short way, so the planar-CCW ring
+            # is traversed clockwise on the ellipsoid and the whole
+            # result (holes included) comes back negated. abs() is exact
+            # for anything smaller than a hemisphere (the documented
+            # limit); Aleutian AOIs are a supported case (staging.py).
+            return abs(float(geod.geometry_area_perimeter(_orient(g, 1))[0]))
         if hasattr(g, "geoms"):
             # MultiPolygon or GeometryCollection: polygonal parts only
             return float(sum(_area(part) for part in g.geoms))
