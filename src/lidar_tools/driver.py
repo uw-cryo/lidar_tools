@@ -23,7 +23,7 @@ import geopandas as gpd
 import yaml
 
 from lidar_tools import catalog, geodesy
-from lidar_tools.pdal_pipeline import rasterize_project
+from lidar_tools.pdal_pipeline import rasterize_project, read_aoi
 
 
 def _project_run_status(outdir: Path) -> dict:
@@ -327,24 +327,6 @@ def rasterize(
     _raise_on_failed(status)
 
 
-def _read_aoi(geometry: str) -> gpd.GeoDataFrame:
-    """
-    Read the AOI file and normalize it to ONE feature. `search` and the
-    engine's AOI fingerprint already union a multi-feature file, so the
-    whole chain agrees on what the AOI is; a per-feature frame leaking
-    further would fail late (and opaquely) in per-row truth tests.
-    """
-    gdf = gpd.read_file(geometry)
-    if len(gdf) > 1:
-        print(
-            f"WARNING: AOI file {geometry} has {len(gdf)} features; "
-            "processing their union as one AOI",
-            file=sys.stderr,
-        )
-        gdf = gpd.GeoDataFrame(geometry=[gdf.geometry.union_all()], crs=gdf.crs)
-    return gdf
-
-
 def _write_run_error(outdir: Path) -> Path:
     """Write the current exception's traceback to <project>/run_error.txt
     (created if the engine failed before making the directory); returns
@@ -399,7 +381,7 @@ def _rasterize_batch(
             "output directory really is named with a comma, create it "
             "first.)"
         )
-    gdf = _read_aoi(geometry)
+    gdf = read_aoi(geometry)  # one feature, same normalization as the engine
     keys, wesm_gdf, ept_gdf = _resolve_projects(opts.projects, opts.input, gdf)
 
     if len(keys) > 1 and (opts.src_crs or opts.proj_pipeline):
@@ -469,6 +451,10 @@ def _rasterize_batch(
                 wesm_gdf=wesm_gdf,
                 ept_index_gdf=ept_gdf,
             )
+            # a retry into the same directory (resume defaults on) that
+            # succeeds must not leave the earlier attempt's traceback
+            # contradicting the completed record
+            (outdir / "run_error.txt").unlink(missing_ok=True)
             # a clean return is NOT proof of products: a 0-reader run
             # records "no data" in its run_status note and must never be
             # reported as a plain success in the batch. Match the specific

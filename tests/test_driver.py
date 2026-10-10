@@ -3,7 +3,7 @@ import pytest
 import shapely
 import yaml
 
-from lidar_tools import driver
+from lidar_tools import driver, pdal_pipeline
 
 
 def _rasterize(geometry, output, **kw):
@@ -498,7 +498,7 @@ def test_multi_feature_aoi_is_unioned_with_warning(tmp_path, monkeypatch, capsys
     _rasterize(str(fn), str(tmp_path / "batch"), projects="WU_A")
     assert len(seen) == 1
     assert "has 2 features" in capsys.readouterr().err
-    gdf = driver._read_aoi(str(fn))
+    gdf = pdal_pipeline.read_aoi(str(fn))
     assert len(gdf) == 1
     assert gdf.geometry.iloc[0].equals(shapely.box(-122.32, 47.64, -122.30, 47.66))
     # a one-feature file is passed through untouched
@@ -506,7 +506,7 @@ def test_multi_feature_aoi_is_unioned_with_warning(tmp_path, monkeypatch, capsys
     gpd.GeoDataFrame(geometry=[shapely.box(0, 0, 1, 1)], crs="EPSG:4326").to_file(
         one_fn, driver="GeoJSON"
     )
-    assert len(driver._read_aoi(str(one_fn))) == 1
+    assert len(pdal_pipeline.read_aoi(str(one_fn))) == 1
 
 
 def test_project_failure_writes_traceback_file(tmp_path, aoi_file, monkeypatch):
@@ -527,3 +527,25 @@ def test_project_failure_writes_traceback_file(tmp_path, aoi_file, monkeypatch):
     assert not (outbase / "WU_B" / "run_error.txt").exists()
     status = yaml.safe_load((outbase / "batch_status.yaml").read_text())
     assert status["projects"]["WU_A"] == "failed: boom"
+
+
+def test_retry_success_removes_stale_run_error(tmp_path, aoi_file, monkeypatch):
+    """resume defaults on, so a failed project is normally retried in the
+    same directory; the retry's success must clear the old traceback."""
+    attempts = {"n": 0}
+
+    def flaky(**kw):
+        attempts["n"] += 1
+        if attempts["n"] == 1:
+            raise RuntimeError("transient")
+
+    monkeypatch.setattr(driver, "rasterize_project", flaky)
+    outbase = tmp_path / "batch"
+    with pytest.raises(RuntimeError, match="1/1 project runs failed"):
+        _rasterize(aoi_file, str(outbase), projects="WU_A")
+    error_fn = outbase / "WU_A" / "run_error.txt"
+    assert "RuntimeError: transient" in error_fn.read_text()
+    _rasterize(aoi_file, str(outbase), projects="WU_A")
+    assert not error_fn.exists()
+    status = yaml.safe_load((outbase / "batch_status.yaml").read_text())
+    assert status["projects"]["WU_A"] == "completed"

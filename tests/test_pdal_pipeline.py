@@ -596,3 +596,58 @@ def test_geographic_area_is_the_geodesy_helper():
     assert (
         lidar_tools.pdal_pipeline.geographic_area is lidar_tools.geodesy.geographic_area
     )
+
+
+def _envelope_plus_parcel(tmp_path):
+    """The shape that first hit #103: a site envelope and the parcel it
+    contains, as two features of one file."""
+    fn = tmp_path / "two.geojson"
+    gpd.GeoDataFrame(
+        geometry=[
+            Polygon.from_bounds(-122.32, 47.64, -122.30, 47.66),
+            Polygon.from_bounds(-122.315, 47.645, -122.305, 47.655),
+        ],
+        crs="EPSG:4326",
+    ).to_file(fn, driver="GeoJSON")
+    return str(fn)
+
+
+def test_read_aoi_unions_overlapping_features_without_double_count(tmp_path, capsys):
+    gdf = lidar_tools.pdal_pipeline.read_aoi(_envelope_plus_parcel(tmp_path))
+    assert len(gdf) == 1
+    assert "has 2 features" in capsys.readouterr().err
+    # the parcel lies inside the envelope: the union IS the envelope, so the
+    # area check reports the envelope's area, not the envelope + parcel sum
+    envelope = lidar_tools.geodesy.geodesic_area_m2(
+        Polygon.from_bounds(-122.32, 47.64, -122.30, 47.66)
+    )
+    parcel = lidar_tools.geodesy.geodesic_area_m2(
+        Polygon.from_bounds(-122.315, 47.645, -122.305, 47.655)
+    )
+    lidar_tools.pdal_pipeline._check_polygon_area(gdf)
+    out = capsys.readouterr().out
+    assert f"{envelope / 1e6:.2f} km^2" in out
+    assert f"{(envelope + parcel) / 1e6:.2f} km^2" not in out
+
+
+def test_engine_reads_a_normalized_aoi(tmp_path, monkeypatch):
+    """The driver's normalization alone is not enough: rasterize_project
+    re-reads the file itself, so the engine must normalize at ITS read."""
+    seen = {}
+
+    class Stop(Exception):
+        pass
+
+    def spy(gdf):
+        seen["n_features"] = len(gdf)
+        raise Stop  # stop the engine right after the AOI read; no network
+
+    monkeypatch.setattr(lidar_tools.pdal_pipeline, "_check_polygon_area", spy)
+    with pytest.raises(Stop):
+        lidar_tools.pdal_pipeline.rasterize_project(
+            geometry=_envelope_plus_parcel(tmp_path),
+            output=str(tmp_path / "out"),
+            threedep_project="WU_A",
+            quiet=True,
+        )
+    assert seen["n_features"] == 1

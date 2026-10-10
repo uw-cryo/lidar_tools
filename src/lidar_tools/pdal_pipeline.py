@@ -44,6 +44,27 @@ def _aoi_fingerprint(gdf) -> str:
     return hashlib.sha256(wkb).hexdigest()[:16]
 
 
+def read_aoi(geometry: str) -> gpd.GeoDataFrame:
+    """
+    Read the AOI file and normalize it to ONE feature (the union of all
+    features, with a stderr warning when there were several).
+
+    `search` and `_aoi_fingerprint` already union; this makes the engine
+    and the driver agree with them, so a per-feature frame never reaches
+    the area check or the extent logic (where overlapping features would
+    be double-counted and a per-row truth test failed opaquely).
+    """
+    gdf = gpd.read_file(geometry)
+    if len(gdf) > 1:
+        print(
+            f"WARNING: AOI file {geometry} has {len(gdf)} features; "
+            "processing their union as one AOI",
+            file=sys.stderr,
+        )
+        gdf = gpd.GeoDataFrame(geometry=[gdf.geometry.union_all()], crs=gdf.crs)
+    return gdf
+
+
 #: Parameters that shape tile CONTENT. A resume skips existing tiles, so
 #: these must match the run that produced them. `resolution` and
 #: `threedep_project` are excluded deliberately: they live in the filename
@@ -531,7 +552,7 @@ def rasterize_project(
         )
 
     # Parse input polygon CRS and check that area isn't too large
-    gdf = gpd.read_file(geometry)
+    gdf = read_aoi(geometry)
     _check_polygon_area(gdf)
     geometry_fingerprint = _aoi_fingerprint(gdf)
     input_crs = gdf.crs.to_wkt()
