@@ -59,8 +59,11 @@ Outputs land in one subdirectory per selected survey
 (`<output>/<workunit>/`, e.g. `/tmp/lidar-tools-example/WA_KingCo_1_2021/`),
 plus a `batch_status.yaml` at the top level -- the same layout for one
 survey or many, so `merge`, `preview` and the report commands consume
-every run identically. The `run` command adds `search/` (catalog
-provenance) and `merge/` (per-product composites + preview figure).
+every run identically. A project that fails leaves a one-line reason in
+`batch_status.yaml` and the full traceback in `<workunit>/run_error.txt`.
+An AOI file with several features is processed as their union. The `run`
+command adds `search/` (catalog provenance) and `merge/` (per-product
+composites + preview figure).
 
 
 ## CLI Commands

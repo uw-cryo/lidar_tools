@@ -3,6 +3,7 @@ from pathlib import Path
 import numpy as np
 import pyproj
 import pytest
+import shapely
 
 from lidar_tools import dsm_functions, geodesy
 
@@ -649,3 +650,96 @@ def test_download_grid_atomic_and_size_validated(monkeypatch, tmp_path):
     geodesy._download_grid("us_noaa_test.tif")
     assert (tmp_path / "us_noaa_test.tif").read_bytes() == b"x" * 10
     assert [p.name for p in tmp_path.iterdir()] == ["us_noaa_test.tif"]
+
+
+def test_geodesic_area_one_degree_square_at_equator():
+    # independent reference: a 1 degree x 1 degree cell on the equator is
+    # 12,308.8 km2 on the GRS80/WGS84 ellipsoid (the two differ at the
+    # 0.1 mm flattening level, far below this tolerance)
+    sq = shapely.box(0, 0, 1, 1)
+    area = geodesy.geodesic_area_m2(sq)
+    assert area == pytest.approx(12_308.8e6, rel=5e-5)
+    # orientation-independent: a clockwise ring is the same positive area
+    assert geodesy.geodesic_area_m2(shapely.reverse(sq)) == pytest.approx(area)
+    # and it does not depend on where the square sits in longitude
+    assert geodesy.geodesic_area_m2(shapely.box(-122, 0, -121, 1)) == pytest.approx(
+        area
+    )
+
+
+def test_geodesic_area_subtracts_holes_and_sums_parts():
+    outer = shapely.box(0, 0, 1, 1)
+    inner = shapely.box(0.25, 0.25, 0.75, 0.75)
+    a_outer = geodesy.geodesic_area_m2(outer)
+    a_inner = geodesy.geodesic_area_m2(inner)
+    assert geodesy.geodesic_area_m2(outer.difference(inner)) == pytest.approx(
+        a_outer - a_inner
+    )
+    multi = shapely.MultiPolygon([shapely.box(0, 0, 1, 1), shapely.box(2, 0, 3, 1)])
+    assert geodesy.geodesic_area_m2(multi) == pytest.approx(2 * a_outer, rel=1e-9)
+    # an intersection can leave a collection of a polygon and a shared edge:
+    # the line contributes nothing, the polygon counts
+    gc = shapely.GeometryCollection([outer, shapely.LineString([(0, 0), (1, 1)])])
+    assert geodesy.geodesic_area_m2(gc) == pytest.approx(a_outer)
+    assert geodesy.geodesic_area_m2(shapely.Polygon()) == 0.0
+    assert geodesy.geodesic_area_m2(shapely.Point(0, 0)) == 0.0
+    assert geodesy.geodesic_area_m2(shapely.LineString([(0, 0), (1, 1)])) == 0.0
+
+
+def test_geodesic_area_latitude_dependence_matches_physics():
+    # a 1 degree cell at 60 N spans half the east-west distance of one at
+    # the equator (cos 60 = 0.5), and the pole-ward meridian stretch is a
+    # small second-order correction -- the ratio must be near 0.5, which a
+    # degree2 area (ratio exactly 1.0) gets badly wrong
+    eq = geodesy.geodesic_area_m2(shapely.box(0, 0, 1, 1))
+    hi = geodesy.geodesic_area_m2(shapely.box(0, 60, 1, 61))
+    assert 0.47 < hi / eq < 0.50
+
+
+def test_geographic_area_requires_geographic_crs():
+    import geopandas as gpd
+
+    gf = gpd.GeoDataFrame(geometry=[shapely.box(0, 0, 1, 1)], crs="EPSG:4326")
+    assert geodesy.geographic_area(gf).iloc[0] == pytest.approx(12_308.8e6, rel=5e-5)
+    with pytest.raises(TypeError, match="requires a geographic CRS"):
+        geodesy.geodesic_area_m2(shapely.box(0, 0, 1, 1), crs="EPSG:32610")
+    with pytest.raises(TypeError, match="is_geographic"):
+        geodesy.geographic_area(gf.to_crs("EPSG:32631"))
+
+
+def test_geodesic_area_is_positive_across_the_antimeridian():
+    """A polygon stored with wrapped longitudes (170 -> -170) is traversed
+    the opposite way on the ellipsoid, and the signed result came back
+    negated (holes included); the helper must return the enclosed area
+    regardless of how the longitudes are stored."""
+
+    def poly(x0):  # 20 x 5 degree exterior with a 10 x 3 degree hole
+        return shapely.Polygon(
+            shapely.box(x0, 50, x0 + 20, 55).exterior.coords,
+            [shapely.box(x0 + 5, 51, x0 + 15, 54).exterior.coords],
+        )
+
+    def wrap(g):
+        return shapely.transform(
+            g, lambda c: np.column_stack([((c[:, 0] + 180) % 360) - 180, c[:, 1]])
+        )
+
+    reference = geodesy.geodesic_area_m2(poly(100))  # nowhere near 180
+    unwrapped = geodesy.geodesic_area_m2(poly(170))  # 170..190
+    wrapped = geodesy.geodesic_area_m2(wrap(poly(170)))  # 170..-170
+    assert reference > 0
+    assert unwrapped == pytest.approx(reference)
+    assert wrapped == pytest.approx(reference)
+    # the Aleutian shape: a MultiPolygon split at the antimeridian, vs the
+    # same two halves shifted 70 degrees west (an exact symmetry; a single
+    # 20-degree box is NOT equivalent, its long geodesic edges enclose
+    # ~0.7% more at this latitude)
+    split = shapely.MultiPolygon(
+        [shapely.box(170, 50, 180, 55), shapely.box(-180, 50, -170, 55)]
+    )
+    shifted = shapely.MultiPolygon(
+        [shapely.box(100, 50, 110, 55), shapely.box(110, 50, 120, 55)]
+    )
+    assert geodesy.geodesic_area_m2(split) == pytest.approx(
+        geodesy.geodesic_area_m2(shifted)
+    )

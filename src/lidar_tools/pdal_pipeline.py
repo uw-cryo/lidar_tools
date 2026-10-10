@@ -17,7 +17,6 @@ os.environ.setdefault("PROJ_ONLY_BEST_DEFAULT", "YES")
 
 from lidar_tools import catalog, dsm_functions, geodesy
 from pyproj import CRS
-from shapely.geometry.polygon import orient as _orient
 import numpy as np
 from pathlib import Path
 import warnings
@@ -43,6 +42,27 @@ def _aoi_fingerprint(gdf) -> str:
 
     wkb = gdf.to_crs("EPSG:4326").geometry.union_all().wkb
     return hashlib.sha256(wkb).hexdigest()[:16]
+
+
+def read_aoi(geometry: str) -> gpd.GeoDataFrame:
+    """
+    Read the AOI file and normalize it to ONE feature (the union of all
+    features, with a stderr warning when there were several).
+
+    `search` and `_aoi_fingerprint` already union; this makes the engine
+    and the driver agree with them, so a per-feature frame never reaches
+    the area check or the extent logic (where overlapping features would
+    be double-counted and a per-row truth test failed opaquely).
+    """
+    gdf = gpd.read_file(geometry)
+    if len(gdf) > 1:
+        print(
+            f"WARNING: AOI file {geometry} has {len(gdf)} features; "
+            "processing their union as one AOI",
+            file=sys.stderr,
+        )
+        gdf = gpd.GeoDataFrame(geometry=[gdf.geometry.union_all()], crs=gdf.crs)
+    return gdf
 
 
 #: Parameters that shape tile CONTENT. A resume skips existing tiles, so
@@ -532,7 +552,7 @@ def rasterize_project(
         )
 
     # Parse input polygon CRS and check that area isn't too large
-    gdf = gpd.read_file(geometry)
+    gdf = read_aoi(geometry)
     _check_polygon_area(gdf)
     geometry_fingerprint = _aoi_fingerprint(gdf)
     input_crs = gdf.crs.to_wkt()
@@ -1485,49 +1505,9 @@ def rasterize_project(
     print("****Processing complete****")
 
 
-def geographic_area(gf: gpd.GeoDataFrame) -> gpd.pd.Series:
-    """
-    Estimate the geographic area of each polygon in a GeoDataFrame in m^2
-
-    Parameters
-    ----------
-    gf
-        A GeoDataFrame containing the geometries for which the area needs to be calculated. The GeoDataFrame
-        must have a geographic coordinate system (latitude and longitude).
-
-    Returns
-    -------
-    pd.Series
-        A Pandas Series containing the area of each polygon in the input GeoDataFrame in m^2.
-
-    Raises
-    ------
-    TypeError
-        If the GeoDataFrame does not have a geographic coordinate system.
-
-    Notes
-    -----
-    - Only works for areas up to 1/2 of globe (https://github.com/pyproj4/pyproj/issues/1401)
-    """
-    if gf.crs is None or not gf.crs.is_geographic:
-        msg = "This function requires a GeoDataFrame with gf.crs.is_geographic==True"
-        raise TypeError(msg)
-
-    geod = gf.crs.get_geod()
-
-    def area_calc(geom):
-        if geom.geom_type not in ["MultiPolygon", "Polygon"]:
-            return np.nan
-
-        # For MultiPolygon do each separately
-        if geom.geom_type == "MultiPolygon":
-            return np.sum([area_calc(p) for p in geom.geoms])
-
-        # orient to ensure a counter-clockwise traversal.
-        # geometry_area_perimeter returns (area, perimeter)
-        return geod.geometry_area_perimeter(_orient(geom, 1))[0]
-
-    return gf.geometry.apply(area_calc)
+# the geodesic area helper lives in geodesy (catalog needs it too, and
+# pdal_pipeline imports catalog); re-exported for existing callers
+geographic_area = geodesy.geographic_area
 
 
 def _check_polygon_area(gf: gpd.GeoDataFrame) -> None:
@@ -1552,8 +1532,11 @@ def _check_polygon_area(gf: gpd.GeoDataFrame) -> None:
     else:
         area = geographic_area(gf.to_crs("EPSG:4326")) * 1e-6
 
-    if area.to_numpy() >= warn_if_larger_than:
-        msg = f"Very large AOI area ({area.values[0]:.2f} km^2). Recommended using an area of less than {warn_if_larger_than} km^2"
+    # sum over features: a multi-feature AOI must not raise here (a per-row
+    # truth test did, as an opaque numpy error after catalog resolution)
+    total = float(area.sum())
+    if total >= warn_if_larger_than:
+        msg = f"Very large AOI area ({total:.2f} km^2). Recommended using an area of less than {warn_if_larger_than} km^2"
         warnings.warn(msg)
     else:
-        print(f"Starting Processing of {area.values[0]:.2f} km^2 AOI")
+        print(f"Starting Processing of {total:.2f} km^2 AOI")

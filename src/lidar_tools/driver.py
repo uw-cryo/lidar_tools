@@ -13,6 +13,7 @@ consume every run the same way.
 """
 
 import sys
+import traceback
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -22,7 +23,7 @@ import geopandas as gpd
 import yaml
 
 from lidar_tools import catalog, geodesy
-from lidar_tools.pdal_pipeline import rasterize_project
+from lidar_tools.pdal_pipeline import rasterize_project, read_aoi
 
 
 def _project_run_status(outdir: Path) -> dict:
@@ -326,6 +327,30 @@ def rasterize(
     _raise_on_failed(status)
 
 
+def _write_run_error(outdir: Path) -> Path:
+    """Write the current exception's traceback to <project>/run_error.txt
+    (created if the engine failed before making the directory); returns
+    the path. Never raises -- an unwritable error file must not mask the
+    original failure."""
+    error_fn = outdir / "run_error.txt"
+    try:
+        outdir.mkdir(parents=True, exist_ok=True)
+        error_fn.write_text(traceback.format_exc())
+    except OSError as write_err:
+        print(f"WARNING: could not write {error_fn}: {write_err}", file=sys.stderr)
+    return error_fn
+
+
+def _clear_run_error(outdir: Path) -> None:
+    """Remove a stale <project>/run_error.txt after a successful run; never
+    raises (a diagnostic that cannot be removed is reported, not fatal)."""
+    error_fn = outdir / "run_error.txt"
+    try:
+        error_fn.unlink(missing_ok=True)
+    except OSError as rm_err:
+        print(f"WARNING: could not remove stale {error_fn}: {rm_err}", file=sys.stderr)
+
+
 def _rasterize_batch(
     geometry: str, output: str, opts: RasterizeOpts
 ) -> tuple[dict[str, str], dict[str, str]]:
@@ -366,7 +391,7 @@ def _rasterize_batch(
             "output directory really is named with a comma, create it "
             "first.)"
         )
-    gdf = gpd.read_file(geometry)
+    gdf = read_aoi(geometry)  # one feature, same normalization as the engine
     keys, wesm_gdf, ept_gdf = _resolve_projects(opts.projects, opts.input, gdf)
 
     if len(keys) > 1 and (opts.src_crs or opts.proj_pipeline):
@@ -436,6 +461,12 @@ def _rasterize_batch(
                 wesm_gdf=wesm_gdf,
                 ept_index_gdf=ept_gdf,
             )
+            # a retry into the same directory (resume defaults on) that
+            # succeeds must not leave the earlier attempt's traceback
+            # contradicting the completed record. Best-effort, like
+            # writing it: a cleanup failure must not turn a completed
+            # run into a recorded failure.
+            _clear_run_error(outdir)
             # a clean return is NOT proof of products: a 0-reader run
             # records "no data" in its run_status note and must never be
             # reported as a plain success in the batch. Match the specific
@@ -452,8 +483,13 @@ def _rasterize_batch(
             else:
                 status[dirname] = "completed"
         except Exception as e:
-            # one failed project must not take down the rest of the batch
-            print(f"ERROR: {dirname} failed: {e}")
+            # one failed project must not take down the rest of the batch.
+            # The one-line summary goes to the batch record; the traceback
+            # goes to the project dir, because str(e) alone has left the
+            # cause unlocatable ("truth value of an array ... is
+            # ambiguous", with no hint of which line).
+            error_fn = _write_run_error(outdir)
+            print(f"ERROR: {dirname} failed: {e} (traceback: {error_fn})")
             status[dirname] = f"failed: {e}"
 
     # Carry forward projects from earlier invocations into the same batch

@@ -37,11 +37,14 @@ def test_summarize_surveys_overlap_and_ept():
     assert list(out["workunit"]) == ["A", "B"]  # sorted QL then recency
     a = out[out.workunit == "A"].iloc[0]
     b = out[out.workunit == "B"].iloc[0]
-    np.testing.assert_allclose(a["aoi_overlap_frac"], 0.5)
+    # areas are geodesic, so polygon edges are geodesics: the 111 km north
+    # edge of the full 1-degree cell bows poleward slightly more than the
+    # two half-cell edges do, hence "half" holds to ~2e-5, not exactly
+    np.testing.assert_allclose(a["aoi_overlap_frac"], 0.5, rtol=1e-4)
     np.testing.assert_allclose(b["aoi_overlap_frac"], 1.0)
     # EPT coverage is fraction of the collection's AOI footprint
     np.testing.assert_allclose(a["ept_coverage_frac"], 1.0)
-    np.testing.assert_allclose(b["ept_coverage_frac"], 0.5)
+    np.testing.assert_allclose(b["ept_coverage_frac"], 0.5, rtol=1e-4)
     assert a["ept_names"] == ["A_ept"]
 
 
@@ -68,7 +71,7 @@ def test_coverage_gaps():
     selected = catalog.summarize_surveys(_wesm().iloc[[0]], _aoi())
     gaps = catalog.coverage_gaps(selected, _aoi())
     assert len(gaps) == 1
-    np.testing.assert_allclose(gaps["gap_frac"].iloc[0], 0.5)
+    np.testing.assert_allclose(gaps["gap_frac"].iloc[0], 0.5, rtol=1e-4)
     # both collections: no gap
     all_sel = catalog.summarize_surveys(_wesm(), _aoi())
     assert catalog.coverage_gaps(all_sel, _aoi()).empty
@@ -496,3 +499,21 @@ def test_select_workunits_fails_loud_when_nothing_resolves():
     aoi = gpd.GeoDataFrame(geometry=[_square(-0.5, -0.5, 0.5, 0.5)], crs="EPSG:4326")
     with pytest.raises(LookupError, match="none resolves"):
         catalog.select_workunits(aoi, _wesm_dated(), _ept_for(["UNRELATED"]))
+
+
+def test_no_area_computed_in_a_geographic_crs(tmp_path):
+    """Every area in catalog is geodesic: summarize_surveys, find_gaps and
+    the coverage map must run without geopandas' 'Geometry is in a
+    geographic CRS' warning, which fired on every `search`."""
+    import warnings
+
+    surveys = catalog.summarize_surveys(_wesm(), _aoi())
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", UserWarning)
+        catalog.summarize_surveys(_wesm(), _aoi())
+        catalog.coverage_gaps(surveys, _aoi())
+        catalog.plot_coverage(surveys, _aoi(), out_fn=str(tmp_path / "cov.png"))
+    # equator-symmetric fixture: west half is half the AOI area (geodesic
+    # edges, see test_summarize_surveys_overlap_and_ept)
+    a = surveys[surveys.workunit == "A"].iloc[0]
+    np.testing.assert_allclose(a["aoi_overlap_frac"], 0.5, rtol=1e-4)
